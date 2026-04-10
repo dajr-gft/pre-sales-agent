@@ -9,10 +9,10 @@ from typing import List
 from google.genai import types as genai_types
 
 from ._diagram_models import (
+    _DIAGRAMS_AVAILABLE,
+    SERVICE_ICON_MAP,
     ArchitectureEdge,
     ArchitectureNode,
-    SERVICE_ICON_MAP,
-    _DIAGRAMS_AVAILABLE,
     ensure_edge,
     ensure_node,
 )
@@ -35,10 +35,10 @@ if not _GRAPHVIZ_AVAILABLE:
 _DIAGRAM_ARTIFACT_KEY = 'architecture_diagram_artifact'
 
 _DEFAULT_GRAPH_ATTR = {
-    'splines': 'ortho',
-    'nodesep': '1.0',
-    'ranksep': '1.2',
-    'pad': '0.5',
+    'splines': 'line',
+    'nodesep': '0.8',
+    'ranksep': '1.0',
+    'ratio': 'auto',
     'fontsize': '14',
 }
 
@@ -95,9 +95,10 @@ async def generate_architecture_diagram(
     try:
         nodes = [ensure_node(n) for n in nodes]
     except Exception as parse_err:
-        print(
-            f'[DIAGRAM][ERROR] failed to parse nodes | error={parse_err}',
-            flush=True,
+        logger.error(
+            '[DIAGRAM] failed to parse nodes | error=%s | type=%s',
+            str(parse_err),
+            type(parse_err).__name__,
         )
         return {
             'error': f'Falha ao interpretar os nós do diagrama: {parse_err}'
@@ -106,9 +107,10 @@ async def generate_architecture_diagram(
     try:
         edges = [ensure_edge(e) for e in edges]
     except Exception as parse_err:
-        print(
-            f'[DIAGRAM][ERROR] failed to parse edges | error={parse_err}',
-            flush=True,
+        logger.error(
+            '[DIAGRAM] failed to parse edges | error=%s | type=%s',
+            str(parse_err),
+            type(parse_err).__name__,
         )
         return {
             'error': f'Falha ao interpretar as conexões do diagrama: {parse_err}'
@@ -120,17 +122,26 @@ async def generate_architecture_diagram(
     file_base = str(output_dir / safe_title)
     png_local_path = Path(f'{file_base}.png')
 
-    if direction not in ('LR', 'TB'):
-        direction = 'LR'
-
     try:
         clusters: dict[str, list[ArchitectureNode]] = {}
-        unclustered: list[ArchitectureNode] = []
+        unclustered: list[ArchitectureNode] = {}
+        unclustered = []
         for node in nodes:
             if node.cluster:
                 clusters.setdefault(node.cluster, []).append(node)
             else:
                 unclustered.append(node)
+
+        max_nodes_in_cluster = max(
+            [len(c_nodes) for c_nodes in clusters.values()] + [0]
+        )
+
+        if max_nodes_in_cluster > 3:
+            final_direction = 'TB'
+        elif direction in ('LR', 'TB'):
+            final_direction = direction
+        else:
+            final_direction = 'LR'
 
         instantiated: dict[str, object] = {}
 
@@ -138,7 +149,7 @@ async def generate_architecture_diagram(
             name=title,
             filename=file_base,
             show=False,
-            direction=direction,
+            direction=final_direction,
             graph_attr=_DEFAULT_GRAPH_ATTR,
         ):
             for node in unclustered:

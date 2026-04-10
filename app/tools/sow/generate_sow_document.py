@@ -14,7 +14,7 @@ from docxtpl import DocxTemplate, InlineImage
 from google.adk.tools import ToolContext
 from google.genai import types as genai_types
 
-from ._sow_helpers import download_gcs_uri, load_logo, validate_quality_gates
+from ._sow_helpers import load_logo, validate_quality_gates
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +52,12 @@ async def generate_sow_document(
             - project_start_date, project_end_date (strings)
             - engagement_type: "project", "pilot", "POC", or "assessment"
             - organization_term: "phases", "workstreams", or "activities"
+            - customer_logo_filename: optional. Filename of the customer logo
+              the user uploaded earlier in the conversation (e.g.
+              "test_customer_logo.png"). When the user uploads a file in
+              Gemini Enterprise, you will see it in the message history as
+              `<start_of_user_uploaded_file: NAME>` — pass that NAME here.
+              Omit if the user skipped the logo step.
 
             Simple lists:
             - activities (list of strings — high-level activity descriptions)
@@ -73,14 +79,38 @@ async def generate_sow_document(
 
             Optional structured arrays:
             - key_engagement_details: list of {"label": "Partner", "value": "GFT Brasil"}.
-            - technology_stack: list of {"service": "BigQuery", "purpose": "..."}
-            - milestones: list of {"name": "Milestone 1", "deliverables": "...", "estimated_completion": "Week 2", "payment": "30%"}
-            - risks: list of {"description": "...", "mitigation": "..."}
-            - consumption_plan: dict with "services", "rows", "notes" keys.
+              Summary table rendered at the beginning of Executive Summary.
+              Typical labels: Partner, Customer, Effective Date, GCP Deployment Location,
+              Service Delivery, Pricing Model.
+            - technology_stack: list of {"service": "BigQuery", "purpose": "Centralized data warehouse organized in Raw, Trusted, and Refined layers."}
+              Rendered as a table inside Architecture Overview after components list.
+              Map ONLY Google Cloud services to their specific role in the architecture.
+              Do NOT include programming languages, IaC tools, or generic entries like "Google Cloud".
+            - milestones: list of {"name": "Milestone 1: Kickoff", "deliverables": "Project Plan", "estimated_completion": "Week 2", "payment": "30%"}
+              (omit if single payment at project completion)
+            - risks: list of {"description": "Data quality issues...", "mitigation": "Implement validation..."}
+              (optional — if provided, content will be added to Assumptions section)
+            - consumption_plan: dict (optional — required for PSF, omit for DAF
+              unless requested). Monthly GCP consumption estimates for 12 months.
+              Structure:
+              {
+                "services": ["Cloud Run", "Vertex AI", "Firestore"],
+                "rows": [
+                  {"month": 1, "costs": ["$20", "$150", "$10"], "total": "$180"},
+                  {"month": 2, "costs": ["$20", "$150", "$10"], "total": "$180"},
+                  ...
+                ],
+                "notes": "Estimates based on 1,200 monthly requests."
+              }
+              The "services" list defines table column headers (GCP services only).
+              Each "rows" entry must have the same number of "costs" as "services".
+              The "notes" field provides estimation assumptions rendered below the table.
 
             Optional simple fields:
-            - taxes_included (boolean — default true)
-            - non_commit_psf (boolean — default false)
+            - taxes_included (boolean — default true. Controls which cost table and
+              tax paragraph variant is rendered.)
+            - non_commit_psf (boolean — default false. If true, includes the Non-Commit
+              PSF 30% reduction paragraph.)
 
     Returns:
         A dictionary with status and the file path of the generated document.
@@ -152,24 +182,36 @@ async def generate_sow_document(
             doc, partner_logo_path, 'partner', _PARTNER_LOGO_WIDTH_MM
         )
 
-        customer_logo_tempfile = await _load_image_from_artifact(
-            tool_context, 'customer_logo_artifact'
+        # Customer logo: filename comes directly from the LLM in sow_data,
+        # passed by the model after seeing the upload marker in the conversation.
+        customer_logo_filename = data.get('customer_logo_filename')
+        customer_logo_tempfile = await _load_artifact_to_tempfile(
+            tool_context, customer_logo_filename, 'customer logo'
         )
         if customer_logo_tempfile:
             data['customer_logo'] = load_logo(
-                doc, customer_logo_tempfile, 'customer', _CUSTOMER_LOGO_WIDTH_MM
+                doc,
+                customer_logo_tempfile,
+                'customer',
+                _CUSTOMER_LOGO_WIDTH_MM,
             )
         else:
             data['customer_logo'] = '[Customer Logo]'
 
-        diagram_tempfile = await _load_image_from_artifact(
-            tool_context, 'architecture_diagram_artifact'
+        # Architecture diagram: filename comes from session state, written by
+        # the generate_architecture_diagram tool earlier in the same session.
+        diagram_filename = (
+            tool_context.state.get('architecture_diagram_artifact')
+            if tool_context
+            else None
+        )
+        diagram_tempfile = await _load_artifact_to_tempfile(
+            tool_context, diagram_filename, 'diagram'
         )
         if diagram_tempfile:
             data['architecture_diagram'] = InlineImage(
                 doc, str(diagram_tempfile), width=Mm(150)
             )
-            logger.info('generate_sow_document: diagram loaded from artifact')
         elif not data.get('architecture_diagram'):
             data[
                 'architecture_diagram'
@@ -253,56 +295,35 @@ async def generate_sow_document(
                     )
 
 
-async def _load_image_from_artifact(
+async def _load_artifact_to_tempfile(
     tool_context: ToolContext | None,
-    state_key: str,
+    artifact_filename: str | None,
+    label: str,
 ) -> Path | None:
-    """Load an image artifact and write it to a temp file.
+    """Load an artifact by filename and write its bytes to a tempfile.
+
+    The tempfile is short-lived: it lives only inside this function call,
+    in the same instance that handles the request. The persistent copy
+    lives in the artifact service (GCS in production).
 
     Args:
         tool_context: ADK ToolContext (may be None).
-        state_key: Session state key holding the artifact filename.
+        artifact_filename: Name of the artifact to load. None/empty → no-op.
+        label: Human-readable label for logging.
 
     Returns:
-        Path to the temp file with image bytes, or None on failure.
+        Path to the tempfile with the artifact bytes, or None on failure.
     """
-    if not tool_context:
-        return None
-
-    artifact_filename = tool_context.state.get(state_key)
-    if not artifact_filename:
-        logger.info(
-            '_load_image_from_artifact: no artifact in state | key=%s',
-            state_key,
-        )
+    if not tool_context or not artifact_filename:
         return None
 
     try:
         part = await tool_context.load_artifact(filename=artifact_filename)
 
-        image_bytes: bytes | None = None
-
-        if part and part.inline_data and part.inline_data.data:
-            image_bytes = part.inline_data.data
-            logger.info(
-                '_load_image_from_artifact: bytes from inline_data | key=%s | size=%d',
-                state_key,
-                len(image_bytes),
-            )
-        elif part and part.file_data and part.file_data.file_uri:
-            image_bytes = download_gcs_uri(part.file_data.file_uri)
-            if image_bytes:
-                logger.info(
-                    '_load_image_from_artifact: bytes from file_data | key=%s | uri=%s | size=%d',
-                    state_key,
-                    part.file_data.file_uri,
-                    len(image_bytes),
-                )
-
-        if not image_bytes:
+        if not (part and part.inline_data and part.inline_data.data):
             logger.warning(
-                '_load_image_from_artifact: artifact empty | key=%s | filename=%s',
-                state_key,
+                '_load_artifact_to_tempfile: %s artifact empty | filename=%s',
+                label,
                 artifact_filename,
             )
             return None
@@ -311,13 +332,19 @@ async def _load_image_from_artifact(
         fd, tempfile_path = tempfile.mkstemp(suffix=ext)
         os.close(fd)
         tmp = Path(tempfile_path)
-        tmp.write_bytes(image_bytes)
+        tmp.write_bytes(part.inline_data.data)
+        logger.info(
+            '_load_artifact_to_tempfile: %s loaded | filename=%s | size=%d',
+            label,
+            artifact_filename,
+            len(part.inline_data.data),
+        )
         return tmp
 
     except Exception as err:
         logger.warning(
-            '_load_image_from_artifact: failed | key=%s | filename=%s | error=%s',
-            state_key,
+            '_load_artifact_to_tempfile: %s failed | filename=%s | error=%s',
+            label,
             artifact_filename,
             str(err),
         )
@@ -387,7 +414,9 @@ def _auto_derive_fields(data: dict) -> None:
         else:
             data['funding_type_short'] = 'DAF'
 
-    if not data.get('technology_stack') and data.get('architecture_components'):
+    if not data.get('technology_stack') and data.get(
+        'architecture_components'
+    ):
         data['technology_stack'] = [
             {'service': comp.get('name', ''), 'purpose': comp.get('role', '')}
             for comp in data['architecture_components']
@@ -395,9 +424,18 @@ def _auto_derive_fields(data: dict) -> None:
 
     if not data.get('key_engagement_details'):
         data['key_engagement_details'] = [
-            {'label': 'Partner', 'value': data.get('partner_name', '[Partner]')},
-            {'label': 'Customer', 'value': data.get('customer_name', '[Customer]')},
-            {'label': 'Effective Date', 'value': data.get('project_start_date', 'TBD')},
+            {
+                'label': 'Partner',
+                'value': data.get('partner_name', '[Partner]'),
+            },
+            {
+                'label': 'Customer',
+                'value': data.get('customer_name', '[Customer]'),
+            },
+            {
+                'label': 'Effective Date',
+                'value': data.get('project_start_date', 'TBD'),
+            },
             {'label': 'Service Delivery', 'value': 'Remote'},
             {'label': 'Pricing Model', 'value': 'Fixed Fee'},
         ]

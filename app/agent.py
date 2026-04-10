@@ -13,13 +13,11 @@ from google.adk.tools.agent_tool import AgentTool
 from google.adk.tools.google_search_tool import GoogleSearchTool
 from google.genai import types
 
-from .callbacks.logo_interceptor import intercept_image_uploads
 from .prompts import ROOT_PROMPT
 from .tools.sow.generate_architecture_diagram import (
     generate_architecture_diagram,
 )
 from .tools.sow.generate_sow_document import generate_sow_document
-from .tools.sow.request_customer_logo import request_customer_logo
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +65,9 @@ google_search_agent = Agent(
     ),
     instruction='You are a web search specialist. Search the web and return relevant, factual results.',
     tools=[GoogleSearchTool()],
+    generate_content_config=types.GenerateContentConfig(
+        temperature=0.2,
+    ),
 )
 
 _TOOLS = [
@@ -74,7 +75,6 @@ _TOOLS = [
     load_artifacts,
     generate_architecture_diagram,
     generate_sow_document,
-    request_customer_logo,
     AgentTool(agent=google_search_agent),
 ]
 
@@ -90,8 +90,8 @@ root_agent = Agent(
     ),
     instruction=_build_instruction(),
     tools=_TOOLS,
-    before_model_callback=intercept_image_uploads,
     generate_content_config=types.GenerateContentConfig(
+        temperature=0.2,
         thinking_config=types.ThinkingConfig(
             include_thoughts=False,
             thinking_budget=_THINKING_BUDGET,

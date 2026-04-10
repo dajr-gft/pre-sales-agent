@@ -45,25 +45,13 @@
 - Use NFRs to reinforce scope boundaries where applicable.
 
 ### Architecture Overview
-- Diagram + textual description.
-- Diagram: core GCP components, source systems, downstream systems, integration points, cloud/on-prem/third-party delineation.
-- Textual description for each major component: (1) role in architecture, (2) specific GCP service, (3) justification over alternatives.
-- **Anti-pattern:** listing GCP services with generic capabilities. Must be specific to THIS project's data flows and design decisions.
-- **Self-test:** Before presenting the architecture description, ask: *"Does each service justification reference a specific requirement, data flow, or design decision from THIS project?"* If a justification only describes what the service does generically, rewrite it to explain why it was chosen for this specific use case.
+See `references/architecture-guide.md` Parts 1-3. All rules there are binding.
 
 ### Architecture Diagram
-- Generated via `generate_architecture_diagram` tool with GCP service icons.
-- Group nodes into clusters: "Google Cloud", "On-Premises", "Third-Party".
-- Direction: `LR` for pipeline/sequential architectures; `TB` for hierarchical.
-- Descriptive edge labels (e.g., "REST API", "gRPC", "Pub/Sub").
-- Each node must use a valid `GcpServiceEnum` value from the tool.
+See `references/architecture-guide.md` Part 2. All rules there are binding.
 
 ### Technology Stack Table
-- Within Architecture Overview. Format: GCP Service | Purpose in Architecture.
-- Map each service to its purpose IN THIS PROJECT.
-- **Consistency rule:** Every GCP service mentioned in the Architecture description MUST appear in the Technology Stack table.
-- **Anti-pattern:** "Serverless data processing for ETL pipelines" (generic). Write "Batch and streaming ingestion engine processing SAP extracts and POS API events into Cloud Storage landing zone" (project-specific).
-- **Self-test:** Before presenting each service description, ask: *"Could this description appear on the GCP product documentation page?"* If yes, rewrite to describe what this service does in THIS project specifically.
+See `references/architecture-guide.md` Part 4. All rules there are binding.
 
 ### Google Cloud Consumption Plan
 - Optional for DAF. Required/recommended for PSF.

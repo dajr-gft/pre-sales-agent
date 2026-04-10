@@ -38,9 +38,7 @@ try:
     _DIAGRAMS_AVAILABLE = True
 except ImportError:
     _DIAGRAMS_AVAILABLE = False
-    logger.warning(
-        '_diagram_models: diagrams library not installed'
-    )
+    logger.warning('_diagram_models: diagrams library not installed')
 
 
 class GcpServiceEnum(str, Enum):
@@ -163,8 +161,11 @@ class ArchitectureNode(BaseModel):
     )
     cluster: Optional[str] = Field(
         default=None,
-        description="Optional cluster/group name (e.g., 'Google Cloud', 'On-Premises', "
-        "'Third-Party'). Nodes with the same cluster value are grouped visually.",
+        description=(
+            'REQUIRED for enterprise architectures. Group services by network zone or responsibility. '
+            "Use standardized names such as: 'Customer Environment', 'Google Cloud (Edge/Security)', "
+            "'Google Cloud (Core/Compute)', 'Google Cloud (Data/Storage)', or 'Google Cloud (Networking)'."
+        ),
     )
 
 

@@ -20,8 +20,6 @@ pre-sales-agent/
 │   ├── agent.py                    # Agent definition and tool registration
 │   ├── agent_engine_app.py         # Agent Engine (AdkApp) configuration
 │   ├── app_utils/                  # App-level utilities
-│   ├── callbacks/
-│   │   └── intercept_image_uploads.py  # Logo upload handling via before_model_callback
 │   ├── prompts/                    # Root agent and skill prompts
 │   ├── skills/                     # Skill definitions (SKILL.md + references)
 │   └── tools/
