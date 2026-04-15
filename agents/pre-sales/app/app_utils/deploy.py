@@ -186,7 +186,7 @@ def setup_agent_identity(client: Any, project: str, display_name: str) -> Any:
 @click.option(
     '--description',
     default='Simple ReAct agent',
-    help='Descripmy-adk-agentnt',
+    help='Description for the agent engine',
 )
 @click.option(
     '--source-packages',
