@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir *)",
+      "Bash(cp 'C:/Users/dajr/OneDrive - GFT Technologies SE/Documents/GFT/BU GCP/pre-sales-agent/app/tools/sow/templates/SOW_Template.docx' 'C:/Users/dajr/OneDrive - GFT Technologies SE/Documents/GFT/BU GCP/pre-sales-agent/agents/pre-sales/app/tools/sow/templates/SOW_Template.docx')",
+      "Bash(cp 'C:/Users/dajr/OneDrive - GFT Technologies SE/Documents/GFT/BU GCP/pre-sales-agent/app/tools/sow/templates/gft_logo.png' 'C:/Users/dajr/OneDrive - GFT Technologies SE/Documents/GFT/BU GCP/pre-sales-agent/agents/pre-sales/app/tools/sow/templates/gft_logo.png')",
+      "Bash(cp 'C:/Users/dajr/OneDrive - GFT Technologies SE/Documents/GFT/BU GCP/pre-sales-agent/installation_scripts/install.sh' 'C:/Users/dajr/OneDrive - GFT Technologies SE/Documents/GFT/BU GCP/pre-sales-agent/agents/pre-sales/installation_scripts/install.sh')",
+      "Bash(rm -rf 'C:/Users/dajr/OneDrive - GFT Technologies SE/Documents/GFT/BU GCP/pre-sales-agent/app' 'C:/Users/dajr/OneDrive - GFT Technologies SE/Documents/GFT/BU GCP/pre-sales-agent/installation_scripts' 'C:/Users/dajr/OneDrive - GFT Technologies SE/Documents/GFT/BU GCP/pre-sales-agent/tests')",
+      "Bash(rm -f 'C:/Users/dajr/OneDrive - GFT Technologies SE/Documents/GFT/BU GCP/pre-sales-agent/requirements.txt' 'C:/Users/dajr/OneDrive - GFT Technologies SE/Documents/GFT/BU GCP/pre-sales-agent/Makefile' 'C:/Users/dajr/OneDrive - GFT Technologies SE/Documents/GFT/BU GCP/pre-sales-agent/deployment_metadata.json' 'C:/Users/dajr/OneDrive - GFT Technologies SE/Documents/GFT/BU GCP/pre-sales-agent/README.md' 'C:/Users/dajr/OneDrive - GFT Technologies SE/Documents/GFT/BU GCP/pre-sales-agent/GEMINI.md')"
+    ]
+  }
+}

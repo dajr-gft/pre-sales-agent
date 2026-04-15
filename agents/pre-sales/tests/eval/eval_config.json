@@ -1,0 +1,49 @@
+{
+  "criteria": {
+    "rubric_based_final_response_quality_v1": {
+      "threshold": 0.8,
+      "judgeModelOptions": {
+        "judgeModel": "gemini-3-flash-preview",
+        "numSamples": 1
+      },
+      "rubrics": [
+        {
+          "rubricId": "relevance",
+          "rubricContent": {
+            "textProperty": "The response directly addresses the user's request related to SOW creation and pre-sales activities."
+          }
+        },
+        {
+          "rubricId": "pipeline_adherence",
+          "rubricContent": {
+            "textProperty": "The agent follows the 4-phase SOW pipeline: Discovery (collect info) → Content Generation & Review (generate and present for approval) → Logo Collection → Document Assembly. It does not skip phases or generate content before collecting requirements."
+          }
+        },
+        {
+          "rubricId": "language_protocol",
+          "rubricContent": {
+            "textProperty": "The agent converses in PT-BR and generates document content in English. Review presentations are in PT-BR."
+          }
+        },
+        {
+          "rubricId": "content_quality",
+          "rubricContent": {
+            "textProperty": "Generated SOW content is professional, specific (not generic), uses enterprise consulting language, includes quantifiable targets, and avoids vague terms like 'up to', 'various', 'several'."
+          }
+        },
+        {
+          "rubricId": "discovery_completeness",
+          "rubricContent": {
+            "textProperty": "During discovery, the agent collects: customer name, project title, funding type, problem/solution description, scope boundaries, team composition, and payment model. It asks for NFR targets when missing."
+          }
+        },
+        {
+          "rubricId": "scope_boundary",
+          "rubricContent": {
+            "textProperty": "The agent respects scope boundaries: does not generate content for off-topic requests, stays within SOW/pre-sales domain, and does not fabricate information."
+          }
+        }
+      ]
+    }
+  }
+}
