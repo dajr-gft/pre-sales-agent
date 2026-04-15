@@ -1,3 +1,4 @@
+import json
 import shutil
 import tempfile
 from pathlib import Path
@@ -11,7 +12,6 @@ from ...shared.types import ToolError, ToolSuccess
 from ._diagram_models import (
     _DIAGRAMS_AVAILABLE,
     SERVICE_ICON_MAP,
-    ArchitectureEdge,
     ArchitectureNode,
     ensure_edge,
     ensure_node,
@@ -47,8 +47,8 @@ _DEFAULT_GRAPH_ATTR = {
 @safe_tool
 async def generate_architecture_diagram(
     title: str,
-    nodes: list[ArchitectureNode],
-    edges: list[ArchitectureEdge],
+    nodes: str,
+    edges: str,
     direction: str = "LR",
     tool_context=None,
 ) -> dict[str, Any]:
@@ -66,8 +66,12 @@ async def generate_architecture_diagram(
 
     Args:
         title: Title displayed at the top of the diagram.
-        nodes: List of architecture components with service type and optional cluster.
-        edges: List of connections between components.
+        nodes: JSON string — array of objects with keys: id (str), label (str),
+            service (one of the GcpServiceEnum values, e.g. "Cloud Run",
+            "BigQuery", "Vertex AI"), and optional cluster (str, e.g.
+            "Google Cloud (Core/Compute)").
+        edges: JSON string — array of objects with keys: source_id (str),
+            target_id (str), and optional label (str, e.g. "REST API").
         direction: Diagram layout direction — "LR" (left-to-right) or "TB" (top-to-bottom).
         tool_context: ADK ToolContext for session state and artifact access
             (injected automatically).
@@ -92,9 +96,11 @@ async def generate_architecture_diagram(
             suggestion="Deploy no Agent Engine para ter Graphviz disponível.",
         )
 
+    # Parse JSON strings into model objects
     try:
-        nodes = [ensure_node(n) for n in nodes]
-    except Exception as parse_err:
+        raw_nodes = json.loads(nodes) if isinstance(nodes, str) else nodes
+        parsed_nodes = [ensure_node(n) for n in raw_nodes]
+    except (json.JSONDecodeError, Exception) as parse_err:
         logger.error("node_parse_failed", error=str(parse_err))
         return ToolError(
             status="error",
@@ -105,8 +111,9 @@ async def generate_architecture_diagram(
         )
 
     try:
-        edges = [ensure_edge(e) for e in edges]
-    except Exception as parse_err:
+        raw_edges = json.loads(edges) if isinstance(edges, str) else edges
+        parsed_edges = [ensure_edge(e) for e in raw_edges]
+    except (json.JSONDecodeError, Exception) as parse_err:
         logger.error("edge_parse_failed", error=str(parse_err))
         return ToolError(
             status="error",
@@ -125,7 +132,7 @@ async def generate_architecture_diagram(
     try:
         clusters: dict[str, list[ArchitectureNode]] = {}
         unclustered: list[ArchitectureNode] = []
-        for node in nodes:
+        for node in parsed_nodes:
             if node.cluster:
                 clusters.setdefault(node.cluster, []).append(node)
             else:
@@ -161,7 +168,7 @@ async def generate_architecture_diagram(
                         icon_class = SERVICE_ICON_MAP.get(node.service, Rack)
                         instantiated[node.id] = icon_class(node.label)
 
-            for edge in edges:
+            for edge in parsed_edges:
                 source = instantiated.get(edge.source_id)
                 target = instantiated.get(edge.target_id)
                 if not source or not target:
@@ -203,8 +210,8 @@ async def generate_architecture_diagram(
                 "artifact_saved",
                 filename=artifact_filename,
                 version=version,
-                nodes=len(nodes),
-                edges=len(edges),
+                nodes=len(parsed_nodes),
+                edges=len(parsed_edges),
             )
         else:
             logger.warning(
