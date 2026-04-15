@@ -16,6 +16,7 @@ from google.genai import types as genai_types
 
 from ...shared.errors import safe_tool
 from ...shared.types import ToolError, ToolSuccess
+from ...shared.validators import ContentValidator
 from ._sow_helpers import load_logo, validate_quality_gates
 
 logger = structlog.get_logger()
@@ -27,6 +28,8 @@ _PARTNER_LOGO_FILENAME = "gft_logo.png"
 
 _PARTNER_LOGO_WIDTH_MM = 41
 _CUSTOMER_LOGO_WIDTH_MM = 43
+
+_content_validator = ContentValidator()
 
 
 @safe_tool
@@ -171,6 +174,34 @@ async def generate_sow_document(
             retryable=True,
             tool="generate_sow_document",
             suggestion="Gere mais conteúdo para atingir os mínimos de qualidade.",
+        )
+
+    # Structural validation (hard gate — blocks on errors, warns on warnings)
+    validation = _content_validator.validate(data)
+    if not validation.passed:
+        logger.error(
+            "structural_validation_failed",
+            errors=len(validation.errors),
+            warnings=len(validation.warnings),
+        )
+        return ToolError(
+            status="error",
+            error=(
+                "Validação estrutural falhou. Corrija os erros abaixo:\n"
+                + "\n".join(f"- {e}" for e in validation.errors)
+            ),
+            retryable=True,
+            tool="generate_sow_document",
+            suggestion=(
+                "Use validate_sow_content para verificar o conteúdo antes "
+                "de gerar o documento."
+            ),
+        )
+    if validation.warnings:
+        logger.warning(
+            "structural_validation_warnings",
+            count=len(validation.warnings),
+            warnings=[str(w) for w in validation.warnings],
         )
 
     template_path = _TEMPLATE_DIR / _TEMPLATE_FILENAME
@@ -399,6 +430,9 @@ def _auto_derive_fields(data: dict) -> None:
             for comp in data["architecture_components"]
         ]
 
+    if not data.get("project_type"):
+        data["project_type"] = _infer_project_type(data)
+
     if not data.get("key_engagement_details"):
         data["key_engagement_details"] = [
             {
@@ -416,3 +450,49 @@ def _auto_derive_fields(data: dict) -> None:
             {"label": "Service Delivery", "value": "Remote"},
             {"label": "Pricing Model", "value": "Fixed Fee"},
         ]
+
+
+# GenAI/ML service names used to infer project_type for template conditionals.
+_GENAI_SERVICES = {
+    "vertex ai",
+    "gemini",
+    "agent engine",
+    "dialogflow",
+    "vertex ai search",
+    "generative ai",
+    "genai",
+}
+_ML_SERVICES = {
+    "automl",
+    "vertex ai",
+    "bigquery ml",
+    "tensorflow",
+    "pytorch",
+}
+
+
+def _infer_project_type(data: dict) -> str:
+    """Infer project_type ('genai', 'ml', or 'standard') from architecture.
+
+    The SOW template uses project_type to conditionally include ML/GenAI
+    assumptions (e.g., labeled data, model performance review).
+    """
+    # Collect all service/component names mentioned in the architecture
+    names: set[str] = set()
+    for comp in data.get("architecture_components", []):
+        names.add(comp.get("name", "").lower())
+        names.add(comp.get("role", "").lower())
+    for tech in data.get("technology_stack", []):
+        names.add(tech.get("service", "").lower())
+        names.add(tech.get("purpose", "").lower())
+
+    arch_desc = (data.get("architecture_description") or "").lower()
+    exec_summary = (data.get("executive_summary") or "").lower()
+    combined_text = " ".join(names) + " " + arch_desc + " " + exec_summary
+
+    # GenAI takes precedence over ML (GenAI projects typically also involve ML)
+    if any(svc in combined_text for svc in _GENAI_SERVICES):
+        return "genai"
+    if any(svc in combined_text for svc in _ML_SERVICES):
+        return "ml"
+    return "standard"

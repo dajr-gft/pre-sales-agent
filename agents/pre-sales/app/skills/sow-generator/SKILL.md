@@ -55,27 +55,62 @@ Single open-ended question: problem, solution, technical approach.
 - If user describes solution → infer GCP services silently.
 - Ask about GCP services only if user describes only the problem with no technical hints.
 
+#### Block 2.5 — Integrations & Data Sources
+Ask: "Quais sistemas, APIs ou fontes de dados serão integrados ou consumidos pela solução? (ex.: SAP, Salesforce, APIs internas, bancos de dados existentes, arquivos CSV/Parquet)"
+- Capture: system name, data direction (source/target/bidirectional), protocol if known (REST, gRPC, batch file, CDC).
+- If user says "none" or "only GCP services" → skip.
+- If user already described integrations in Block 2 → confirm and ask if there are others.
+- This ensures architecture and assumptions have explicit integration context rather than inferring from vague Block 2 descriptions.
+
 #### Block 3 — Scope, Team & Payment
 Ask: Out-of-scope items, team composition (partner + customer), payment model (single/milestones).
 
-#### Block 4 — Intelligent Follow-up (after Block 3, 0-2 rounds)
+#### Block 4 — Intelligent Follow-up (after Block 3, 0-3 rounds)
 
-**Mandatory collection** (always ask if missing): Quantitative NFR targets — latency, SLA%, scalability, accuracy, compliance. These are business decisions that cannot be inferred.
+**Mandatory collection** (always ask if missing):
+1. **Quantitative NFR targets** — latency, SLA%, scalability, accuracy, compliance. These are business decisions that cannot be inferred.
+2. **Known constraints or prerequisites** — Does the customer have any known constraints? (e.g., data residency, compliance requirements, existing GCP organization, VPN/firewall restrictions, team availability windows). These directly shape assumptions and architecture.
+3. **Project timeline expectations** — Desired start date, end date, or duration. Deadlines tied to business events (e.g., "must go live before Q4 campaign").
 
-**Inferrable gaps** (ask only if cannot confidently infer): Ambiguous technical choices, integration details, data formats.
+**Conditional collection** (ask only when relevant):
+- **Data volume and velocity** — If the project involves data processing/analytics/ML: approximate data volume (GB/TB), update frequency (real-time, hourly, daily), number of sources.
+- **Authentication/authorization model** — If the project involves user-facing systems or APIs: how users authenticate (SSO, OAuth, API keys), who manages identity.
 
-- Max 2 rounds total, max 3 questions per round.
-- After 2 rounds → `[TO BE DEFINED]` for remaining gaps.
+**Inferrable gaps** (ask only if cannot confidently infer): Ambiguous technical choices, data formats, environment strategy (dev/staging/prod).
+
+- Max 3 rounds total, max 3 questions per round.
+- After 3 rounds → `[TO BE DEFINED]` for remaining gaps.
+- Prioritize questions by impact: a missing NFR target or timeline constraint affects the entire SOW; a missing data format affects one FR.
 
 **Infer silently (do NOT ask):** GCP services, FRs, NFR categories, architecture, assumptions, success criteria, risks, out-of-scope expansion.
 
-After answers, confirm readiness:
-> "Tenho todas as informações. Vou gerar o conteúdo completo da SOW e apresentar para sua revisão antes de montar o documento. Posso prosseguir?"
+After answers, present an **Inference Summary** before asking to proceed. This lets the user correct wrong inferences BEFORE the agent spends tokens generating full content.
+
+Present in PT-BR:
+> **Resumo do que entendi e vou inferir:**
+>
+> **Projeto:** [title] | [funding type] | [customer name]
+> **Problema:** [1-2 sentences summarizing the problem from Block 2]
+> **Solução proposta:** [1-2 sentences summarizing the technical approach]
+> **Serviços GCP inferidos:** [list of GCP services you plan to use, based on Blocks 2-3]
+> **Integrações identificadas:** [list from Block 2.5, or "nenhuma mencionada"]
+> **Estilo de arquitetura:** [e.g., "event-driven pipeline", "request-response API", "batch ETL", "multi-agent AI"]
+> **Fases previstas:** [e.g., "3 fases: Discovery (2 sem), Build (6 sem), Deploy (2 sem)"]
+> **Constraints/premissas-chave:** [from Block 4, e.g., "data residency in Brazil", "must use existing VPN"]
+>
+> "Está correto? Se algo estiver errado, me avise agora — é mais fácil corrigir antes de gerar o conteúdo completo. Caso contrário, posso prosseguir?"
+
+**Why this step matters:** The agent will generate 10-20 FRs, 15-25 assumptions, and a full architecture based on these inferences. A wrong GCP service or missed integration here means rework in Phase 2 review. Catching it now costs one message; catching it later costs regenerating entire sections.
 
 ### Path B — Transcript Extraction
 
 #### Step 1 — Analyze and Extract
-Extract ALL fields Blocks 1-4 would collect.
+Extract ALL fields Blocks 1-4 would collect, including:
+- Identity (Block 1): customer name, project title, funding type
+- Technical approach (Block 2): problem, solution, GCP services
+- Integrations (Block 2.5): systems, APIs, data sources mentioned in the transcript
+- Scope, team, payment (Block 3): out-of-scope items, roles, payment model
+- NFR targets and constraints (Block 4): quantitative targets, prerequisites, timeline
 
 **Tool usage:** File-reading tools (to access uploaded transcripts, audio files, or documents) are permitted in this step. Web searches, reference loading, and content generation tools are NOT permitted — those belong to Phase 2.
 
@@ -84,15 +119,18 @@ Rules:
 - Flag contradictions between speakers — do not choose one.
 - Ignore off-topic conversation.
 - Capture exclusion phrases ("isso fica fora", "isso não é nosso escopo").
+- Capture integration mentions ("conectar com", "puxar dados do", "integrar com").
 
 #### Step 2 — Present Summary, Gaps & Contradictions
-Present in PT-BR by category. List gaps (especially NFR quantitative targets) and contradictions.
+Present in PT-BR by category. List gaps (especially NFR quantitative targets, integrations, and constraints) and contradictions.
 
 #### Step 3 — Collect Missing
-Same rules as Block 4: mandatory NFR targets, max 2 rounds, then `[TO BE DEFINED]`.
+Same rules as Block 4: mandatory NFR targets, known constraints, max 3 rounds, then `[TO BE DEFINED]`.
 
-After resolution:
-> "Tenho todas as informações. Vou gerar o conteúdo completo da SOW e apresentar para sua revisão antes de montar o documento. Posso prosseguir?"
+#### Step 4 — Inference Summary
+After collecting all missing information, present the same Inference Summary as Path A (project, solution, inferred GCP services, integrations, architecture style, phases, constraints). Ask user to confirm before proceeding.
+
+> "Está correto? Se algo estiver errado, me avise agora — é mais fácil corrigir antes de gerar o conteúdo completo. Caso contrário, posso prosseguir?"
 
 **DO NOT proceed to Phase 2 until user explicitly confirms.**
 
@@ -154,6 +192,13 @@ Cross-reference FRs against Out-of-Scope:
 10. **Costs** — Fixed-price. Placeholders for manual filling. Milestone structure if applicable.
 
 11. **Acceptance** — Signature block for Customer and Partner.
+
+### Step 1.5 — Validate Content (silent, before presenting to user)
+
+After generating all content in Step 1, call `validate_sow_content` with the assembled JSON.
+- If there are **errors**: fix them silently and re-validate. Do NOT present content with errors.
+- If there are **warnings**: note them for your own reference but proceed to review.
+- This step is invisible to the user — never mention validation results unless errors persist after 2 fix attempts.
 
 ### Step 2 — Present Content Review
 
@@ -281,7 +326,7 @@ After completing the web searches, execute Steps 2-4 in a single turn. Do not na
 
 **Step 2** — Call `generate_architecture_diagram` using the nodes, edges, clusters, and direction specified in Phase 2 Step 3. Every node must use a valid `GcpServiceEnum` value. Every edge must have a descriptive label. This is the ONLY place where this tool should be called.
 
-**Step 3** — Call `generate_sow_document` with `sow_data` JSON containing ALL Phase 2 content + Partner/Customer Overview from Step 1.
+**Step 3** — Call `validate_sow_content` with the assembled `sow_data` JSON. If errors are returned, fix them before proceeding. Then call `generate_sow_document` with the validated JSON containing ALL Phase 2 content + Partner/Customer Overview from Step 1.
 
 **CRITICAL JSON rules:**
 - `executive_summary`: Complete, self-contained paragraph — no prefix added by tool.

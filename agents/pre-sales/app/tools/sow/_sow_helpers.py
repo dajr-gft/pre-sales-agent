@@ -14,6 +14,7 @@ QUALITY_GATES = {
     "assumptions": ("Assumptions", 15),
     "deliverables": ("Deliverables", 10),
     "functional_requirements": ("Functional Requirements", 10),
+    "non_functional_requirements": ("Non-Functional Requirements", 5),
     "success_criteria": ("Success Criteria", 5),
 }
 
@@ -29,6 +30,18 @@ def validate_quality_gates(data: dict) -> list[str]:
         items = data.get(field, [])
         if len(items) < minimum:
             errors.append(f"{label}: {len(items)} itens (mínimo: {minimum})")
+
+    # Risks: at least 3 if the section is provided at all
+    risks = data.get("risks", [])
+    if risks and len(risks) < 3:
+        errors.append(f"Risks: {len(risks)} itens (mínimo: 3 quando presente)")
+
+    # Consumption plan: required for PSF engagements
+    ft = (data.get("funding_type_short") or data.get("funding_type") or "").upper()
+    if "PSF" in ft:
+        cp = data.get("consumption_plan_table") or data.get("consumption_plan")
+        if not cp:
+            errors.append("Consumption Plan: ausente (obrigatório para PSF)")
 
     return errors
 

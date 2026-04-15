@@ -37,8 +37,9 @@ class AgentEngineApp(AdkApp):
         logging.basicConfig(level=logging.INFO)
         logging_client = google_cloud_logging.Client()
         self.logger = logging_client.logger(__name__)
-        if gemini_location:
-            os.environ["GOOGLE_CLOUD_LOCATION"] = gemini_location
+        location = os.environ.get("GOOGLE_CLOUD_LOCATION")
+        if location:
+            os.environ["GOOGLE_CLOUD_LOCATION"] = location
 
     def register_feedback(self, feedback: dict[str, Any]) -> None:
         """Collect and log feedback."""
@@ -52,7 +53,6 @@ class AgentEngineApp(AdkApp):
         return operations
 
 
-gemini_location = os.environ.get("GOOGLE_CLOUD_LOCATION")
 logs_bucket_name = os.environ.get("LOGS_BUCKET_NAME")
 agent_engine = AgentEngineApp(
     app=adk_app,

@@ -1,14 +1,14 @@
 {
-  "eval_set_id": "basic_eval",
-  "name": "Basic Agent Evaluation",
-  "description": "Sample evaluation set for testing core agent functionality. Customize these cases based on your DESIGN_SPEC.md.",
+  "eval_set_id": "sow_eval",
+  "name": "SOW Generator Evaluation",
+  "description": "Evaluation set for the SOW Generator agent. Tests discovery, content generation quality, tool usage, and document pipeline.",
   "eval_cases": [
     {
-      "eval_id": "greeting",
+      "eval_id": "sow_discovery_guided",
       "conversation": [
         {
           "user_content": {
-            "parts": [{"text": "Hello, what can you help me with?"}]
+            "parts": [{"text": "Preciso criar uma SOW para um projeto de modernização de dados no Google Cloud. O cliente é a Acme Corp, projeto de DAF."}]
           }
         }
       ],
@@ -19,11 +19,81 @@
       }
     },
     {
-      "eval_id": "weather_query",
+      "eval_id": "sow_discovery_with_details",
       "conversation": [
         {
           "user_content": {
-            "parts": [{"text": "What's the weather like in San Francisco?"}]
+            "parts": [{"text": "Quero criar uma SOW DAF para a empresa TechNova. O projeto é uma plataforma de analytics usando BigQuery, Dataflow e Looker. Vamos migrar dados do SAP ERP e Salesforce para um data lake no Cloud Storage, processar com Dataflow e servir dashboards no Looker. O time do parceiro terá 1 arquiteto de dados, 2 engenheiros de dados e 1 PM. Duração de 12 semanas em 3 fases: discovery, build, deploy. NFRs: 99.9% SLA, latência < 2s nos dashboards, dados atualizados a cada 4 horas."}]
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "app",
+        "user_id": "eval_user",
+        "state": {}
+      }
+    },
+    {
+      "eval_id": "sow_psf_funding",
+      "conversation": [
+        {
+          "user_content": {
+            "parts": [{"text": "Preciso de uma SOW PSF para a GlobalBank. Projeto de GenAI para atendimento ao cliente usando Vertex AI, Dialogflow CX e Agent Engine. Budget de consumo de $15k/mês no GCP."}]
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "app",
+        "user_id": "eval_user",
+        "state": {}
+      }
+    },
+    {
+      "eval_id": "sow_scope_clarification",
+      "conversation": [
+        {
+          "user_content": {
+            "parts": [{"text": "Crie uma SOW para migração de banco de dados Oracle para Cloud SQL. Cliente: MegaRetail. DAF."}]
+          }
+        },
+        {
+          "user_content": {
+            "parts": [{"text": "São 5 bancos Oracle, total de 2TB. Precisamos manter compatibilidade com as aplicações Java existentes. O time do cliente vai fornecer acesso VPN. Não inclua migração de aplicações, apenas banco de dados."}]
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "app",
+        "user_id": "eval_user",
+        "state": {}
+      }
+    },
+    {
+      "eval_id": "sow_off_topic_rejection",
+      "conversation": [
+        {
+          "user_content": {
+            "parts": [{"text": "Me ajude a criar um plano de marketing para o produto da empresa."}]
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "app",
+        "user_id": "eval_user",
+        "state": {}
+      }
+    },
+    {
+      "eval_id": "validate_tool_usage",
+      "conversation": [
+        {
+          "user_content": {
+            "parts": [{"text": "Quero gerar uma SOW. Cliente: DataCorp. Projeto DAF. Modernização de pipelines de dados com Cloud Composer, Dataflow e BigQuery. Time: 1 arquiteto, 2 engenheiros, 1 PM. 10 semanas, 3 fases. NFRs: pipelines processam 1M registros/hora, SLA 99.5%, retry automático em falhas."}]
+          }
+        },
+        {
+          "user_content": {
+            "parts": [{"text": "Sim, pode prosseguir com a geração do conteúdo."}]
           }
         }
       ],

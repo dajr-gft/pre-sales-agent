@@ -11,6 +11,7 @@ from google.adk.tools.agent_tool import AgentTool
 from google.adk.tools.google_search_tool import GoogleSearchTool
 from google.genai import types
 
+from .callbacks import after_tool_callback, before_tool_callback
 from .config import config
 from .prompts import build_instruction
 from .shared.logging_config import setup_logging
@@ -18,6 +19,7 @@ from .tools.sow.generate_architecture_diagram import (
     generate_architecture_diagram,
 )
 from .tools.sow.generate_sow_document import generate_sow_document
+from .tools.sow.validate_sow_content import validate_sow_content
 
 # --- Bootstrap ---
 setup_logging(level=config.log_level, json_output=config.log_json)
@@ -57,6 +59,7 @@ _TOOLS = [
     pre_sales_skill_toolset,
     load_artifacts,
     generate_architecture_diagram,
+    validate_sow_content,
     generate_sow_document,
     AgentTool(agent=google_search_agent),
 ]
@@ -74,6 +77,8 @@ root_agent = Agent(
     ),
     instruction=build_instruction(company_name=config.company_name),
     tools=_TOOLS,
+    before_tool_callback=before_tool_callback,
+    after_tool_callback=after_tool_callback,
     generate_content_config=types.GenerateContentConfig(
         temperature=config.temperature,
         thinking_config=types.ThinkingConfig(
