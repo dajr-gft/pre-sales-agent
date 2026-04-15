@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import os
 import re
 import tempfile
@@ -9,24 +8,28 @@ import time
 from pathlib import Path
 from typing import Any
 
+import structlog
 from docx.shared import Mm
 from docxtpl import DocxTemplate, InlineImage
 from google.adk.tools import ToolContext
 from google.genai import types as genai_types
 
+from ...shared.errors import safe_tool
+from ...shared.types import ToolError, ToolSuccess
 from ._sow_helpers import load_logo, validate_quality_gates
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
-_DOCUMENT_PATH_KEY = 'sow_document_path'
-_TEMPLATE_DIR = Path(__file__).parent / 'templates'
-_TEMPLATE_FILENAME = 'SOW_Template.docx'
-_PARTNER_LOGO_FILENAME = 'gft_logo.png'
+_DOCUMENT_PATH_KEY = "sow_document_path"
+_TEMPLATE_DIR = Path(__file__).parent / "templates"
+_TEMPLATE_FILENAME = "SOW_Template.docx"
+_PARTNER_LOGO_FILENAME = "gft_logo.png"
 
 _PARTNER_LOGO_WIDTH_MM = 41
 _CUSTOMER_LOGO_WIDTH_MM = 43
 
 
+@safe_tool
 async def generate_sow_document(
     sow_data: str,
     tool_context: ToolContext = None,
@@ -118,58 +121,66 @@ async def generate_sow_document(
     try:
         data = json.loads(sow_data)
     except json.JSONDecodeError as e:
-        logger.error('generate_sow_document: invalid JSON | error=%s', str(e))
-        return {'error': f'Dados inválidos (JSON inválido): {str(e)}'}
+        return ToolError(
+            status="error",
+            error=f"Dados inválidos (JSON inválido): {e}",
+            retryable=False,
+            tool="generate_sow_document",
+            suggestion="Verifique a formatação JSON e tente novamente.",
+        )
 
     _apply_defaults(data)
     _auto_derive_fields(data)
 
     required_fields = [
-        'partner_name',
-        'customer_name',
-        'project_title',
-        'executive_summary',
-        'functional_requirements',
-        'non_functional_requirements',
-        'architecture_components',
-        'architecture_integrations',
-        'activity_phases',
-        'deliverables',
-        'timeline',
-        'partner_roles',
-        'customer_roles',
+        "partner_name",
+        "customer_name",
+        "project_title",
+        "executive_summary",
+        "functional_requirements",
+        "non_functional_requirements",
+        "architecture_components",
+        "architecture_integrations",
+        "activity_phases",
+        "deliverables",
+        "timeline",
+        "partner_roles",
+        "customer_roles",
     ]
     missing = [f for f in required_fields if not data.get(f)]
     if missing:
-        logger.error(
-            'generate_sow_document: missing required fields | fields=%s',
-            ', '.join(missing),
+        logger.error("missing_required_fields", fields=missing)
+        return ToolError(
+            status="error",
+            error=f"Campos obrigatórios ausentes no JSON: {', '.join(missing)}",
+            retryable=False,
+            tool="generate_sow_document",
+            suggestion="Preencha todos os campos obrigatórios antes de gerar o documento.",
         )
-        return {
-            'error': f'Campos obrigatórios ausentes no JSON: {", ".join(missing)}'
-        }
 
     quality_errors = validate_quality_gates(data)
     if quality_errors:
-        logger.error(
-            'generate_sow_document: quality gates failed | errors=%s',
-            '; '.join(quality_errors),
+        logger.error("quality_gates_failed", errors=quality_errors)
+        return ToolError(
+            status="error",
+            error=(
+                "O conteúdo não atinge os mínimos de qualidade. "
+                "Corrija e chame a tool novamente:\n"
+                + "\n".join(f"- {e}" for e in quality_errors)
+            ),
+            retryable=True,
+            tool="generate_sow_document",
+            suggestion="Gere mais conteúdo para atingir os mínimos de qualidade.",
         )
-        return {
-            'error': (
-                'O conteúdo não atinge os mínimos de qualidade. '
-                'Corrija e chame a tool novamente:\n'
-                + '\n'.join(f'- {e}' for e in quality_errors)
-            )
-        }
 
     template_path = _TEMPLATE_DIR / _TEMPLATE_FILENAME
     if not template_path.exists():
-        logger.error(
-            'generate_sow_document: template not found | path=%s',
-            template_path,
+        return ToolError(
+            status="error",
+            error=f"Template SOW não encontrado em: {template_path}",
+            retryable=False,
+            tool="generate_sow_document",
         )
-        return {'error': f'Template SOW não encontrado em: {template_path}'}
 
     customer_logo_tempfile: Path | None = None
     diagram_tempfile: Path | None = None
@@ -178,54 +189,48 @@ async def generate_sow_document(
         doc = DocxTemplate(str(template_path))
 
         partner_logo_path = _TEMPLATE_DIR / _PARTNER_LOGO_FILENAME
-        data['partner_logo'] = load_logo(
-            doc, partner_logo_path, 'partner', _PARTNER_LOGO_WIDTH_MM
+        data["partner_logo"] = load_logo(
+            doc, partner_logo_path, "partner", _PARTNER_LOGO_WIDTH_MM
         )
 
-        # Customer logo: filename comes directly from the LLM in sow_data,
-        # passed by the model after seeing the upload marker in the conversation.
-        customer_logo_filename = data.get('customer_logo_filename')
+        customer_logo_filename = data.get("customer_logo_filename")
         customer_logo_tempfile = await _load_artifact_to_tempfile(
-            tool_context, customer_logo_filename, 'customer logo'
+            tool_context, customer_logo_filename, "customer logo"
         )
         if customer_logo_tempfile:
-            data['customer_logo'] = load_logo(
+            data["customer_logo"] = load_logo(
                 doc,
                 customer_logo_tempfile,
-                'customer',
+                "customer",
                 _CUSTOMER_LOGO_WIDTH_MM,
             )
         else:
-            data['customer_logo'] = '[Customer Logo]'
+            data["customer_logo"] = "[Customer Logo]"
 
-        # Architecture diagram: filename comes from session state, written by
-        # the generate_architecture_diagram tool earlier in the same session.
         diagram_filename = (
-            tool_context.state.get('architecture_diagram_artifact')
+            tool_context.state.get("architecture_diagram_artifact")
             if tool_context
             else None
         )
         diagram_tempfile = await _load_artifact_to_tempfile(
-            tool_context, diagram_filename, 'diagram'
+            tool_context, diagram_filename, "diagram"
         )
         if diagram_tempfile:
-            data['architecture_diagram'] = InlineImage(
+            data["architecture_diagram"] = InlineImage(
                 doc, str(diagram_tempfile), width=Mm(150)
             )
-        elif not data.get('architecture_diagram'):
-            data[
-                'architecture_diagram'
-            ] = '[Architecture Diagram — to be generated]'
+        elif not data.get("architecture_diagram"):
+            data["architecture_diagram"] = "[Architecture Diagram — to be generated]"
 
         doc.render(data, autoescape=True)
 
-        output_dir = Path(tempfile.gettempdir()) / 'sow_documents'
+        output_dir = Path(tempfile.gettempdir()) / "sow_documents"
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        raw_title = data.get('project_title', 'SOW')
-        safe_title = re.sub(r'[^a-zA-Z0-9]+', '_', raw_title).strip('_')[:20]
+        raw_title = data.get("project_title", "SOW")
+        safe_title = re.sub(r"[^a-zA-Z0-9]+", "_", raw_title).strip("_")[:20]
         timestamp = str(int(time.time()))[-6:]
-        artifact_filename = f'SOW_{safe_title}_{timestamp}.docx'
+        artifact_filename = f"SOW_{safe_title}_{timestamp}.docx"
         output_path = str(output_dir / artifact_filename)
 
         doc.save(output_path)
@@ -233,65 +238,54 @@ async def generate_sow_document(
         if tool_context:
             tool_context.state[_DOCUMENT_PATH_KEY] = output_path
             try:
-                with open(output_path, 'rb') as f:
+                with open(output_path, "rb") as f:
                     docx_bytes = f.read()
 
                 artifact = genai_types.Part.from_bytes(
                     data=docx_bytes,
-                    mime_type='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                    mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 )
-                version = await tool_context.save_artifact(
-                    artifact_filename, artifact
-                )
+                version = await tool_context.save_artifact(artifact_filename, artifact)
                 logger.info(
-                    'generate_sow_document: artifact saved | filename=%s | version=%s',
-                    artifact_filename,
-                    version,
+                    "artifact_saved",
+                    filename=artifact_filename,
+                    version=version,
                 )
             except Exception as artifact_err:
                 logger.error(
-                    'generate_sow_document: ARTIFACT SAVE FAILED | error=%s | type=%s',
-                    str(artifact_err),
-                    type(artifact_err).__name__,
+                    "artifact_save_failed",
+                    error=str(artifact_err),
+                    error_type=type(artifact_err).__name__,
                 )
 
-        logger.info(
-            'generate_sow_document: document generated | path=%s',
-            output_path,
-        )
+        logger.info("document_generated", path=output_path)
 
-        return {
-            'status': 'success',
-            'message': (
-                'O documento SOW foi gerado com sucesso e está disponível '
-                'para download como artefato.'
-            ),
-            'document_path': output_path,
-            'artifact_filename': artifact_filename,
-        }
-
-    except Exception as e:
-        logger.error(
-            'generate_sow_document: failed | error=%s | type=%s',
-            str(e),
-            type(e).__name__,
+        return ToolSuccess(
+            status="success",
+            data={
+                "message": (
+                    "O documento SOW foi gerado com sucesso e está disponível "
+                    "para download como artefato."
+                ),
+                "document_path": output_path,
+                "artifact_filename": artifact_filename,
+            },
         )
-        return {'error': f'Falha ao gerar o documento SOW: {str(e)}'}
 
     finally:
         for tmp, label in [
-            (customer_logo_tempfile, 'customer logo'),
-            (diagram_tempfile, 'diagram'),
+            (customer_logo_tempfile, "customer logo"),
+            (diagram_tempfile, "diagram"),
         ]:
             if tmp and tmp.exists():
                 try:
                     tmp.unlink()
                 except Exception as cleanup_err:
                     logger.warning(
-                        'generate_sow_document: failed to clean up %s tempfile | path=%s | error=%s',
-                        label,
-                        tmp,
-                        str(cleanup_err),
+                        "cleanup_failed",
+                        label=label,
+                        path=str(tmp),
+                        error=str(cleanup_err),
                     )
 
 
@@ -300,20 +294,7 @@ async def _load_artifact_to_tempfile(
     artifact_filename: str | None,
     label: str,
 ) -> Path | None:
-    """Load an artifact by filename and write its bytes to a tempfile.
-
-    The tempfile is short-lived: it lives only inside this function call,
-    in the same instance that handles the request. The persistent copy
-    lives in the artifact service (GCS in production).
-
-    Args:
-        tool_context: ADK ToolContext (may be None).
-        artifact_filename: Name of the artifact to load. None/empty → no-op.
-        label: Human-readable label for logging.
-
-    Returns:
-        Path to the tempfile with the artifact bytes, or None on failure.
-    """
+    """Load an artifact by filename and write its bytes to a tempfile."""
     if not tool_context or not artifact_filename:
         return None
 
@@ -322,120 +303,116 @@ async def _load_artifact_to_tempfile(
 
         if not (part and part.inline_data and part.inline_data.data):
             logger.warning(
-                '_load_artifact_to_tempfile: %s artifact empty | filename=%s',
-                label,
-                artifact_filename,
+                "artifact_empty",
+                label=label,
+                filename=artifact_filename,
             )
             return None
 
-        ext = Path(artifact_filename).suffix or '.png'
+        ext = Path(artifact_filename).suffix or ".png"
         fd, tempfile_path = tempfile.mkstemp(suffix=ext)
         os.close(fd)
         tmp = Path(tempfile_path)
         tmp.write_bytes(part.inline_data.data)
         logger.info(
-            '_load_artifact_to_tempfile: %s loaded | filename=%s | size=%d',
-            label,
-            artifact_filename,
-            len(part.inline_data.data),
+            "artifact_loaded",
+            label=label,
+            filename=artifact_filename,
+            size=len(part.inline_data.data),
         )
         return tmp
 
     except Exception as err:
         logger.warning(
-            '_load_artifact_to_tempfile: %s failed | filename=%s | error=%s',
-            label,
-            artifact_filename,
-            str(err),
+            "artifact_load_failed",
+            label=label,
+            filename=artifact_filename,
+            error=str(err),
         )
         return None
 
 
 def _apply_defaults(data: dict) -> None:
     """Apply default values to optional fields."""
-    data['organization_term'] = data.get('organization_term', 'phases')
-    if len(data.get('organization_term', '').split()) > 2:
+    data["organization_term"] = data.get("organization_term", "phases")
+    if len(data.get("organization_term", "").split()) > 2:
         logger.warning(
-            'generate_sow_document: organization_term was invalid, defaulting to "phases"'
+            "invalid_organization_term",
+            value=data["organization_term"],
         )
-        data['organization_term'] = 'phases'
+        data["organization_term"] = "phases"
 
-    valid_engagement = {'project', 'pilot', 'poc', 'assessment', 'workshop'}
-    eng = data.get('engagement_type', 'project').lower()
+    valid_engagement = {"project", "pilot", "poc", "assessment", "workshop"}
+    eng = data.get("engagement_type", "project").lower()
     if eng not in valid_engagement:
-        logger.warning(
-            'generate_sow_document: engagement_type "%s" invalid, defaulting to "project"',
-            eng,
-        )
-        data['engagement_type'] = 'project'
+        logger.warning("invalid_engagement_type", value=eng)
+        data["engagement_type"] = "project"
 
-    data.setdefault('taxes_included', True)
-    data.setdefault('non_commit_psf', False)
-    data.setdefault('key_engagement_details', [])
-    data.setdefault('technology_stack', [])
-    data.setdefault('milestones', [])
-    data.setdefault('risks', [])
-    data.setdefault('architecture_diagram', '')
+    data.setdefault("taxes_included", True)
+    data.setdefault("non_commit_psf", False)
+    data.setdefault("key_engagement_details", [])
+    data.setdefault("technology_stack", [])
+    data.setdefault("milestones", [])
+    data.setdefault("risks", [])
+    data.setdefault("architecture_diagram", "")
 
-    cp_raw = data.get('consumption_plan')
-    if isinstance(cp_raw, dict) and 'rows' in cp_raw and 'services' in cp_raw:
+    cp_raw = data.get("consumption_plan")
+    if isinstance(cp_raw, dict) and "rows" in cp_raw and "services" in cp_raw:
         processed_rows = []
-        for row in cp_raw.get('rows', []):
+        for row in cp_raw.get("rows", []):
             new_row = dict(row)
-            if 'values' in new_row:
-                new_row['costs'] = new_row.pop('values')
-            elif 'costs' not in new_row:
-                new_row['costs'] = []
+            if "values" in new_row:
+                new_row["costs"] = new_row.pop("values")
+            elif "costs" not in new_row:
+                new_row["costs"] = []
             processed_rows.append(new_row)
-        cp_raw['rows'] = processed_rows
-        data['consumption_plan_table'] = cp_raw
-        data['consumption_plan'] = ''
+        cp_raw["rows"] = processed_rows
+        data["consumption_plan_table"] = cp_raw
+        data["consumption_plan"] = ""
     elif isinstance(cp_raw, str) and cp_raw.strip():
-        data['consumption_plan_table'] = None
-        data['consumption_plan'] = cp_raw
+        data["consumption_plan_table"] = None
+        data["consumption_plan"] = cp_raw
     else:
-        data['consumption_plan_table'] = None
-        data['consumption_plan'] = ''
+        data["consumption_plan_table"] = None
+        data["consumption_plan"] = ""
 
 
 def _auto_derive_fields(data: dict) -> None:
     """Auto-derive fields that can be inferred from other fields."""
-    if not data.get('activities') and data.get('activity_phases'):
-        data['activities'] = [
-            phase.get('name', '') for phase in data['activity_phases']
+    if not data.get("activities") and data.get("activity_phases"):
+        data["activities"] = [
+            phase.get("name", "") for phase in data["activity_phases"]
         ]
 
-    if not data.get('funding_type_short') and data.get('funding_type'):
-        ft = data['funding_type'].upper()
-        if 'PSF' in ft or 'PARTNER' in ft:
-            data['funding_type_short'] = 'PSF'
-        elif 'DAF' in ft or 'ACCELERATION' in ft:
-            data['funding_type_short'] = 'DAF'
+    if not data.get("funding_type_short") and data.get("funding_type"):
+        ft = data["funding_type"].upper()
+        if "PSF" in ft or "PARTNER" in ft:
+            data["funding_type_short"] = "PSF"
+        elif "DAF" in ft or "ACCELERATION" in ft:
+            data["funding_type_short"] = "DAF"
         else:
-            data['funding_type_short'] = 'DAF'
+            data["funding_type_short"] = "DAF"
 
-    if not data.get('technology_stack') and data.get(
-        'architecture_components'
-    ):
-        data['technology_stack'] = [
-            {'service': comp.get('name', ''), 'purpose': comp.get('role', '')}
-            for comp in data['architecture_components']
+    if not data.get("technology_stack") and data.get("architecture_components"):
+        data["technology_stack"] = [
+            {"service": comp.get("name", ""), "purpose": comp.get("role", "")}
+            for comp in data["architecture_components"]
         ]
 
-    if not data.get('key_engagement_details'):
-        data['key_engagement_details'] = [
+    if not data.get("key_engagement_details"):
+        data["key_engagement_details"] = [
             {
-                'label': 'Partner',
-                'value': data.get('partner_name', '[Partner]'),
+                "label": "Partner",
+                "value": data.get("partner_name", "[Partner]"),
             },
             {
-                'label': 'Customer',
-                'value': data.get('customer_name', '[Customer]'),
+                "label": "Customer",
+                "value": data.get("customer_name", "[Customer]"),
             },
             {
-                'label': 'Effective Date',
-                'value': data.get('project_start_date', 'TBD'),
+                "label": "Effective Date",
+                "value": data.get("project_start_date", "TBD"),
             },
-            {'label': 'Service Delivery', 'value': 'Remote'},
-            {'label': 'Pricing Model', 'value': 'Fixed Fee'},
+            {"label": "Service Delivery", "value": "Remote"},
+            {"label": "Pricing Model", "value": "Fixed Fee"},
         ]

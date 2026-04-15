@@ -1,7 +1,7 @@
 [project]
 name = "pre-sales"
 version = "0.1.0"
-description = ""
+description = "Pre-Sales Assistant agent with SOW generation capabilities"
 authors = [
     {name = "Your Name", email = "your@email.com"},
 ]
@@ -15,6 +15,8 @@ dependencies = [
     "python-docx>=1.2.0,<2.0.0",
     "docxtpl>=0.20.2,<1.0.0",
     "diagrams>=0.25.1,<1.0.0",
+    "pydantic-settings>=2.7.0,<3.0.0",
+    "structlog>=24.4.0,<26.0.0",
 ]
 requires-python = ">=3.10,<3.14"
 
@@ -54,7 +56,7 @@ select = [
     "UP", # pyupgrade
     "RUF", # ruff specific rules
 ]
-ignore = ["E501", "C901", "B006"] # ignore line too long, too complex
+ignore = ["E501", "C901", "B006", "UP007"] # ignore line too long, too complex, Union for py310 compat
 
 [tool.ruff.lint.isort]
 known-first-party = ["app", "frontend"]

@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-import logging
 import shutil
 import tempfile
 from pathlib import Path
-from typing import List
+from typing import Any
 
+import structlog
 from google.genai import types as genai_types
 
+from ...shared.errors import safe_tool
+from ...shared.types import ToolError, ToolSuccess
 from ._diagram_models import (
     _DIAGRAMS_AVAILABLE,
     SERVICE_ICON_MAP,
@@ -17,7 +19,7 @@ from ._diagram_models import (
     ensure_node,
 )
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 try:
     from diagrams import Cluster, Diagram, Edge
@@ -25,31 +27,33 @@ try:
 except ImportError:
     pass
 
-_GRAPHVIZ_AVAILABLE = shutil.which('dot') is not None
+_GRAPHVIZ_AVAILABLE = shutil.which("dot") is not None
 if not _GRAPHVIZ_AVAILABLE:
     logger.warning(
-        'generate_architecture_diagram: Graphviz not found in PATH — '
-        'diagram generation will be skipped. Install Graphviz to enable.'
+        "graphviz_not_found",
+        message="Graphviz not found in PATH — diagram generation will be skipped. "
+        "Install Graphviz to enable.",
     )
 
-_DIAGRAM_ARTIFACT_KEY = 'architecture_diagram_artifact'
+_DIAGRAM_ARTIFACT_KEY = "architecture_diagram_artifact"
 
 _DEFAULT_GRAPH_ATTR = {
-    'splines': 'line',
-    'nodesep': '0.8',
-    'ranksep': '1.0',
-    'ratio': 'auto',
-    'fontsize': '14',
+    "splines": "line",
+    "nodesep": "0.8",
+    "ranksep": "1.0",
+    "ratio": "auto",
+    "fontsize": "14",
 }
 
 
+@safe_tool
 async def generate_architecture_diagram(
     title: str,
-    nodes: List[ArchitectureNode],
-    edges: List[ArchitectureEdge],
-    direction: str = 'LR',
+    nodes: list[ArchitectureNode],
+    edges: list[ArchitectureEdge],
+    direction: str = "LR",
     tool_context=None,
-) -> dict:
+) -> dict[str, Any]:
     """Generates a GCP architecture diagram as a PNG image with official service icons.
 
     Call this tool after all technical requirements have been collected and the
@@ -75,57 +79,54 @@ async def generate_architecture_diagram(
     """
     if not _DIAGRAMS_AVAILABLE or not _GRAPHVIZ_AVAILABLE:
         reason = (
-            'diagrams library not installed'
+            "diagrams library not installed"
             if not _DIAGRAMS_AVAILABLE
-            else 'Graphviz not found in PATH'
+            else "Graphviz not found in PATH"
         )
-        logger.warning(
-            'generate_architecture_diagram: skipped — %s',
-            reason,
+        logger.warning("diagram_skipped", reason=reason)
+        return ToolError(
+            status="error",
+            error=f"Geração de diagrama ignorada ({reason}). "
+            f"O documento será gerado com placeholder no lugar do diagrama. "
+            f"No Agent Engine o Graphviz estará disponível via installation_scripts.",
+            retryable=False,
+            tool="generate_architecture_diagram",
+            suggestion="Deploy no Agent Engine para ter Graphviz disponível.",
         )
-        return {
-            'status': 'skipped',
-            'message': (
-                f'Geração de diagrama ignorada ({reason}). '
-                f'O documento será gerado com placeholder no lugar do diagrama. '
-                f'No Agent Engine o Graphviz estará disponível via installation_scripts.'
-            ),
-        }
 
     try:
         nodes = [ensure_node(n) for n in nodes]
     except Exception as parse_err:
-        logger.error(
-            '[DIAGRAM] failed to parse nodes | error=%s | type=%s',
-            str(parse_err),
-            type(parse_err).__name__,
+        logger.error("node_parse_failed", error=str(parse_err))
+        return ToolError(
+            status="error",
+            error=f"Falha ao interpretar os nós do diagrama: {parse_err}",
+            retryable=False,
+            tool="generate_architecture_diagram",
+            suggestion="Verifique se todos os nós possuem id, label e service válidos.",
         )
-        return {
-            'error': f'Falha ao interpretar os nós do diagrama: {parse_err}'
-        }
 
     try:
         edges = [ensure_edge(e) for e in edges]
     except Exception as parse_err:
-        logger.error(
-            '[DIAGRAM] failed to parse edges | error=%s | type=%s',
-            str(parse_err),
-            type(parse_err).__name__,
+        logger.error("edge_parse_failed", error=str(parse_err))
+        return ToolError(
+            status="error",
+            error=f"Falha ao interpretar as conexões do diagrama: {parse_err}",
+            retryable=False,
+            tool="generate_architecture_diagram",
+            suggestion="Verifique se source_id e target_id correspondem a nós existentes.",
         )
-        return {
-            'error': f'Falha ao interpretar as conexões do diagrama: {parse_err}'
-        }
 
-    output_dir = Path(tempfile.gettempdir()) / 'sow_diagrams'
+    output_dir = Path(tempfile.gettempdir()) / "sow_diagrams"
     output_dir.mkdir(parents=True, exist_ok=True)
-    safe_title = title.replace(' ', '_')[:40]
+    safe_title = title.replace(" ", "_")[:40]
     file_base = str(output_dir / safe_title)
-    png_local_path = Path(f'{file_base}.png')
+    png_local_path = Path(f"{file_base}.png")
 
     try:
         clusters: dict[str, list[ArchitectureNode]] = {}
-        unclustered: list[ArchitectureNode] = {}
-        unclustered = []
+        unclustered: list[ArchitectureNode] = []
         for node in nodes:
             if node.cluster:
                 clusters.setdefault(node.cluster, []).append(node)
@@ -137,11 +138,11 @@ async def generate_architecture_diagram(
         )
 
         if max_nodes_in_cluster > 3:
-            final_direction = 'TB'
-        elif direction in ('LR', 'TB'):
+            final_direction = "TB"
+        elif direction in ("LR", "TB"):
             final_direction = direction
         else:
-            final_direction = 'LR'
+            final_direction = "LR"
 
         instantiated: dict[str, object] = {}
 
@@ -167,10 +168,10 @@ async def generate_architecture_diagram(
                 target = instantiated.get(edge.target_id)
                 if not source or not target:
                     logger.warning(
-                        'generate_architecture_diagram: edge skipped — '
-                        'unknown node id | source=%s target=%s',
-                        edge.source_id,
-                        edge.target_id,
+                        "edge_skipped",
+                        source=edge.source_id,
+                        target=edge.target_id,
+                        reason="unknown node id",
                     )
                     continue
                 if edge.label:
@@ -179,62 +180,47 @@ async def generate_architecture_diagram(
                     source >> target
 
         if not png_local_path.exists():
-            logger.error(
-                'generate_architecture_diagram: diagrams library ran but PNG not found at expected path | path=%s',
-                png_local_path,
+            logger.error("png_not_found", path=str(png_local_path))
+            return ToolError(
+                status="error",
+                error="O diagrama foi processado mas o arquivo PNG não foi encontrado.",
+                retryable=True,
+                tool="generate_architecture_diagram",
             )
-            return {
-                'error': 'O diagrama foi processado mas o arquivo PNG não foi encontrado.'
-            }
 
         png_bytes = png_local_path.read_bytes()
-        artifact_filename = f'architecture_diagram_{safe_title}.png'
+        artifact_filename = f"architecture_diagram_{safe_title}.png"
 
         if tool_context:
-            try:
-                artifact = genai_types.Part.from_bytes(
-                    data=png_bytes,
-                    mime_type='image/png',
-                )
-                version = await tool_context.save_artifact(
-                    filename=artifact_filename,
-                    artifact=artifact,
-                )
-                tool_context.state[_DIAGRAM_ARTIFACT_KEY] = artifact_filename
-                logger.info(
-                    'generate_architecture_diagram: artifact saved | filename=%s | version=%s | nodes=%d | edges=%d',
-                    artifact_filename,
-                    version,
-                    len(nodes),
-                    len(edges),
-                )
-            except Exception as save_err:
-                logger.error(
-                    'generate_architecture_diagram: failed to save artifact | error=%s | type=%s',
-                    str(save_err),
-                    type(save_err).__name__,
-                )
-                return {
-                    'error': f'Falha ao salvar o diagrama como artefato: {str(save_err)}'
-                }
+            artifact = genai_types.Part.from_bytes(
+                data=png_bytes,
+                mime_type="image/png",
+            )
+            version = await tool_context.save_artifact(
+                filename=artifact_filename,
+                artifact=artifact,
+            )
+            tool_context.state[_DIAGRAM_ARTIFACT_KEY] = artifact_filename
+            logger.info(
+                "artifact_saved",
+                filename=artifact_filename,
+                version=version,
+                nodes=len(nodes),
+                edges=len(edges),
+            )
         else:
             logger.warning(
-                'generate_architecture_diagram: tool_context is None — diagram NOT persisted as artifact'
+                "artifact_not_persisted",
+                reason="tool_context is None",
             )
 
-        return {
-            'status': 'success',
-            'message': f"Diagrama '{title}' gerado com sucesso.",
-            'artifact_filename': artifact_filename,
-        }
-
-    except Exception as e:
-        logger.error(
-            'generate_architecture_diagram: failed | error=%s | type=%s',
-            str(e),
-            type(e).__name__,
+        return ToolSuccess(
+            status="success",
+            data={
+                "message": f"Diagrama '{title}' gerado com sucesso.",
+                "artifact_filename": artifact_filename,
+            },
         )
-        return {'error': f'Falha ao gerar o diagrama: {str(e)}'}
 
     finally:
         if png_local_path.exists():
@@ -242,7 +228,7 @@ async def generate_architecture_diagram(
                 png_local_path.unlink()
             except Exception as cleanup_err:
                 logger.warning(
-                    'generate_architecture_diagram: failed to clean up local PNG | path=%s | error=%s',
-                    png_local_path,
-                    str(cleanup_err),
+                    "cleanup_failed",
+                    path=str(png_local_path),
+                    error=str(cleanup_err),
                 )

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import logging
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
+import structlog
 from pydantic import BaseModel, Field
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 try:
     from diagrams.gcp.analytics import (
@@ -38,7 +38,7 @@ try:
     _DIAGRAMS_AVAILABLE = True
 except ImportError:
     _DIAGRAMS_AVAILABLE = False
-    logger.warning('_diagram_models: diagrams library not installed')
+    logger.warning("_diagram_models: diagrams library not installed")
 
 
 class GcpServiceEnum(str, Enum):
@@ -49,50 +49,50 @@ class GcpServiceEnum(str, Enum):
     mapped to the closest visual equivalent.
     """
 
-    CLIENT = 'Client/User'
-    USERS = 'Users'
-    ON_PREM_SERVER = 'On-Premises Server'
-    CLOUD_RUN = 'Cloud Run'
-    CLOUD_FUNCTIONS = 'Cloud Functions'
-    GKE = 'Kubernetes Engine'
-    APP_ENGINE = 'App Engine'
-    VERTEX_AI = 'Vertex AI'
-    VERTEX_AI_SEARCH = 'Vertex AI Search'
-    GEMINI = 'Gemini'
-    AGENT_ENGINE = 'Agent Engine'
-    DIALOGFLOW = 'Dialogflow CX'
-    AUTOML = 'AutoML'
-    BIGQUERY = 'BigQuery'
-    DATAFLOW = 'Dataflow'
-    PUBSUB = 'Pub/Sub'
-    COMPOSER = 'Cloud Composer'
-    LOOKER = 'Looker'
-    FIRESTORE = 'Firestore'
-    CLOUD_SQL = 'Cloud SQL'
-    SPANNER = 'Spanner'
-    MEMORYSTORE = 'Memorystore'
-    CLOUD_STORAGE = 'Cloud Storage'
-    API_GATEWAY = 'API Gateway'
-    APIGEE = 'Apigee'
-    LOAD_BALANCER = 'Load Balancer'
-    VPC = 'VPC'
-    CDN = 'CDN'
-    DNS = 'DNS'
-    CLOUD_ARMOR = 'Cloud Armor'
-    IAM = 'IAM'
-    IAP = 'Identity-Aware Proxy'
-    KMS = 'KMS'
-    SECRET_MANAGER = 'Secret Manager'
-    SCC = 'Security Command Center'
-    MONITORING = 'Cloud Monitoring'
-    LOGGING = 'Cloud Logging'
-    CLOUD_BUILD = 'Cloud Build'
-    CLOUD_SCHEDULER = 'Cloud Scheduler'
-    CLOUD_TASKS = 'Cloud Tasks'
-    POSTGRESQL = 'PostgreSQL'
-    MYSQL = 'MySQL'
-    MONGODB = 'MongoDB'
-    GENERIC = 'Generic'
+    CLIENT = "Client/User"
+    USERS = "Users"
+    ON_PREM_SERVER = "On-Premises Server"
+    CLOUD_RUN = "Cloud Run"
+    CLOUD_FUNCTIONS = "Cloud Functions"
+    GKE = "Kubernetes Engine"
+    APP_ENGINE = "App Engine"
+    VERTEX_AI = "Vertex AI"
+    VERTEX_AI_SEARCH = "Vertex AI Search"
+    GEMINI = "Gemini"
+    AGENT_ENGINE = "Agent Engine"
+    DIALOGFLOW = "Dialogflow CX"
+    AUTOML = "AutoML"
+    BIGQUERY = "BigQuery"
+    DATAFLOW = "Dataflow"
+    PUBSUB = "Pub/Sub"
+    COMPOSER = "Cloud Composer"
+    LOOKER = "Looker"
+    FIRESTORE = "Firestore"
+    CLOUD_SQL = "Cloud SQL"
+    SPANNER = "Spanner"
+    MEMORYSTORE = "Memorystore"
+    CLOUD_STORAGE = "Cloud Storage"
+    API_GATEWAY = "API Gateway"
+    APIGEE = "Apigee"
+    LOAD_BALANCER = "Load Balancer"
+    VPC = "VPC"
+    CDN = "CDN"
+    DNS = "DNS"
+    CLOUD_ARMOR = "Cloud Armor"
+    IAM = "IAM"
+    IAP = "Identity-Aware Proxy"
+    KMS = "KMS"
+    SECRET_MANAGER = "Secret Manager"
+    SCC = "Security Command Center"
+    MONITORING = "Cloud Monitoring"
+    LOGGING = "Cloud Logging"
+    CLOUD_BUILD = "Cloud Build"
+    CLOUD_SCHEDULER = "Cloud Scheduler"
+    CLOUD_TASKS = "Cloud Tasks"
+    POSTGRESQL = "PostgreSQL"
+    MYSQL = "MySQL"
+    MONGODB = "MongoDB"
+    GENERIC = "Generic"
 
 
 SERVICE_ICON_MAP = {}
@@ -153,16 +153,16 @@ class ArchitectureNode(BaseModel):
     )
     label: str = Field(
         ...,
-        description='Display name shown below the icon in the diagram.',
+        description="Display name shown below the icon in the diagram.",
     )
     service: GcpServiceEnum = Field(
         ...,
-        description='GCP service — must be one of the allowed enum values.',
+        description="GCP service — must be one of the allowed enum values.",
     )
-    cluster: Optional[str] = Field(
+    cluster: str | None = Field(
         default=None,
         description=(
-            'REQUIRED for enterprise architectures. Group services by network zone or responsibility. '
+            "REQUIRED for enterprise architectures. Group services by network zone or responsibility. "
             "Use standardized names such as: 'Customer Environment', 'Google Cloud (Edge/Security)', "
             "'Google Cloud (Core/Compute)', 'Google Cloud (Data/Storage)', or 'Google Cloud (Networking)'."
         ),
@@ -172,13 +172,13 @@ class ArchitectureNode(BaseModel):
 class ArchitectureEdge(BaseModel):
     source_id: str = Field(
         ...,
-        description='ID of the source node (must match a node id).',
+        description="ID of the source node (must match a node id).",
     )
     target_id: str = Field(
         ...,
-        description='ID of the target node (must match a node id).',
+        description="ID of the target node (must match a node id).",
     )
-    label: Optional[str] = Field(
+    label: str | None = Field(
         default=None,
         description="Optional label on the arrow (e.g., 'REST API', 'gRPC', 'Pub/Sub').",
     )
@@ -190,9 +190,7 @@ def ensure_node(item: Any) -> ArchitectureNode:
         return item
     if isinstance(item, dict):
         return ArchitectureNode(**item)
-    raise TypeError(
-        f'Expected ArchitectureNode or dict, got {type(item).__name__}'
-    )
+    raise TypeError(f"Expected ArchitectureNode or dict, got {type(item).__name__}")
 
 
 def ensure_edge(item: Any) -> ArchitectureEdge:
@@ -201,6 +199,4 @@ def ensure_edge(item: Any) -> ArchitectureEdge:
         return item
     if isinstance(item, dict):
         return ArchitectureEdge(**item)
-    raise TypeError(
-        f'Expected ArchitectureEdge or dict, got {type(item).__name__}'
-    )
+    raise TypeError(f"Expected ArchitectureEdge or dict, got {type(item).__name__}")
