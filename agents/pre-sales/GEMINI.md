@@ -56,3 +56,36 @@ Ask the user: Option A (simple single-project) or Option B (full CI/CD pipeline 
 - **Run Python with `uv`**: `uv run python script.py`. Run `make install` first.
 - **Stop on repeated errors**: If the same error appears 3+ times, fix the root cause instead of retrying.
 - **Terraform conflicts** (Error 409): Use `terraform import` instead of retrying creation.
+
+---
+
+## Project-Specific Rules (pre-sales agent)
+
+### DO NOT use `from __future__ import annotations` in tool files
+
+Files with `@safe_tool` decorator **must not** use `from __future__ import annotations`.
+The decorator wraps the function with `@wraps(func)`, which copies string annotations but
+the wrapper's `__globals__` points to `errors.py`. ADK resolves type hints in that namespace
+and fails to find `ToolContext`, `ArchitectureNode`, etc. — causing `NameError` in production.
+Python 3.10+ supports `list[X]`, `X | Y` natively.
+
+### Tool signatures: simple types only
+
+ADK cannot auto-parse Pydantic models in tool signatures. Use `str` (JSON string) for
+complex parameters and parse with `json.loads()` inside the function.
+
+### Keep validators and quality gates in sync
+
+- `_sow_helpers.py` → `QUALITY_GATES` (hard list minimums)
+- `shared/validators.py` → `ContentValidator` (structural checks)
+Both run as hard gates in `generate_sow_document`. Update both + tests when changing thresholds.
+
+### Template variables need defaults
+
+Every Jinja2 variable in `SOW_Template.docx` must have a default in `_apply_defaults()`.
+Missing defaults cause `UndefinedError` at render time.
+
+### Deployment: use `--display-name=pre-sales-agent`
+
+The existing agent is named `pre-sales-agent`, not `my-agent` (the CLI default).
+Using the wrong name creates a duplicate instead of updating.
