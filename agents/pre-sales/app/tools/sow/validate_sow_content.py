@@ -5,9 +5,6 @@ presenting results for human review. It runs deterministic structural
 checks (ID formats, cross-references, word counts, row counts) and
 returns actionable feedback the agent can fix autonomously.
 """
-
-from __future__ import annotations
-
 import json
 from typing import Any
 
