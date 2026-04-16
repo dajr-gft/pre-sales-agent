@@ -6,7 +6,7 @@ This reference governs how the agent reasons about architecture, selects GCP ser
 
 ## Part 1 — Architectural Thinking Process
 
-Before generating any architecture content or diagram, execute this reasoning sequence. Do NOT skip steps. Do NOT jump directly to listing GCP services.
+Before generating any architecture content or diagram, execute this reasoning sequence in order (Steps 1-5). Do NOT skip steps. Do NOT produce output before completing Step 5 (validation).
 
 ### Step 1 — Identify Architectural Layers
 
@@ -21,7 +21,7 @@ Every enterprise solution has layers. Map the project's requirements to these ca
 | **Data / Storage** | Where is data persisted, cached, or queried? | Firestore, BigQuery, Cloud SQL, Cloud Storage, Memorystore |
 | **Integration** | What external systems are consumed? How? | Customer APIs, third-party services, on-prem systems |
 | **Observability** | How is the system monitored, logged, and alerted? | Cloud Monitoring, Cloud Logging |
-| **Security / Identity** | How are credentials, secrets, and access managed? | IAM, Secret Manager, KMS |
+| **Security / Identity** | How are credentials, secrets, and access managed? | Secret Manager (node), IAM (text only), KMS (text only) |
 
 **Rule:** Every project MUST have at minimum: Entry Point, Compute, Data, and Integration layers. If the project uses AI/ML, that layer is also mandatory. Observability and Security layers should be included for any production-grade architecture — infer them from NFRs if the user didn't mention them explicitly.
 
@@ -31,24 +31,24 @@ For each FR and NFR, identify which architectural component(s) fulfill it:
 
 - FR mentions API consumption → Integration layer node + edge with protocol label
 - FR mentions data persistence → Data layer node with specific GCP service
-- NFR mentions encryption → Security layer (KMS or built-in encryption notation)
-- NFR mentions logging/audit → Observability layer (Cloud Logging)
+- NFR mentions encryption → **Text only** (mention TLS/AES-256 in description and edge labels — not a diagram node)
+- NFR mentions logging/audit → Observability layer node (Cloud Logging)
 - NFR mentions availability/SLA → Compute layer design (serverless vs. managed)
-- NFR mentions access control → Security layer (IAM, service accounts)
+- NFR mentions access control → **Text only** (describe IAM policies in the architecture description — IAM is not a diagram node, it is a policy layer)
 
-**Rule:** If an FR or NFR implies a GCP service that is NOT yet in the architecture, ADD it. The architecture must cover every requirement. Cross-reference the full FR and NFR lists before finalizing.
+**Rule:** If an FR or NFR implies a GCP service that is NOT yet in the architecture, ADD it — as a diagram node if it is a runtime component, or as text-only if it is a policy/configuration layer. Cross-reference the full FR and NFR lists before finalizing.
 
 ### Step 3 — Identify Cross-Cutting Concerns
 
-Cross-cutting concerns are services that touch multiple layers. They must appear in the diagram even if the user never mentioned them:
+Cross-cutting concerns are services that touch multiple layers. They must appear in the **architecture description** even if the user never mentioned them. However, not all cross-cutting concerns become diagram nodes — some are policy layers described only in text:
 
-| Concern | When to include | GCP Service |
-|---|---|---|
-| Logging | Always (any production system) | Cloud Logging |
-| Monitoring | Always (any production system) | Cloud Monitoring |
-| Secret management | When APIs require keys/credentials | Secret Manager |
-| Identity & access | When multiple services communicate | IAM |
-| Encryption at rest | When NFR mentions data security | KMS (or note built-in) |
+| Concern | When to include | GCP Service | In diagram? |
+|---|---|---|---|
+| Logging | Always (any production system) | Cloud Logging | Yes — as node |
+| Monitoring | Always (any production system) | Cloud Monitoring | Yes — as node |
+| Secret management | When APIs require keys/credentials | Secret Manager | Yes — as node |
+| Identity & access | When multiple services communicate | IAM | **No** — text and edge labels only |
+| Encryption at rest | When NFR mentions data security | KMS (or note built-in) | No — text only |
 
 **Rule:** For every external API the solution consumes, ask: "Where are the API credentials stored?" If the answer is not in the architecture → add Secret Manager.
 
@@ -66,17 +66,61 @@ This chain becomes the primary path in the diagram. Secondary flows (monitoring,
 
 **Rule:** The diagram must tell a story. A reader should be able to trace the primary request/response flow from left to right (LR) or top to bottom (TB) without backtracking.
 
+### Step 5 — Validate Before Output
+
+**This step is mandatory. Do NOT produce any architecture output (text, table, or diagram) until all checks below pass.**
+
+After completing Steps 1-4, you have a draft list of nodes, clusters, and edges. Before producing any output, walk through every node and every cluster and answer these questions:
+
+**For EACH node, ask:**
+
+1. **"Is this a runtime component that processes requests, stores data, or transforms information?"**
+   - If YES → keep as diagram node.
+   - If NO (it is a policy, configuration, or encryption layer — e.g., IAM, TLS, AES-256) → remove from diagram. Represent in textual description and/or edge labels only.
+
+2. **"Does this node represent two different systems merged into one?"**
+   - If YES (e.g., a GCP gateway + the external service behind it) → split into 2 separate nodes in their correct clusters.
+   - If NO → keep as single node.
+
+**For EACH cluster assignment, ask:**
+
+3. **"Is this product's infrastructure hosted on Google Cloud?"**
+   - If YES → the node MUST be in the Google Cloud cluster, regardless of who manages or administers it.
+   - If NO (it runs on customer premises or third-party infrastructure) → place in the appropriate external cluster.
+
+**For the diagram as a whole, ask:**
+
+4. **"Can I trace the complete primary data flow from entry point to response?"** → If not, something is missing.
+5. **"Does every edge have a protocol or data label?"** → If not, add labels.
+6. **"Are there any nodes with no edges?"** → If yes, either connect them or remove them.
+
+**If any check fails, fix it before proceeding.** Only after all checks pass, produce the three outputs (textual description, technology stack table, diagram).
+
 ---
 
 ## Part 2 — Diagram Construction Rules
 
 ### Cluster Strategy
 
-Organize nodes into clusters by **responsibility zone**, not by "Google Cloud vs. External":
+Organize nodes into clusters by **responsibility zone**, following Google Cloud's official diagram conventions:
 
 **Mandatory clusters:**
-- One cluster per external environment (e.g., "Banco Safra On-Premises", "Third-Party Services")
-- At least one Google Cloud cluster
+- **Google Cloud Platform** — all GCP services used by the solution (including services managed by the customer like Apigee X, Cloud Build, etc.)
+- **Customer Environment** (or "[Customer Name] On-Premises") — systems running on the customer's own infrastructure: internal portals, legacy servers, proprietary databases, on-prem ERPs
+
+**Optional clusters (use when applicable):**
+- **Third-Party / External** — external services not owned by the customer or GCP: credit bureaus (e.g., Serasa), payment gateways, SaaS products
+- **User / Consumer** — end users, devices, or external API consumers
+
+**Cluster naming conventions (aligned with Google Cloud official guidelines):**
+- Use clear, descriptive names: "Google Cloud Platform", "Customer On-Premises", "Third-Party Services"
+- For customer-specific clusters, prefer the customer name: "Banco Safra — Internal Systems"
+- Avoid generic names like "External" or "Other" — name the environment specifically
+- **Automatic color coding:** The diagram tool auto-detects cluster type from the name and applies Google's official zone colors. Use these keywords in cluster names to trigger the correct color:
+  - "Google Cloud" → blue (#E3F2FD)
+  - "On-Premises" or "Internal" → warm gray (#EFEBE9)
+  - "Third-Party" or "External" → teal (#E0F2F1)
+  - "User" or "Consumer" or "Portal" → white (#FFFFFF)
 
 **Recommended Google Cloud sub-clusters (use when ≥ 6 GCP nodes):**
 - "Google Cloud — Compute & Orchestration"
@@ -89,19 +133,27 @@ Organize nodes into clusters by **responsibility zone**, not by "Google Cloud vs
 
 **When to use sub-clusters:** When there are ≥ 6 GCP nodes. Group by responsibility. Each sub-cluster should have ≥ 2 nodes.
 
+### Cluster Assignment Rule
+
+Assign nodes to clusters based on **where the product runs**, NOT who manages it:
+- **Google Cloud cluster**: ALL GCP products, even if managed by the customer. Examples: Apigee X, Cloud Build, BigQuery, Cloud SQL — these are GCP products regardless of who administers them.
+- **Customer On-Premises / Internal cluster**: Only systems that run on the customer's own infrastructure — legacy servers, internal portals, proprietary databases, on-prem ERPs.
+- **Third-Party cluster**: External services not owned by the customer or GCP — credit bureaus, payment gateways, SaaS products.
+
+**Common mistake:** Placing Apigee in the customer's on-prem cluster because "the customer manages it." Apigee X is a Google Cloud product — it belongs in the GCP cluster. The same applies to Cloud Build, BigQuery, or any GCP service the customer administers.
+
 ### Node Granularity Rules
 
 **Include as separate nodes:**
-- Every GCP service that appears in the Technology Stack table
+- Every GCP service that appears in the Technology Stack table (except IAM — see below)
 - Every external system the solution integrates with
 - Every entry point (user, portal, API consumer)
+- **API Gateway split**: When consuming an external API through a GCP gateway (e.g., Apigee X), create 2 nodes: the gateway in the GCP cluster + the external service in the External cluster. Example: `Apigee X (GCP) → Serasa Experian (External)`. Do NOT merge them into a single node.
 
-**Do NOT include as separate nodes:**
-- IAM (it's a policy layer, not a runtime component) — unless the architecture has a dedicated identity proxy (IAP)
-- Built-in encryption (TLS, AES-256) — mention in edge labels or NFR, not as a node
-- Generic concepts ("Security", "Governance") — use specific services
-
-**Exception:** If IAM, KMS, or Secret Manager are central to the architecture (e.g., the project IS about security infrastructure), include them as nodes.
+**NEVER include as diagram nodes:**
+- **IAM** — it is a policy layer, not a runtime component. It does not process requests, store data, or participate in the data flow. Represent it only in the textual description and optionally in edge labels (e.g., "Auth via IAM"). Creating an IAM node with edges distorts the diagram layout.
+- **Built-in encryption** (TLS, AES-256) — mention in edge labels or NFR, not as a node
+- **Generic concepts** ("Security", "Governance") — use specific services
 
 ### Edge Rules
 
@@ -109,6 +161,33 @@ Organize nodes into clusters by **responsibility zone**, not by "Google Cloud vs
 - For external API consumption, include the version or identifier if known: `REST v3.2`, `API via Apigee`
 - Monitoring/Logging connections: use dashed-style or unlabeled edges to reduce visual noise (the tool does not support dashed edges — use a short label like `logs` or `metrics` instead)
 - **Max edges per node:** If a node has > 5 edges, consider whether it should be decomposed into multiple nodes or whether some edges are implicit (e.g., "everything logs to Cloud Logging" can be noted textually instead of drawn)
+
+### Node Labeling Rules
+
+Each node has two independent fields: `service` (the `GcpServiceEnum`, which selects the icon) and `label` (the text shown under the icon). They serve different purposes — treat them separately.
+
+**The `service` field** selects the icon. Pick the most specific enum available (`CLOUD_RUN`, `FIRESTORE`, `GEMINI`, `APIGEE`, `LOGGING`, `MONITORING`, etc.). Never use `GENERIC` for a GCP service — only for non-GCP systems with no visual match. The icon is what tells the reader *which GCP product* is in play.
+
+**The `label` field** is the project-specific functional role this component plays in THIS architecture — what the component *does for this customer*, not what the product is. The icon already communicates the product; the label communicates the responsibility.
+
+Rules for `label`:
+
+1. **Functional and project-specific.** Name the role, not the product. `Credit Analysis API`, `Opinion Store`, `Audit Trail`, `Session History`, `Credit Bureau API`.
+2. **2–4 words.** Longer labels break the layout.
+3. **Never generic.** Reject `Backend`, `Database`, `Model`, `Logs`, `Gateway`, `API`, `Server`, `Storage` as standalone labels. Generic label = defect. If the functional role is unclear, re-read Phase 1 discovery and the FRs to find what this component actually does for the project.
+4. **Never repeat the service name.** The icon already shows it. `Cloud Run Backend` is wrong. `Credit Analysis API` is right.
+5. **External systems: include the system name and version when known.** `Core Banking API v3.2`, `Serasa Experian Score API`, `BACEN SCR Connector`.
+
+**Pattern:**
+- `service=CLOUD_RUN`, `label="Credit Analysis API"` → icon shows Cloud Run, label shows what it does in this project.
+- `service=FIRESTORE`, `label="Opinion Store"` → icon shows Firestore, label shows what it stores.
+- `service=GEMINI`, `label="Credit Opinion Generator"` → icon shows Gemini, label shows the role.
+
+**Anti-pattern:**
+- `service=CLOUD_RUN`, `label="Backend"` → generic. Defect.
+- `service=FIRESTORE`, `label="Database"` → generic. Defect.
+- `service=GEMINI`, `label="Model"` → generic. Defect.
+- `service=CLOUD_RUN`, `label="Cloud Run Backend API"` → repeats the product name. Defect.
 
 ### Direction Selection
 
@@ -186,7 +265,7 @@ Before finalizing the architecture, verify against this checklist. Check every a
 - [ ] Cloud Monitoring node or textual mention (for any system with SLA NFRs)
 
 ### Required when consuming external APIs
-- [ ] Each external API as a separate node in an external cluster
+- [ ] Each truly external system as a separate node in an external/on-prem cluster (e.g., customer's Core Banking, legacy ERP). Note: if the external API is consumed through a GCP gateway (e.g., Apigee X), the gateway node belongs in the Google Cloud cluster, not the external cluster.
 - [ ] Secret Manager for API credential storage (unless customer manages credentials entirely)
 - [ ] Edge labels showing protocol and version for each integration
 
@@ -219,3 +298,6 @@ Before finalizing the architecture, verify against this checklist. Check every a
 | Hub-and-spoke with > 5 spokes | Unreadable layout | Linearize the primary data flow, branch secondary flows |
 | Edge labels missing | Reader can't understand the integration pattern | Every edge must have a protocol/data label |
 | Architecture description is a bullet list of services | No design reasoning, could be any project | Rewrite as data-flow narrative with justifications |
+| GCP product (e.g., Apigee, Cloud Build, BigQuery) placed in customer on-prem cluster | GCP products run on Google Cloud infrastructure regardless of who manages them | Move to the Google Cloud cluster — on-prem is only for truly on-premises systems |
+| IAM as a standalone node with edges | IAM is a policy layer, not a runtime component — creates visual noise and stretches layout | Remove as node; mention in architecture description or edge labels instead |
+| Generic node labels (`Backend`, `Database`, `Model`, `Gateway`) | Labels must describe the component's role in THIS project, not the product category — the icon already shows the product | Rename to functional role (e.g., `Credit Analysis API`, `Opinion Store`, `Credit Bureau API`) per Part 2 labeling rules |
