@@ -10,6 +10,7 @@ from google.genai import types as genai_types
 
 from ...shared.errors import safe_tool
 from ...shared.types import ToolError, ToolSuccess
+from ._diagram_audit import audit_architecture
 from ._diagram_models import (
     ArchitectureEdge,
     ArchitectureNode,
@@ -383,22 +384,35 @@ async def generate_architecture_diagram(
     title: str,
     nodes: list[ArchitectureNode],
     edges: list[ArchitectureEdge],
+    architecture_description: str,
+    technology_stack: list[dict],
     direction: str = 'LR',
     tool_context=None,
 ) -> dict[str, Any]:
     """Generates a GCP architecture diagram as a PNG image artifact.
 
-    The resulting artifact filename is stored in session state for later
-    use by generate_sow_document.
+    Before rendering, the tool runs a deterministic structural audit
+    against the spec (see architecture-guide.md Part 7). If BLOCKER
+    defects are detected, returns a ToolError — silently revise the
+    offending artifact and retry.
 
     Args:
         title: Title displayed at the top of the diagram.
-        nodes: List of architecture components with service type and optional cluster.
+        nodes: List of architecture components with service type and
+            optional cluster.
         edges: List of connections between components.
-        direction: Diagram layout direction — "LR" (left-to-right) or "TB" (top-to-bottom).
+        architecture_description: Text from sub-step (1b). Used by the
+            audit to cross-check against the Technology Stack table and
+            the diagram spec.
+        technology_stack: Technology Stack table from sub-step (1c), as
+            list of {"service": str, "purpose": str}. Every row must
+            correspond to a GCP node in the diagram.
+        direction: Diagram layout direction — "LR" (left-to-right) or
+            "TB" (top-to-bottom).
 
     Returns:
-        Dict with status, message, and the artifact filename of the generated image.
+        Dict with status, message, and the artifact filename of the
+        generated image.
     """
     if not _D2_AVAILABLE:
         logger.warning('diagram_skipped', reason='D2 not found in PATH')
@@ -455,6 +469,54 @@ async def generate_architecture_diagram(
             retryable=False,
             tool='generate_architecture_diagram',
             suggestion='Verifique se source_id e target_id correspondem a nós existentes.',
+        )
+
+    # ------------------------------------------------------------------
+    # Structural audit (AUD-01..AUD-18) — runs BEFORE rendering.
+    # BLOCKER failures halt rendering and force a revision cycle.
+    # WARNING failures are logged but do not block.
+    # ------------------------------------------------------------------
+    audit = audit_architecture(
+        nodes=nodes,
+        edges=edges,
+        description=architecture_description,
+        technology_stack=technology_stack,
+    )
+
+    if audit.warnings:
+        logger.warning(
+            'architecture_audit_warnings',
+            count=len(audit.warnings),
+            warnings=[
+                f'{w.check_id}: {w.defect}' for w in audit.warnings
+            ],
+        )
+
+    if not audit.passed:
+        logger.error(
+            'architecture_audit_failed',
+            blocker_count=len(audit.blockers),
+            warning_count=len(audit.warnings),
+            blockers=[
+                f'{b.check_id}: {b.defect}' for b in audit.blockers
+            ],
+        )
+        return ToolError(
+            status='error',
+            error=(
+                'A arquitetura proposta possui defeitos estruturais que '
+                'impedem a geração do diagrama. Corrija os pontos abaixo '
+                'e chame a tool novamente:\n\n'
+                + audit.format_defects()
+            ),
+            retryable=True,
+            tool='generate_architecture_diagram',
+            suggestion=(
+                'Revise silenciosamente a descrição, a Technology Stack '
+                'e/ou a spec do diagrama conforme os defeitos listados. '
+                'Não mencione a auditoria, as falhas ou a nova tentativa '
+                'ao usuário.'
+            ),
         )
 
     d2_code = _build_d2_code(nodes, edges, direction, title)
@@ -589,6 +651,7 @@ async def generate_architecture_diagram(
                 nodes=len(nodes),
                 edges=len(edges),
                 size_bytes=len(png_bytes),
+                audit_warnings=len(audit.warnings),
             )
         else:
             logger.warning(
