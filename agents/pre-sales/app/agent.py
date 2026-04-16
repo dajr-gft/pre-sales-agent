@@ -11,6 +11,7 @@ from google.adk.tools.agent_tool import AgentTool
 from google.adk.tools.google_search_tool import GoogleSearchTool
 from google.genai import types
 
+import google.auth
 from .callbacks import after_tool_callback, before_tool_callback
 from .config import config
 from .prompts import build_instruction
@@ -25,10 +26,10 @@ from .tools.sow.validate_sow_content import validate_sow_content
 setup_logging(level=config.LOG_LEVEL, json_output=config.LOG_JSON)
 logger = structlog.get_logger()
 
-project_id = config.resolve_project_id()
+_, project_id = google.auth.default()
 os.environ['GOOGLE_CLOUD_PROJECT'] = project_id
-os.environ['GOOGLE_CLOUD_LOCATION'] = config.LOCATION
-os.environ['GOOGLE_GENAI_USE_VERTEXAI'] = str(config.GOOGLE_GENAI_USE_VERTEXAI)
+os.environ['GOOGLE_CLOUD_LOCATION'] = 'global'
+os.environ['GOOGLE_GENAI_USE_VERTEXAI'] = 'True'
 
 # --- Skills ---
 _SKILLS_DIR = Path(__file__).parent / 'skills'

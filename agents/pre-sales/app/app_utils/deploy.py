@@ -27,9 +27,8 @@ import vertexai
 from google.cloud import resourcemanager_v3
 from google.iam.v1 import iam_policy_pb2, policy_pb2
 from vertexai._genai import _agent_engines_utils
-from vertexai._genai.types import AgentEngine, AgentEngineConfig, IdentityType
+from vertexai._genai.types import AgentEngine, IdentityType
 
-# Suppress google-cloud-storage version compatibility warning
 warnings.filterwarnings(
     'ignore', category=FutureWarning, module='google.cloud.aiplatform'
 )
@@ -115,7 +114,6 @@ def print_deployment_success(
     project: str,
 ) -> None:
     """Print deployment success message with console URL."""
-    # Extract agent engine ID and project number for console URL
     resource_name_parts = remote_agent.api_resource.name.split('/')
     agent_engine_id = resource_name_parts[-1]
     project_number = resource_name_parts[1]
@@ -182,13 +180,13 @@ def setup_agent_identity(client: Any, project: str, display_name: str) -> Any:
 )
 @click.option(
     '--display-name',
-    default='my-adk-agent',
+    default='my-agent',
     help='Display name for the agent engine',
 )
 @click.option(
     '--description',
     default='Simple ReAct agent',
-    help='Description of the agent',
+    help='Descripmy-adk-agentnt',
 )
 @click.option(
     '--source-packages',
@@ -297,19 +295,15 @@ def deploy_agent_engine_app(
     logging.basicConfig(level=logging.INFO)
     logging.getLogger('httpx').setLevel(logging.WARNING)
 
-    # Parse CLI environment variables, secrets, and labels
     env_vars: dict[str, Any] = parse_key_value_pairs(set_env_vars)
     secrets = parse_secrets(set_secrets)
     labels_dict = parse_key_value_pairs(labels)
 
-    # Merge secrets into env_vars (secrets override plain env vars)
     env_vars.update(secrets)  # type: ignore
 
-    # Set deployment-specific environment variables
     env_vars['GOOGLE_CLOUD_REGION'] = location
     env_vars['NUM_WORKERS'] = str(num_workers)
 
-    # Enable telemetry by default for Agent Engine
     env_vars.setdefault('GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY', 'true')
     env_vars.setdefault(
         'OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT', 'true'
@@ -322,13 +316,12 @@ def deploy_agent_engine_app(
         """
     ╔═══════════════════════════════════════════════════════════╗
     ║                                                           ║
-    ║   🤖 DEPLOYING AGENT TO VERTEX AI AGENT ENGINE 🤖         ║
+    ║   🤖 DEPLOYING AGENT TO VERTEX AI AGENT ENGINE 🤖        ║
     ║                                                           ║
     ╚═══════════════════════════════════════════════════════════╝
     """
     )
 
-    # Log deployment parameters
     click.echo('\n📋 Deployment Parameters:')
     params = [
         ('Project', project),
@@ -344,6 +337,7 @@ def deploy_agent_engine_app(
         params.append(('Service Account', service_account))
     if agent_identity:
         params.append(('Agent Identity', 'Enabled (Preview)'))
+
     for name, value in params:
         click.echo(f'  {name}: {value}')
     if env_vars:
@@ -353,8 +347,6 @@ def deploy_agent_engine_app(
 
     source_packages_list = list(source_packages)
 
-    # Initialize vertexai client
-    # Use v1beta1 API when agent identity is enabled (required for identity_type)
     http_options = {'api_version': 'v1beta1'} if agent_identity else None
     client = vertexai.Client(
         project=project,
@@ -363,40 +355,38 @@ def deploy_agent_engine_app(
     )
     vertexai.init(project=project, location=location)
 
-    # Add agent garden labels if configured
-
-    # Dynamically import the agent instance to generate class_methods
     logging.info(f'Importing {entrypoint_module}.{entrypoint_object}')
     module = importlib.import_module(entrypoint_module)
     agent_instance = getattr(module, entrypoint_object)
 
-    # If the agent_instance is a coroutine, await it to get the actual instance
     if inspect.iscoroutine(agent_instance):
         logging.info(f'Detected coroutine, awaiting {entrypoint_object}...')
         agent_instance = asyncio.run(agent_instance)
-    # Generate class methods spec from register_operations
     class_methods_list = generate_class_methods_from_agent(agent_instance)
 
-    config = AgentEngineConfig(
-        display_name=display_name,
-        description=description,
-        source_packages=source_packages_list,
-        entrypoint_module=entrypoint_module,
-        entrypoint_object=entrypoint_object,
-        class_methods=class_methods_list,
-        env_vars=env_vars,
-        service_account=service_account,
-        requirements_file=requirements_file,
-        labels=labels_dict,
-        min_instances=min_instances,
-        max_instances=max_instances,
-        resource_limits={'cpu': cpu, 'memory': memory},
-        container_concurrency=container_concurrency,
-        agent_framework='google-adk',
-        identity_type=IdentityType.AGENT_IDENTITY if agent_identity else None,
-    )
+    config: dict[str, Any] = {
+        'display_name': display_name,
+        'description': description,
+        'source_packages': source_packages_list,
+        'entrypoint_module': entrypoint_module,
+        'entrypoint_object': entrypoint_object,
+        'class_methods': class_methods_list,
+        'env_vars': env_vars,
+        'requirements_file': requirements_file,
+        'labels': labels_dict,
+        'min_instances': min_instances,
+        'max_instances': max_instances,
+        'resource_limits': {'cpu': cpu, 'memory': memory},
+        'container_concurrency': container_concurrency,
+        'agent_framework': 'google-adk',
+    }
 
-    # Check if an agent with this name already exists
+    if service_account:
+        config['service_account'] = service_account
+
+    if agent_identity:
+        config['identity_type'] = IdentityType.AGENT_IDENTITY
+
     existing_agents = list(client.agent_engines.list())
     matching_agents = [
         agent
@@ -404,11 +394,9 @@ def deploy_agent_engine_app(
         if agent.api_resource.display_name == display_name
     ]
 
-    # Setup agent identity on first deployment
     if agent_identity and not matching_agents:
         matching_agents = [setup_agent_identity(client, project, display_name)]
 
-    # Deploy the agent (create or update)
     action = 'Updating' if matching_agents else 'Creating'
     click.echo(
         f'\n🚀 {action} agent: {display_name} (this can take 3-5 minutes)...'
@@ -421,7 +409,6 @@ def deploy_agent_engine_app(
     else:
         remote_agent = client.agent_engines.create(config=config)
 
-    # SDK omits secret_env from the update mask when empty, so clear it explicitly.
     if set_secrets is not None and not secrets and matching_agents:
         clear_op = client.agent_engines._update(
             name=remote_agent.api_resource.name,

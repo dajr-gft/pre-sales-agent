@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import re
 import shutil
 import subprocess
@@ -474,7 +472,7 @@ async def generate_architecture_diagram(
     try:
         try:
             result = subprocess.run(
-                ['d2', '--bundle', '--pad=80', str(d2_file), str(svg_path)],
+                ['d2', '--bundle', str(d2_file), str(svg_path)],
                 capture_output=True,
                 text=True,
                 timeout=60,
