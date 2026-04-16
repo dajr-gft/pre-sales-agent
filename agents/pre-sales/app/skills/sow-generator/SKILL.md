@@ -196,8 +196,9 @@ Cross-reference FRs against Out-of-Scope:
 
 ### Step 1.5 — Validate Content (silent, before presenting to user)
 
-After generating all content in Step 1, call `validate_sow_content` with the assembled JSON.
-- If there are **errors**: fix them silently and re-validate. Do NOT present content with errors.
+After generating all content in Step 1, call `validate_sow_content` with the assembled JSON and `stage="content"`. This tells the validator that architecture and consumption plan are intentionally absent (they are generated later in Step 3) — checks for those sections are skipped.
+
+- If there are **errors**: fix them silently and re-validate with the same `stage="content"` argument. Do NOT present content with errors.
 - If there are **warnings**: note them for your own reference but proceed to review.
 - This step is invisible to the user — never mention validation results unless errors persist after 2 fix attempts.
 
@@ -354,7 +355,7 @@ Ask the user for the customer logo. Convey that PNG or SVG is preferred and that
 **Precondition:** Phase 3 complete (logo collected or skip confirmed).
 
 **Step 1** — Validate and generate the document.
-1. Call `validate_sow_content` with the assembled `sow_data` JSON containing ALL Phase 2 content (from both Step 2 and Step 4 reviews). The architecture diagram and Partner/Customer Overviews were already generated in Phase 2 Step 3.
+1. Call `validate_sow_content` with the assembled `sow_data` JSON containing ALL Phase 2 content (from both Step 2 and Step 4 reviews) and `stage="full"` (or omit the argument — "full" is the default). The architecture diagram and Partner/Customer Overviews were already generated in Phase 2 Step 3.
 2. If errors are returned, fix them and re-validate. Do NOT proceed with errors in place.
 3. Warnings do not block — note them and proceed.
 4. Call `generate_sow_document` with the validated `sow_data` JSON.
