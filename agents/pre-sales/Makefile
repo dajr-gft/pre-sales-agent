@@ -1,12 +1,22 @@
+# ==============================================================================
+# Environment Variables & Detection
+# ==============================================================================
+ifeq ($(OS),Windows_NT)
+    VENV_BIN := .venv/Scripts
+else
+    VENV_BIN := .venv/bin
+endif
 
 # ==============================================================================
 # Installation & Setup
 # ==============================================================================
 
-# Install dependencies using uv package manager
+# Install dependencies using pip
 install:
-	@command -v uv >/dev/null 2>&1 || { echo "uv is not installed. Installing uv..."; curl -LsSf https://astral.sh/uv/0.8.13/install.sh | sh; source $HOME/.local/bin/env; }
-	uv sync
+	@command -v python >/dev/null 2>&1 || { echo "Python is not installed."; exit 1; }
+	@if [ ! -d ".venv" ]; then python -m venv .venv; fi
+	$(VENV_BIN)/pip install --upgrade pip
+	$(VENV_BIN)/pip install -r requirements.txt
 
 # ==============================================================================
 # Playground Targets
@@ -21,54 +31,51 @@ playground:
 	@echo "|                                                                             |"
 	@echo "| 🔍 IMPORTANT: Select the 'app' folder to interact with your agent.          |"
 	@echo "==============================================================================="
-	uv run adk web . --port 8501 --reload_agents
+	$(VENV_BIN)/adk web . --port 8501 --reload_agents
 
 # ==============================================================================
 # Backend Deployment Targets
 # ==============================================================================
 
 # Deploy the agent remotely
-# Usage: make deploy [AGENT_IDENTITY=true] [SECRETS="KEY=SECRET_ID,..."] - Set AGENT_IDENTITY=true to enable per-agent IAM identity (Preview)
 deploy:
-	# Export dependencies to requirements file using uv export.
-	(uv export --no-hashes --no-header --no-dev --no-emit-project --no-annotate > app/app_utils/.requirements.txt 2>/dev/null || \
-	uv export --no-hashes --no-header --no-dev --no-emit-project > app/app_utils/.requirements.txt) && \
-	uv run -m app.app_utils.deploy \
+	# Copy production requirements (without dev deps) for deployment
+	cp requirements.txt app/app_utils/.requirements.txt && \
+	$(VENV_BIN)/python -m app.app_utils.deploy \
 		--source-packages=./app \
+		--source-packages="./startup_scripts" \
 		--entrypoint-module=app.agent_engine_app \
 		--entrypoint-object=agent_engine \
 		--requirements-file=app/app_utils/.requirements.txt \
-		--installation-scripts=installation_scripts/install.sh \
 		$(if $(AGENT_IDENTITY),--agent-identity) \
 		$(if $(filter command line,$(origin SECRETS)),--set-secrets="$(SECRETS)")
 
-# Alias for 'make deploy' for backward compatibility
 backend: deploy
+
+# ==============================================================================
+# Infrastructure Setup
+# ==============================================================================
+
+setup-dev-env:
+	PROJECT_ID=$$(gcloud config get-value project) && \
+	(cd deployment/terraform/dev && terraform init && terraform apply --var-file vars/env.tfvars --var dev_project_id=$$PROJECT_ID --auto-approve)
 
 # ==============================================================================
 # Testing & Code Quality
 # ==============================================================================
 
-# Run unit and integration tests
 test:
-	uv sync --dev
-	uv run pytest tests/unit && uv run pytest tests/integration
+	$(VENV_BIN)/pip install -r requirements-dev.txt
+	$(VENV_BIN)/pytest tests/unit && $(VENV_BIN)/pytest tests/integration
 
-# ==============================================================================
-# Agent Evaluation
-# ==============================================================================
-
-# Run agent evaluation using ADK eval
-# Usage: make eval [EVALSET=tests/eval/evalsets/basic.evalset.json] [EVAL_CONFIG=tests/eval/eval_config.json]
 eval:
 	@echo "==============================================================================="
 	@echo "| Running Agent Evaluation                                                    |"
 	@echo "==============================================================================="
-	uv sync --dev --extra eval
-	uv run adk eval ./app $${EVALSET:-tests/eval/evalsets/basic.evalset.json} \
+	$(VENV_BIN)/pip install -r requirements-dev.txt "google-adk[eval]==1.27.1"
+	$(VENV_BIN)/adk eval ./app $${EVALSET:-tests/eval/evalsets/basic.evalset.json} \
 		$(if $(EVAL_CONFIG),--config_file_path=$(EVAL_CONFIG),$(if $(wildcard tests/eval/eval_config.json),--config_file_path=tests/eval/eval_config.json,))
 
-# Run evaluation with all evalsets
 eval-all:
 	@echo "==============================================================================="
 	@echo "| Running All Evalsets                                                        |"
@@ -81,21 +88,16 @@ eval-all:
 	@echo ""
 	@echo "✅ All evalsets completed"
 
-# Run code quality checks (codespell, ruff, ty)
 lint:
-	uv sync --dev --extra lint
-	uv run codespell
-	uv run ruff check . --diff
-	uv run ruff format . --check --diff
-	uv run ty check .
+	$(VENV_BIN)/pip install -r requirements-dev.txt "ruff>=0.4.6,<1.0.0" "ty>=0.0.1a0" "codespell>=2.2.0,<3.0.0"
+	$(VENV_BIN)/codespell
+	$(VENV_BIN)/ruff check . --diff
+	$(VENV_BIN)/ruff format . --check --diff
+	$(VENV_BIN)/ty check .
 
 # ==============================================================================
 # Gemini Enterprise Integration
 # ==============================================================================
 
-# Register the deployed agent to Gemini Enterprise
-# Usage: make register-gemini-enterprise (interactive - will prompt for required details)
-# For non-interactive use, set env vars: ID or GEMINI_ENTERPRISE_APP_ID (full GE resource name)
-# Optional env vars: GEMINI_DISPLAY_NAME, GEMINI_DESCRIPTION, GEMINI_TOOL_DESCRIPTION, AGENT_ENGINE_ID
 register-gemini-enterprise:
-	@uvx agent-starter-pack@0.41.0 register-gemini-enterprise
+	@pipx run agent-starter-pack==0.41.0 register-gemini-enterprise
