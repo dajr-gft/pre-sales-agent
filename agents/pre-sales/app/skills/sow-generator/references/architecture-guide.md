@@ -88,11 +88,14 @@ After completing Steps 1-4, you have a draft list of nodes, clusters, and edges.
    - If YES → the node MUST be in the Google Cloud cluster, regardless of who manages or administers it.
    - If NO (it runs on customer premises or third-party infrastructure) → place in the appropriate external cluster.
 
+4. **"Is this node an entry point (user, portal, API consumer) sharing a cluster with third-party services (SaaS, payment gateways, credit bureaus)?"**
+   - If YES → separate them. Entry points go in a "User / Consumer" cluster; third-party services go in a "Third-Party Services" cluster. They are never in the same cluster.
+
 **For the diagram as a whole, ask:**
 
-4. **"Can I trace the complete primary data flow from entry point to response?"** → If not, something is missing.
-5. **"Does every edge have a protocol or data label?"** → If not, add labels.
-6. **"Are there any nodes with no edges?"** → If yes, either connect them or remove them.
+5. **"Can I trace the complete primary data flow from entry point to response?"** → If not, something is missing.
+6. **"Does every edge have a protocol or data label?"** → If not, add labels.
+7. **"Are there any nodes with no edges?"** → If yes, either connect them or remove them.
 
 **If any check fails, fix it before proceeding.** Only after all checks pass, produce the three outputs (textual description, technology stack table, diagram).
 
@@ -108,14 +111,16 @@ Organize nodes into clusters by **responsibility zone**, following Google Cloud'
 - **Google Cloud Platform** — all GCP services used by the solution (including services managed by the customer like Apigee X, Cloud Build, etc.)
 - **Customer Environment** (or "[Customer Name] On-Premises") — systems running on the customer's own infrastructure: internal portals, legacy servers, proprietary databases, on-prem ERPs
 
-**Optional clusters (use when applicable):**
-- **Third-Party / External** — external services not owned by the customer or GCP: credit bureaus (e.g., Serasa), payment gateways, SaaS products
-- **User / Consumer** — end users, devices, or external API consumers
+**Conditional clusters (use when the architecture includes the corresponding node type):**
+- **Third-Party / External** — external services not owned by the customer or GCP: SaaS products, payment gateways, credit bureaus, partner APIs
+- **User / Consumer** — end users, devices, portals, mobile apps, or external API consumers that initiate the primary data flow (entry points)
+
+**Cluster separation rule:** Entry points (users, portals, API consumers) and third-party services (SaaS, payment gateways, credit bureaus) serve fundamentally different roles — one initiates the flow, the other is consumed by it. They MUST be in separate clusters, even when both are outside GCP. Never group them in a single "External" cluster.
 
 **Cluster naming conventions (aligned with Google Cloud official guidelines):**
-- Use clear, descriptive names: "Google Cloud Platform", "Customer On-Premises", "Third-Party Services"
-- For customer-specific clusters, prefer the customer name: "Banco Safra — Internal Systems"
-- Avoid generic names like "External" or "Other" — name the environment specifically
+- Use clear, descriptive names: "Google Cloud Platform", "Customer On-Premises", "Third-Party Services", "User Applications"
+- For customer-specific clusters, prefer the customer name: "[Customer Name] — Internal Systems"
+- Avoid generic names like "External" or "Other" — name the environment specifically. "External" as a standalone cluster name is a defect.
 - **Automatic color coding:** The diagram tool auto-detects cluster type from the name and applies Google's official zone colors. Use these keywords in cluster names to trigger the correct color:
   - "Google Cloud" → blue (#E3F2FD)
   - "On-Premises" or "Internal" → warm gray (#EFEBE9)
@@ -138,9 +143,12 @@ Organize nodes into clusters by **responsibility zone**, following Google Cloud'
 Assign nodes to clusters based on **where the product runs**, NOT who manages it:
 - **Google Cloud cluster**: ALL GCP products, even if managed by the customer. Examples: Apigee X, Cloud Build, BigQuery, Cloud SQL — these are GCP products regardless of who administers them.
 - **Customer On-Premises / Internal cluster**: Only systems that run on the customer's own infrastructure — legacy servers, internal portals, proprietary databases, on-prem ERPs.
-- **Third-Party cluster**: External services not owned by the customer or GCP — credit bureaus, payment gateways, SaaS products.
+- **Third-Party cluster**: External services not owned by the customer or GCP — SaaS products, payment gateways, credit bureaus, partner APIs.
+- **User / Consumer cluster**: Entry points that initiate the primary data flow — end-user applications, portals, mobile apps, API consumers. These are the starting nodes of the architecture, not integration targets.
 
-**Common mistake:** Placing Apigee in the customer's on-prem cluster because "the customer manages it." Apigee X is a Google Cloud product — it belongs in the GCP cluster. The same applies to Cloud Build, BigQuery, or any GCP service the customer administers.
+**Common mistake 1:** Placing Apigee in the customer's on-prem cluster because "the customer manages it." Apigee X is a Google Cloud product — it belongs in the GCP cluster. The same applies to Cloud Build, BigQuery, or any GCP service the customer administers.
+
+**Common mistake 2:** Grouping the client application (entry point) in the same cluster as third-party services like payment gateways or credit bureaus. The client initiates the flow; third-party services are consumed by it. They belong in separate clusters ("User Applications" vs. "Third-Party Services"), never in a shared "External" cluster.
 
 ### Node Granularity Rules
 
@@ -148,7 +156,7 @@ Assign nodes to clusters based on **where the product runs**, NOT who manages it
 - Every GCP service that appears in the Technology Stack table (except IAM — see below)
 - Every external system the solution integrates with
 - Every entry point (user, portal, API consumer)
-- **API Gateway split**: When consuming an external API through a GCP gateway (e.g., Apigee X), create 2 nodes: the gateway in the GCP cluster + the external service in the External cluster. Example: `Apigee X (GCP) → Serasa Experian (External)`. Do NOT merge them into a single node.
+- **Gateway split**: When an external service is consumed through a GCP gateway, proxy, or API management layer (e.g., Apigee X, API Gateway, Cloud Endpoints), create 2 nodes: the GCP component in the Google Cloud cluster + the external service in its proper external cluster. Example: `[GCP Gateway] → [External System]` — two nodes, two clusters, one edge between them with the protocol label. Do NOT merge them into a single node, even when the external service is "accessed via" the gateway.
 
 **NEVER include as diagram nodes:**
 - **IAM** — it is a policy layer, not a runtime component. It does not process requests, store data, or participate in the data flow. Represent it only in the textual description and optionally in edge labels (e.g., "Auth via IAM"). Creating an IAM node with edges distorts the diagram layout.
@@ -157,10 +165,28 @@ Assign nodes to clusters based on **where the product runs**, NOT who manages it
 
 ### Edge Rules
 
+Every edge in the diagram corresponds to a data-flow sentence in the architecture description (see Part 3). This section has two layers: **Edge Derivation** (how to turn description sentences into edges) and **Edge Hygiene** (what every edge must have once it exists).
+
+#### Edge Derivation — from description to spec
+
+Re-read the architecture description literally. Build edges by extracting from that text — do not infer edges from how components "typically" interact in reference architectures.
+
+- **One edge per data-flow sentence.** Each sentence that describes data moving between components produces one or more edges (one per hop in that sentence).
+
+- **Honor the hops the description names.** When a sentence routes a call through an intermediary — trigger words include "routed through", "via", "fronted by", "proxied by", "orchestrated by", "published to", "consumed through", "brokered by" — emit one edge per hop. Never a shortcut that bypasses the intermediary.
+  Pattern: description says *"Backend calls System X through Gateway G"* → edges are `Backend → G` and `G → X`. Never `Backend → X`.
+
+- **Honor the hops the description omits.** An intermediary mediates only the flows the description assigns to it, not every integration of its upstream callers. The presence of a gateway, broker, or proxy elsewhere in the description does not make it a mandatory hop everywhere.
+  Pattern: description says *"Backend calls System Y directly"* while *"Backend calls System X through Gateway G"* appears in a different sentence → edges are `Backend → Y` and, separately, `Backend → G` and `G → X`. Do not insert G into the Y flow.
+
+- **Labels come from the description.** Every edge label is the protocol or data mechanism named in the corresponding sentence (`REST API`, `gRPC`, `HTTPS`, `Pub/Sub`, `Batch (CSV)`, `CDC`, `SQL`). If a sentence names no protocol, the protocol is missing from the description — fix the description first, do not invent one in the spec.
+
+#### Edge Hygiene
+
 - Every edge MUST have a label describing the protocol or data type: `REST API`, `gRPC`, `Pub/Sub`, `SQL`, `Batch (CSV)`, `Streaming`, `HTTPS`, etc.
-- For external API consumption, include the version or identifier if known: `REST v3.2`, `API via Apigee`
-- Monitoring/Logging connections: use dashed-style or unlabeled edges to reduce visual noise (the tool does not support dashed edges — use a short label like `logs` or `metrics` instead)
-- **Max edges per node:** If a node has > 5 edges, consider whether it should be decomposed into multiple nodes or whether some edges are implicit (e.g., "everything logs to Cloud Logging" can be noted textually instead of drawn)
+- For external API consumption, include the version or identifier when known: `REST v3.2`, `API via Apigee`.
+- Monitoring/Logging connections: use short functional labels (`logs`, `metrics`) to reduce visual noise — the tool does not support dashed edges.
+- **Max edges per node:** if > 5, consider whether the node should be decomposed into multiple nodes, or whether some edges are cross-cutting and can be noted textually instead of drawn (e.g., "everything logs to Cloud Logging" → single annotation rather than N edges).
 
 ### Node Labeling Rules
 
@@ -176,7 +202,7 @@ Rules for `label`:
 2. **2–4 words.** Longer labels break the layout.
 3. **Never generic.** Reject `Backend`, `Database`, `Model`, `Logs`, `Gateway`, `API`, `Server`, `Storage` as standalone labels. Generic label = defect. If the functional role is unclear, re-read Phase 1 discovery and the FRs to find what this component actually does for the project.
 4. **Never repeat the service name.** The icon already shows it. `Cloud Run Backend` is wrong. `Credit Analysis API` is right.
-5. **External systems: include the system name and version when known.** `Core Banking API v3.2`, `Serasa Experian Score API`, `BACEN SCR Connector`.
+5. **External systems: include the system name and version when known.** Examples across domains: `Salesforce REST API v58`, `SAP S/4HANA ECC`, `Stripe Payments API v2023-10-16`, `Internal CRM Connector`.
 
 **Pattern:**
 - `service=CLOUD_RUN`, `label="Credit Analysis API"` → icon shows Cloud Run, label shows what it does in this project.
@@ -200,7 +226,7 @@ Rules for `label`:
 
 ### Layout Optimization
 
-- **Prefer linear chains** over hub-and-spoke: if the Backend API calls APIs sequentially (or the data flows through them), chain them: `Backend → Core Banking → Backend → Serasa → Backend → AI` rather than `Backend → Core Banking`, `Backend → Serasa`, `Backend → AI`.
+- **Prefer linear chains** over hub-and-spoke: if the backend calls external services sequentially (or data flows through them in order), chain them literally: `Backend → System A → Backend → System B → Backend → AI Service`. This is preferable to three parallel edges `Backend → System A`, `Backend → System B`, `Backend → AI Service`, which suggest parallel calls when the flow is actually sequential.
 - **When hub-and-spoke is unavoidable** (orchestrator truly calls services in parallel), place the hub in the center with spokes radiating out. Use `TB` direction so spokes fan horizontally.
 - **Cross-cutting services** (Monitoring, Logging) go at the bottom or side, connected to the main compute node only — not to every node individually.
 
@@ -217,8 +243,8 @@ The textual architecture description accompanies the diagram. It must:
    - GOOD: "Cloud Run was selected as the compute layer because the solution requires serverless autoscaling to handle variable request volumes (NFR-01: 99.5% availability) without dedicated infrastructure management."
 
 3. **Explain integration patterns**, not just integration targets:
-   - BAD: "The solution integrates with Core Banking."
-   - GOOD: "The solution consumes the Core Banking REST v3.2 API to extract historical financial data. API credentials are stored in Secret Manager and rotated automatically. Responses are validated against a predefined schema before being passed to the AI layer."
+   - BAD: "The solution integrates with the customer's CRM."
+   - GOOD: "The solution consumes the customer's CRM REST API (v4) to extract account records on demand. API credentials are stored in Secret Manager and rotated automatically. Responses are validated against a predefined schema before being passed to the AI layer."
 
 4. **Address cross-cutting concerns** in a dedicated paragraph:
    - "Observability is provided by Cloud Logging for structured audit logs (satisfying FR-09) and Cloud Monitoring for SLA tracking against the 99.5% availability target (NFR-01). All inter-service authentication uses Workload Identity with least-privilege IAM roles (NFR-05)."
@@ -258,14 +284,14 @@ The Technology Stack table must be consistent with the architecture description 
 Before finalizing the architecture, verify against this checklist. Check every applicable item:
 
 ### Always required
-- [ ] At least one Entry Point node (user, portal, system consumer)
+- [ ] At least one Entry Point node (user, portal, system consumer) in its own "User / Consumer" cluster — never grouped with third-party services
 - [ ] At least one Compute node (Cloud Run, GKE, Agent Engine, etc.)
 - [ ] At least one Data/Storage node (Firestore, BigQuery, Cloud SQL, etc.)
 - [ ] Cloud Logging node or textual mention (for any system with audit NFRs)
 - [ ] Cloud Monitoring node or textual mention (for any system with SLA NFRs)
 
 ### Required when consuming external APIs
-- [ ] Each truly external system as a separate node in an external/on-prem cluster (e.g., customer's Core Banking, legacy ERP). Note: if the external API is consumed through a GCP gateway (e.g., Apigee X), the gateway node belongs in the Google Cloud cluster, not the external cluster.
+- [ ] Each truly external system as a separate node in an external/on-prem cluster (e.g., customer's legacy ERP, SaaS product, partner API). Note: if the external API is consumed through a GCP gateway (e.g., Apigee X), the gateway node belongs in the Google Cloud cluster, not the external cluster.
 - [ ] Secret Manager for API credential storage (unless customer manages credentials entirely)
 - [ ] Edge labels showing protocol and version for each integration
 
@@ -301,3 +327,43 @@ Before finalizing the architecture, verify against this checklist. Check every a
 | GCP product (e.g., Apigee, Cloud Build, BigQuery) placed in customer on-prem cluster | GCP products run on Google Cloud infrastructure regardless of who manages them | Move to the Google Cloud cluster — on-prem is only for truly on-premises systems |
 | IAM as a standalone node with edges | IAM is a policy layer, not a runtime component — creates visual noise and stretches layout | Remove as node; mention in architecture description or edge labels instead |
 | Generic node labels (`Backend`, `Database`, `Model`, `Gateway`) | Labels must describe the component's role in THIS project, not the product category — the icon already shows the product | Rename to functional role (e.g., `Credit Analysis API`, `Opinion Store`, `Credit Bureau API`) per Part 2 labeling rules |
+| Shortcut edges that skip an intermediary named in the description | Diagram drifts from the architecture text — reader sees a different integration pattern than what was written | Apply Part 2 → "Edge Derivation": one edge per hop the description names |
+| Intermediary inserted into every external flow (even ones the description sends directly) | Gateway/broker becomes a fantasy hub; diagram contradicts the description | Apply Part 2 → "Edge Derivation": an intermediary mediates only the flows assigned to it in the description |
+| Entry point (user, portal, client app) grouped in the same cluster as third-party services | Conflates flow initiators with integration targets — wrong color, wrong semantics, confusing layout | Separate into "User / Consumer" cluster (white) for entry points and "Third-Party Services" cluster (teal) for consumed services. Never use a shared "External" cluster for both. |
+
+---
+
+## Part 7 — Structural Audit (enforced by tool)
+
+The `generate_architecture_diagram` tool runs a deterministic structural audit against the spec before rendering. The audit is mechanical and invisible — you do not emit an audit block, list, or JSON anywhere in the conversation.
+
+The tool requires four arguments that together form the audit surface: `nodes`, `edges`, `architecture_description` (the text from sub-step 1b), and `technology_stack` (the table from sub-step 1c). Pass all four on every call — the audit cross-checks them against each other.
+
+### Tool behavior
+
+- If all BLOCKER checks pass, the tool returns success and the diagram is rendered.
+- If any BLOCKER check fails, the tool returns a `ToolError` listing the defects. You then:
+  1. Silently revise the offending artifact: (1b) description, (1c) technology stack, or (1d) diagram spec.
+  2. Call `generate_architecture_diagram` again with the corrected arguments.
+  3. Do not mention the audit, the failures, or the retry to the user.
+- WARNING failures are logged but do not block. You do not need to react to them during the conversation.
+- Maximum 3 consecutive retries. If the tool still fails after the third attempt, describe the remaining defects to the user in the conversation language and ask how to proceed.
+
+### What the audit checks
+
+The audit enforces rules from Parts 2–6 mechanically. You do not need to mentally evaluate each check — focus on producing a high-quality description, table, and spec that naturally satisfy those rules. In particular:
+
+- Node labels must be functional and project-specific (Part 2 → Node Labeling Rules).
+- IAM must never appear as a diagram node (Part 2 → Node Granularity Rules).
+- Every edge must have a protocol/data label (Part 2 → Edge Hygiene).
+- Entry points must not share a cluster with third-party services (Part 2 → Cluster Strategy).
+- GCP products must sit in the Google Cloud cluster (Part 2 → Cluster Assignment Rule).
+- Every GCP service mentioned in the description must also appear in the Technology Stack table and as a diagram node (Part 4).
+- At minimum one Entry Point, one Compute, and one Data node must be present (Part 5).
+
+### What NOT to do
+
+- Never write `<architecture_audit>` in any output.
+- Never list check IDs or statuses in the conversation.
+- Never say "All checks passed" or "Running self-audit."
+- If the user asks how the architecture is validated, describe the process conceptually in prose. Do not reproduce any checklist.

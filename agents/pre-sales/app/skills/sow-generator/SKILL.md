@@ -242,7 +242,7 @@ Allow section-specific changes. Regenerate only requested sections.
 ### Step 3 — Generate Architecture (silent)
 
 **Load before starting:**
-- `references/architecture-guide.md` — **Binding rules.** Every rule in this file is mandatory. Execute the thinking process (Part 1), follow all diagram construction rules (Part 2), apply description rules (Part 3), verify Technology Stack consistency (Part 4), check the minimum component checklist (Part 5), and avoid all listed anti-patterns (Part 6). Non-compliance with any rule is a defect.
+- `references/architecture-guide.md` — **Binding rules.** Every rule in this file is mandatory. Execute the thinking process (Part 1), follow all diagram construction rules (Part 2), apply description rules (Part 3), verify Technology Stack consistency (Part 4), check the minimum component checklist (Part 5), and avoid all listed anti-patterns (Part 6). Part 7 describes the structural audit that the `generate_architecture_diagram` tool runs automatically before rendering — non-compliance with any rule surfaces as a tool error.
 - `references/scope-examples.md` — **Quality floor.** Contains Architecture Description and Technology Stack Table patterns for calibration.
 
 Step 3 uses TWO sources of input:
@@ -253,7 +253,7 @@ If the user mentioned a system, data source, or GCP service during Phase 1 that 
 
 #### Section generation order
 
-1. **Architecture Overview**: Execute sub-steps (1a)–(1f) strictly in order. Each sub-step has a completion gate — do not begin the next until the current one is done. Do not call `generate_architecture_diagram` before (1f).
+1. **Architecture Overview**: Execute sub-steps (1a)–(1e) strictly in order. Each sub-step has a completion gate — do not begin the next until the current one is done.
 
    **(1a) Think (silent).** Execute Part 1 Steps 1–5 of `references/architecture-guide.md` using Phase 1 discovery data + the FRs/NFRs approved in Step 2 as input. Produce an internal draft of: layers, components, cluster assignments, primary data flow chain, cross-cutting concerns. Do not emit this draft.
 
@@ -263,32 +263,15 @@ If the user mentioned a system, data source, or GCP service during Phase 1 that 
 
    **(1d) Derive the diagram spec from (1b) — do not use a mental model.** Re-read the description you wrote in (1b) literally. Build the spec by extracting from that text:
 
-   - **Nodes.** One node per proper noun in (1b) that is a system, GCP service, or entry point. For each node:
-     - `service` and `label`: per Part 2 "Node Labeling Rules". Pick the most specific `GcpServiceEnum`; write a functional, project-specific label.
-     - `cluster`: required, per Part 2 "Cluster Strategy" (use auto-detect keywords).
+   - **Nodes.** One node per proper noun in (1b) that is a system, GCP service, or entry point. For each node, apply `references/architecture-guide.md` Part 2 → "Node Labeling Rules" for `service` and `label`, and Part 2 → "Cluster Strategy" for `cluster`.
 
-   - **Edges.** One edge per data-flow sentence in (1b). Extract source, target, and protocol directly from each sentence.
-     - If (1b) says *"requests are routed through Apigee X to Serasa Experian"*, create TWO edges: `Backend → Apigee X` and `Apigee X → Serasa Experian`. Never a direct `Backend → Serasa`.
-     - If (1b) says *"the backend orchestrates extraction from Core Banking"*, the edge is `Backend → Core Banking`, not `Apigee → Core Banking`. Gateways only connect to systems they actually front in the text.
-     - Every edge label must match the protocol named in (1b) (`REST API`, `gRPC`, `HTTPS`, `Pub/Sub`, etc.).
+   - **Edges.** Apply `references/architecture-guide.md` Part 2 → "Edge Rules" (both "Edge Derivation" and "Edge Hygiene"). Key constraints: one edge per data-flow sentence; honor the hops (1b) names AND the hops (1b) omits; labels match protocols named in (1b).
 
-   - **Direction.** Per Part 2 direction table.
+   - **Direction.** Per `references/architecture-guide.md` Part 2 → "Direction Selection".
 
-   **(1e) Validate the spec.** Call `validate_architecture` (agent tool) with the three artifacts:
-   - `architecture_description`: the exact text from (1b)
-   - `technology_stack_table`: the exact Markdown table from (1c)
-   - `diagram_spec`: the JSON spec built in (1d), with `title`, `direction`, `nodes`, `edges`
+   **(1e) Call the tool.** Invoke `generate_architecture_diagram` with the spec from (1d) plus the description from (1b) and the technology stack from (1c) as arguments. The tool runs the structural audit (Part 7) internally before rendering the diagram. The generated PNG renders in the ADK Web UI as an artifact for the user to review in Step 4.
 
-   The validator is the authoritative compliance audit for the architecture. It checks cross-artifact consistency, node labeling, cluster assignment, required/forbidden nodes, edges, and direction against `architecture-guide.md`. It returns a JSON report with `status`, defect counts by severity, and a complete list of defects.
-
-   **Interpret the result:**
-   - `status: "PASS"` → proceed to (1f).
-   - `status: "FAIL"` → fix **every** BLOCKER defect in the report by revising (1b), (1c), or the spec as needed, then call `validate_architecture` again with the corrected artifacts. Do not proceed to (1f) until the validator returns `PASS`. WARNINGs and INFOs do not block progression but should be addressed when cheap to fix.
-   - **Maximum 3 validation attempts.** If after 3 attempts the validator still returns FAIL, stop and report the remaining BLOCKER defects to the user in the conversation language, asking how they want to proceed. Do NOT call `generate_architecture_diagram` with a failing spec.
-
-   **Do not show the validator's JSON output to the user as-is.** It is internal audit data. The user sees the architecture in Step 4, not the compliance report. The only exception is the max-attempts fallback, where you summarize the remaining BLOCKERs in natural language.
-
-   **(1f) Call the tool.** Only after (1e) returns `PASS`, call `generate_architecture_diagram` with the validated spec. The generated PNG renders in the ADK Web UI as an artifact for the user to review in Step 4.
+   If the tool returns a `ToolError` listing structural defects, silently revise the offending artifact — (1b) description, (1c) technology stack, or (1d) diagram spec — and call the tool again. Maximum 3 consecutive retries. Do not mention the audit, the failures, or the retry to the user. See `references/architecture-guide.md` Part 7 for full tool behavior.
 
 2. **Google Cloud Consumption Plan**: Required for PSF, optional for DAF. MUST produce a table in this exact format:
    ```
@@ -325,7 +308,7 @@ Present in the conversation language with COMPLETE content:
 Ask the user to review the architecture, technology stack, consumption plan, and executive summary. Focus exclusively on the review — do NOT mention the logo, document assembly, or any subsequent steps. Example:
 > "Revise o conteúdo acima com atenção. As especificações técnicas estão alinhadas com as suas expectativas, ou você gostaria de alterar, ajustar, remover ou aprofundar algum ponto antes de prosseguirmos?"
 
-Allow section-specific changes. If the user requests changes to the architecture, re-run sub-steps (1b)→(1f): revise the description, table, and spec; re-validate with `validate_architecture`; only then regenerate the diagram.
+Allow section-specific changes. If the user requests changes to the architecture, re-run sub-steps (1b)→(1e): revise the description, table, and spec, and call the tool again.
 
 **DO NOT proceed to Phase 3 until user explicitly approves.**
 
