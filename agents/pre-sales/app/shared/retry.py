@@ -53,7 +53,7 @@ def with_rate_limit_retry(
                             max_delay,
                         )
                     logger.warning(
-                        "retrying",
+                        'retrying',
                         tool=func.__name__,
                         attempt=attempt + 1,
                         max_retries=max_retries,
@@ -81,7 +81,7 @@ def with_rate_limit_retry(
                             max_delay,
                         )
                     logger.warning(
-                        "retrying",
+                        'retrying',
                         tool=func.__name__,
                         attempt=attempt + 1,
                         max_retries=max_retries,

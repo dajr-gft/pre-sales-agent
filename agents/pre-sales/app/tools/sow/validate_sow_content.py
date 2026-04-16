@@ -26,8 +26,8 @@ _validator = ContentValidator()
 @safe_tool
 async def validate_sow_content(
     sow_data: str,
-    funding_type: str = "",
-    stage: str = "full",
+    funding_type: str = '',
+    stage: str = 'full',
     tool_context: ToolContext = None,
 ) -> dict[str, Any]:
     """
@@ -60,22 +60,22 @@ async def validate_sow_content(
         data = json.loads(sow_data)
     except json.JSONDecodeError as e:
         return ToolError(
-            status="error",
-            error=f"Invalid JSON: {e}",
+            status='error',
+            error=f'Invalid JSON: {e}',
             retryable=False,
-            tool="validate_sow_content",
-            suggestion="Fix the JSON syntax and call this tool again.",
+            tool='validate_sow_content',
+            suggestion='Fix the JSON syntax and call this tool again.',
         )
 
     ft = funding_type.strip().upper() if funding_type else None
-    stage_normalized = stage.strip().lower() if stage else "full"
-    if stage_normalized not in ("content", "full"):
-        stage_normalized = "full"
+    stage_normalized = stage.strip().lower() if stage else 'full'
+    if stage_normalized not in ('content', 'full'):
+        stage_normalized = 'full'
 
     result = _validator.validate(data, funding_type=ft, stage=stage_normalized)
 
     logger.info(
-        "sow_validation_completed",
+        'sow_validation_completed',
         passed=result.passed,
         errors=len(result.errors),
         warnings=len(result.warnings),
@@ -85,27 +85,29 @@ async def validate_sow_content(
 
     # Build a concise summary the agent can include in its response.
     if result.passed and not result.warnings:
-        summary = "All structural checks passed — content is ready for user review."
+        summary = (
+            'All structural checks passed — content is ready for user review.'
+        )
     elif result.passed:
         summary = (
-            f"No blocking errors. {len(result.warnings)} warning(s) found — "
-            "consider fixing before presenting to the user:\n"
-            + "\n".join(f"  - {w}" for w in result.warnings)
+            f'No blocking errors. {len(result.warnings)} warning(s) found — '
+            'consider fixing before presenting to the user:\n'
+            + '\n'.join(f'  - {w}' for w in result.warnings)
         )
     else:
         summary = (
-            f"{len(result.errors)} error(s) must be fixed before document generation.\n"
-            + "\n".join(f"  - {e}" for e in result.errors)
+            f'{len(result.errors)} error(s) must be fixed before document generation.\n'
+            + '\n'.join(f'  - {e}' for e in result.errors)
         )
         if result.warnings:
             summary += (
-                f"\n\nAdditionally, {len(result.warnings)} warning(s):\n"
-                + "\n".join(f"  - {w}" for w in result.warnings)
+                f'\n\nAdditionally, {len(result.warnings)} warning(s):\n'
+                + '\n'.join(f'  - {w}' for w in result.warnings)
             )
 
-    result_dict["summary"] = summary
+    result_dict['summary'] = summary
 
     return ToolSuccess(
-        status="success",
+        status='success',
         data=result_dict,
     )
