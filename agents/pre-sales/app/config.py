@@ -13,72 +13,83 @@ class AgentConfig(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_prefix="AGENT_",
-        env_file=".env",
-        env_file_encoding="utf-8",
+        env_prefix='AGENT_',
+        env_file='.env',
+        env_file_encoding='utf-8',
         case_sensitive=False,
+        extra='ignore',
     )
 
-    # GCP -- auto-detected from ADC if not set
-    project_id: str = Field(
-        default="",
-        description="GCP project ID (auto-detected from ADC if empty)",
+    # GCP
+    PROJECT_ID: str = Field(
+        default='',
+        description='GCP project ID (auto-detected from ADC if empty)',
+        alias='GOOGLE_CLOUD_PROJECT'
     )
-    location: str = Field(
-        default="global",
-        description="GCP location for Vertex AI services",
+    LOCATION: str = Field(
+        default='global',
+        description='GCP location for Vertex AI services',
+        alias='GOOGLE_CLOUD_LOCATION'
+    )
+    GOOGLE_GENAI_USE_VERTEXAI: bool = Field(
+        default=True,
+        description='Whether to use Vertex AI for GenAI services',
+    )
+    LOGS_BUCKET_NAME: str = Field(
+        default='',
+        description='GCS Bucket name for logs storage',
     )
 
     # Models
-    gemini_model: str = Field(
-        default="gemini-3.1-pro-preview",
-        description="Primary Gemini model for the root agent",
+    GEMINI_MODEL: str = Field(
+        default='gemini-3.1-pro-preview',
+        description='Primary Gemini model for the root agent',
     )
 
     # Agent identity
-    company_name: str = Field(
-        default="GFT Technologies",
-        description="Partner company name injected into prompts",
+    COMPANY_NAME: str = Field(
+        default='GFT Technologies',
+        description='Partner company name injected into prompts',
     )
 
     # Generation
-    temperature: float = Field(
+    TEMPERATURE: float = Field(
         default=0.2,
         ge=0.0,
         le=2.0,
-        description="LLM temperature for content generation",
+        description='LLM temperature for content generation',
     )
-    thinking_budget: int = Field(
+    THINKING_BUDGET: int = Field(
         default=1024,
         ge=0,
         le=24576,
-        description="Token budget for Gemini thinking mode",
+        description='Token budget for Gemini thinking mode',
     )
 
     # Resilience
-    max_retries: int = Field(
+    MAX_RETRIES: int = Field(
         default=3,
         ge=1,
         le=20,
-        description="Max retry attempts for Gemini HTTP calls",
+        description='Max retry attempts for Gemini HTTP calls',
     )
 
     # Logging
-    log_level: str = Field(
-        default="INFO",
-        description="Logging level (DEBUG, INFO, WARNING, ERROR)",
+    LOG_LEVEL: str = Field(
+        default='INFO',
+        description='Logging level (DEBUG, INFO, WARNING, ERROR)',
     )
-    log_json: bool = Field(
+    LOG_JSON: bool = Field(
         default=True,
-        description="JSON output for Cloud Logging (False for dev console)",
+        description='JSON output for Cloud Logging (False for dev console)',
     )
 
     def resolve_project_id(self) -> str:
         """Return project_id, falling back to ADC if not explicitly set."""
-        if self.project_id:
-            return self.project_id
+        if self.PROJECT_ID:
+            return self.PROJECT_ID
         _, project = google.auth.default()
-        return project or ""
+        return project or ''
 
 
 config = AgentConfig()
