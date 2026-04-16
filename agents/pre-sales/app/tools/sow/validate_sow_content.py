@@ -27,25 +27,26 @@ _validator = ContentValidator()
 async def validate_sow_content(
     sow_data: str,
     funding_type: str = "",
+    stage: str = "full",
     tool_context: ToolContext = None,
 ) -> dict[str, Any]:
     """
     Validates the structural quality of SOW content before presenting
     to the user or generating the final document.
 
-    Call this tool AFTER assembling the full SOW JSON and BEFORE
-    asking the user to review. It catches formatting errors, missing
-    cross-references, and content gaps that can be fixed automatically
-    — saving the user from spotting mechanical issues.
-
-    The same validator runs as a hard gate inside generate_sow_document,
-    so calling this tool first avoids a failed document generation attempt.
+    Call this tool AFTER assembling the SOW JSON and BEFORE asking the
+    user to review. It catches formatting errors, missing cross-references,
+    and content gaps that can be fixed automatically.
 
     Args:
         sow_data: A JSON string containing the SOW sections to validate.
             Accepts the same schema as generate_sow_document.
         funding_type: "PSF" or "DAF". If empty, auto-detected from
             sow_data fields (funding_type_short or funding_type).
+        stage: "content" for Phase 2 Step 1.5 validation (payload has
+            content but no architecture or consumption plan yet).
+            "full" for Phase 4 validation (complete payload before
+            document generation). Default: "full".
 
     Returns:
         A dictionary with:
@@ -67,8 +68,11 @@ async def validate_sow_content(
         )
 
     ft = funding_type.strip().upper() if funding_type else None
+    stage_normalized = stage.strip().lower() if stage else "full"
+    if stage_normalized not in ("content", "full"):
+        stage_normalized = "full"
 
-    result = _validator.validate(data, funding_type=ft or None)
+    result = _validator.validate(data, funding_type=ft, stage=stage_normalized)
 
     logger.info(
         "sow_validation_completed",

@@ -109,25 +109,39 @@ class ContentValidator:
         self,
         data: dict,
         funding_type: str | None = None,
+        stage: Literal['content', 'full'] = 'full',
     ) -> ValidationResult:
+        """Validate SOW content.
+
+        Args:
+            data: Parsed sow_data dict.
+            funding_type: "PSF" or "DAF". Auto-detected from data if None.
+            stage: "content" for Phase 2 Step 1.5 (content-only payload,
+                before architecture and consumption plan are generated).
+                "full" for Phase 4 (complete payload before document generation).
+        """
         result = ValidationResult()
 
         if funding_type is None:
             ft = (
-                data.get("funding_type_short") or data.get("funding_type") or ""
+                data.get('funding_type_short')
+                or data.get('funding_type')
+                or ''
             ).upper()
-            funding_type = "PSF" if "PSF" in ft else "DAF"
+            funding_type = 'PSF' if 'PSF' in ft else 'DAF'
 
         self._validate_fr_format(data, result)
         self._validate_nfr_format(data, result)
-        self._validate_consumption_plan(data, funding_type, result)
         self._validate_role_descriptions(data, result)
-        self._validate_architecture_description(data, result)
         self._validate_assumptions_consequences(data, result)
-        self._validate_timeline_consistency(data, result)
-        self._validate_tech_stack_consistency(data, result)
-        self._validate_deliverable_coverage(data, result)
         self._validate_oos_count(data, result)
+        self._validate_timeline_consistency(data, result)
+        self._validate_deliverable_coverage(data, result)
+
+        if stage == 'full':
+            self._validate_consumption_plan(data, funding_type, result)
+            self._validate_architecture_description(data, result)
+            self._validate_tech_stack_consistency(data, result)
 
         return result
 
