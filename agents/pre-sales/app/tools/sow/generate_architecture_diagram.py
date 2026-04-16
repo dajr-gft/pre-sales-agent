@@ -47,7 +47,13 @@ _CLIENT_KEYWORDS = ['user', 'consumer', 'client', 'portal', 'frontend']
 
 _GCP_KEYWORDS = ['google cloud', 'gcp', 'cloud platform']
 
-_GCP_HUB_KEYWORDS = ['compute', 'orchestration', 'edge', 'integration', 'networking']
+_GCP_HUB_KEYWORDS = [
+    'compute',
+    'orchestration',
+    'edge',
+    'integration',
+    'networking',
+]
 
 _GCP_GROUP_KEYWORDS = {
     'ai': ['ai', 'ml', 'machine learning'],
@@ -57,10 +63,17 @@ _GCP_GROUP_KEYWORDS = {
 }
 
 _INTERNAL_KEYWORDS = [
-    'on-prem', 'on prem', 'internal', 'legacy', 'customer environment',
+    'on-prem',
+    'on prem',
+    'internal',
+    'legacy',
+    'customer environment',
 ]
 _THIRD_PARTY_KEYWORDS = [
-    'third-party', 'third party', 'external', 'saas',
+    'third-party',
+    'third party',
+    'external',
+    'saas',
 ]
 
 
@@ -69,24 +82,52 @@ def _classify_cluster(cluster_name: str) -> dict:
     name_lower = cluster_name.lower()
 
     if any(kw in name_lower for kw in _CLIENT_KEYWORDS):
-        return {'zone': 'clients', 'sub_zone': None, 'original_name': cluster_name}
+        return {
+            'zone': 'clients',
+            'sub_zone': None,
+            'original_name': cluster_name,
+        }
 
     if any(kw in name_lower for kw in _GCP_KEYWORDS):
         for group_key, keywords in _GCP_GROUP_KEYWORDS.items():
             if any(kw in name_lower for kw in keywords):
-                return {'zone': 'gcp', 'sub_zone': group_key, 'original_name': cluster_name}
+                return {
+                    'zone': 'gcp',
+                    'sub_zone': group_key,
+                    'original_name': cluster_name,
+                }
         if any(kw in name_lower for kw in _GCP_HUB_KEYWORDS):
-            return {'zone': 'gcp', 'sub_zone': 'hub', 'original_name': cluster_name}
-        return {'zone': 'gcp', 'sub_zone': 'hub', 'original_name': cluster_name}
+            return {
+                'zone': 'gcp',
+                'sub_zone': 'hub',
+                'original_name': cluster_name,
+            }
+        return {
+            'zone': 'gcp',
+            'sub_zone': 'hub',
+            'original_name': cluster_name,
+        }
 
     if any(kw in name_lower for kw in _INTERNAL_KEYWORDS):
-        return {'zone': 'external', 'sub_zone': 'internal', 'original_name': cluster_name}
+        return {
+            'zone': 'external',
+            'sub_zone': 'internal',
+            'original_name': cluster_name,
+        }
 
     if any(kw in name_lower for kw in _THIRD_PARTY_KEYWORDS):
-        return {'zone': 'external', 'sub_zone': 'third_party', 'original_name': cluster_name}
+        return {
+            'zone': 'external',
+            'sub_zone': 'third_party',
+            'original_name': cluster_name,
+        }
 
     logger.warning('unrecognized_cluster_name', cluster_name=cluster_name)
-    return {'zone': 'external', 'sub_zone': 'third_party', 'original_name': cluster_name}
+    return {
+        'zone': 'external',
+        'sub_zone': 'third_party',
+        'original_name': cluster_name,
+    }
 
 
 def _escape_d2(text: str) -> str:
@@ -198,7 +239,9 @@ def _build_d2_code(
                 raw_name = classification['original_name']
                 for sep in ['—', '-', '–']:
                     if sep in raw_name:
-                        gcp_group_labels[sub_zone] = raw_name.split(sep)[-1].strip()
+                        gcp_group_labels[sub_zone] = raw_name.split(sep)[
+                            -1
+                        ].strip()
                         break
                 else:
                     gcp_group_labels[sub_zone] = sub_zone.title()

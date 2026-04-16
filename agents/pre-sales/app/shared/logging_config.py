@@ -5,7 +5,7 @@ import logging
 import structlog
 
 
-def setup_logging(level: str = "INFO", json_output: bool = True) -> None:
+def setup_logging(level: str = 'INFO', json_output: bool = True) -> None:
     """Configure structlog for Cloud Run / Agent Engine.
 
     - JSON output for production (Cloud Logging compatible).
@@ -15,7 +15,7 @@ def setup_logging(level: str = "INFO", json_output: bool = True) -> None:
     shared_processors = [
         structlog.contextvars.merge_contextvars,
         structlog.processors.add_log_level,
-        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.TimeStamper(fmt='iso'),
         structlog.stdlib.add_logger_name,
     ]
 

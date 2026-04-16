@@ -26,28 +26,28 @@ setup_logging(level=config.LOG_LEVEL, json_output=config.LOG_JSON)
 logger = structlog.get_logger()
 
 project_id = config.resolve_project_id()
-os.environ["GOOGLE_CLOUD_PROJECT"] = project_id
-os.environ["GOOGLE_CLOUD_LOCATION"] = config.LOCATION
-os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = str(config.GOOGLE_GENAI_USE_VERTEXAI)
+os.environ['GOOGLE_CLOUD_PROJECT'] = project_id
+os.environ['GOOGLE_CLOUD_LOCATION'] = config.LOCATION
+os.environ['GOOGLE_GENAI_USE_VERTEXAI'] = str(config.GOOGLE_GENAI_USE_VERTEXAI)
 
 # --- Skills ---
-_SKILLS_DIR = Path(__file__).parent / "skills"
+_SKILLS_DIR = Path(__file__).parent / 'skills'
 
 pre_sales_skill_toolset = skill_toolset.SkillToolset(
     skills=[
-        load_skill_from_dir(_SKILLS_DIR / "sow-generator"),
+        load_skill_from_dir(_SKILLS_DIR / 'sow-generator'),
     ]
 )
 
 # --- Sub-agents ---
 google_search_agent = Agent(
-    name="google_search_agent",
-    description="Searches the web for current and relevant information.",
+    name='google_search_agent',
+    description='Searches the web for current and relevant information.',
     model=Gemini(
         model=config.GEMINI_MODEL,
         retry_options=types.HttpRetryOptions(attempts=config.MAX_RETRIES),
     ),
-    instruction="You are a web search specialist. Search the web and return relevant, factual results.",
+    instruction='You are a web search specialist. Search the web and return relevant, factual results.',
     tools=[GoogleSearchTool()],
     generate_content_config=types.GenerateContentConfig(
         temperature=config.TEMPERATURE,
@@ -66,10 +66,10 @@ _TOOLS = [
 
 # --- Root Agent ---
 root_agent = Agent(
-    name="pre_sales_assistant",
+    name='pre_sales_assistant',
     description=(
-        "Assists the Pre-Sales team with technical and commercial routines, "
-        "including the elaboration of Statements of Work (SOW) and other pre-sales artifacts."
+        'Assists the Pre-Sales team with technical and commercial routines, '
+        'including the elaboration of Statements of Work (SOW) and other pre-sales artifacts.'
     ),
     model=Gemini(
         model=config.GEMINI_MODEL,
@@ -90,11 +90,11 @@ root_agent = Agent(
 
 app = App(
     root_agent=root_agent,
-    name="app",
+    name='app',
 )
 
 logger.info(
-    "agent_initialized",
+    'agent_initialized',
     model=config.GEMINI_MODEL,
     tools=len(_TOOLS),
     thinking_budget=config.THINKING_BUDGET,

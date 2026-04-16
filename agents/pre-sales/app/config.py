@@ -24,12 +24,12 @@ class AgentConfig(BaseSettings):
     PROJECT_ID: str = Field(
         default='',
         description='GCP project ID (auto-detected from ADC if empty)',
-        alias='GOOGLE_CLOUD_PROJECT'
+        alias='GOOGLE_CLOUD_PROJECT',
     )
     LOCATION: str = Field(
         default='global',
         description='GCP location for Vertex AI services',
-        alias='GOOGLE_CLOUD_LOCATION'
+        alias='GOOGLE_CLOUD_LOCATION',
     )
     GOOGLE_GENAI_USE_VERTEXAI: bool = Field(
         default=True,
