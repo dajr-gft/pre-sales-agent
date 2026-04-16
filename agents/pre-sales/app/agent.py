@@ -22,13 +22,13 @@ from .tools.sow.generate_sow_document import generate_sow_document
 from .tools.sow.validate_sow_content import validate_sow_content
 
 # --- Bootstrap ---
-setup_logging(level=config.log_level, json_output=config.log_json)
+setup_logging(level=config.LOG_LEVEL, json_output=config.LOG_JSON)
 logger = structlog.get_logger()
 
 project_id = config.resolve_project_id()
 os.environ["GOOGLE_CLOUD_PROJECT"] = project_id
-os.environ["GOOGLE_CLOUD_LOCATION"] = config.location
-os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "True"
+os.environ["GOOGLE_CLOUD_LOCATION"] = config.LOCATION
+os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = str(config.GOOGLE_GENAI_USE_VERTEXAI)
 
 # --- Skills ---
 _SKILLS_DIR = Path(__file__).parent / "skills"
@@ -44,13 +44,13 @@ google_search_agent = Agent(
     name="google_search_agent",
     description="Searches the web for current and relevant information.",
     model=Gemini(
-        model=config.gemini_model,
-        retry_options=types.HttpRetryOptions(attempts=config.max_retries),
+        model=config.GEMINI_MODEL,
+        retry_options=types.HttpRetryOptions(attempts=config.MAX_RETRIES),
     ),
     instruction="You are a web search specialist. Search the web and return relevant, factual results.",
     tools=[GoogleSearchTool()],
     generate_content_config=types.GenerateContentConfig(
-        temperature=config.temperature,
+        temperature=config.TEMPERATURE,
     ),
 )
 
@@ -72,18 +72,18 @@ root_agent = Agent(
         "including the elaboration of Statements of Work (SOW) and other pre-sales artifacts."
     ),
     model=Gemini(
-        model=config.gemini_model,
-        retry_options=types.HttpRetryOptions(attempts=config.max_retries),
+        model=config.GEMINI_MODEL,
+        retry_options=types.HttpRetryOptions(attempts=config.MAX_RETRIES),
     ),
-    instruction=build_instruction(company_name=config.company_name),
+    instruction=build_instruction(company_name=config.COMPANY_NAME),
     tools=_TOOLS,
     before_tool_callback=before_tool_callback,
     after_tool_callback=after_tool_callback,
     generate_content_config=types.GenerateContentConfig(
-        temperature=config.temperature,
+        temperature=config.TEMPERATURE,
         thinking_config=types.ThinkingConfig(
             include_thoughts=False,
-            thinking_budget=config.thinking_budget,
+            thinking_budget=config.THINKING_BUDGET,
         ),
     ),
 )
@@ -95,8 +95,8 @@ app = App(
 
 logger.info(
     "agent_initialized",
-    model=config.gemini_model,
+    model=config.GEMINI_MODEL,
     tools=len(_TOOLS),
-    thinking_budget=config.thinking_budget,
+    thinking_budget=config.THINKING_BUDGET,
     skills_dir=str(_SKILLS_DIR),
 )
