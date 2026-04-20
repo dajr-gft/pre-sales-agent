@@ -15,7 +15,12 @@ from google.genai import types as genai_types
 from ...shared.errors import safe_tool
 from ...shared.types import ToolError, ToolSuccess
 from ...shared.validators import ContentValidator
-from ._sow_helpers import load_logo, validate_quality_gates
+from ._sow_helpers import (
+    load_logo,
+    sow_data_hash,
+    sow_data_preview,
+    validate_quality_gates,
+)
 
 logger = structlog.get_logger()
 
@@ -119,6 +124,9 @@ async def generate_sow_document(
     Returns:
         A dictionary with status and the file path of the generated document.
     """
+    raw_hash = sow_data_hash(sow_data)
+    logger.info('generate_sow_document_invoked', sow_data_hash=raw_hash)
+
     try:
         data = json.loads(sow_data)
     except json.JSONDecodeError as e:
@@ -150,7 +158,11 @@ async def generate_sow_document(
     ]
     missing = [f for f in required_fields if not data.get(f)]
     if missing:
-        logger.error('missing_required_fields', fields=missing)
+        logger.error(
+            'missing_required_fields',
+            sow_data_hash=raw_hash,
+            fields=missing,
+        )
         return ToolError(
             status='error',
             error=f"Campos obrigatórios ausentes no JSON: {', '.join(missing)}",
@@ -161,7 +173,12 @@ async def generate_sow_document(
 
     quality_errors = validate_quality_gates(data)
     if quality_errors:
-        logger.error('quality_gates_failed', errors=quality_errors)
+        logger.error(
+            'quality_gates_failed',
+            sow_data_hash=raw_hash,
+            errors=quality_errors,
+            sow_data_preview=sow_data_preview(data),
+        )
         return ToolError(
             status='error',
             error=(
@@ -177,11 +194,53 @@ async def generate_sow_document(
     # Structural validation (hard gate — blocks on errors, warns on warnings)
     validation = _content_validator.validate(data)
     if not validation.passed:
+        last_failed_hash = (
+            tool_context.state.get('generate_sow_last_failed_hash')
+            if tool_context
+            else None
+        )
+        is_repeat = last_failed_hash == raw_hash
+
         logger.error(
             'structural_validation_failed',
+            sow_data_hash=raw_hash,
             errors=len(validation.errors),
             warnings=len(validation.warnings),
+            error_details=[str(e) for e in validation.errors],
+            warning_details=[str(w) for w in validation.warnings],
+            is_repeat=is_repeat,
+            sow_data_preview=sow_data_preview(data),
         )
+
+        if tool_context:
+            tool_context.state['generate_sow_last_failed_hash'] = raw_hash
+
+        if is_repeat:
+            return ToolError(
+                status='error',
+                error=(
+                    'PAYLOAD IDÊNTICO DETECTADO: você enviou exatamente o '
+                    'mesmo sow_data duas vezes seguidas sem corrigir o erro '
+                    'anterior. Isso significa que você está regerando o '
+                    'payload a partir do contexto da conversa em vez de '
+                    'editar o payload anterior de forma incremental.\n\n'
+                    'AÇÃO REQUERIDA:\n'
+                    '1. Pegue o payload EXATO que acabou de enviar.\n'
+                    '2. Modifique APENAS o(s) campo(s) citado(s) no erro '
+                    'abaixo.\n'
+                    '3. NÃO reconstrua outras seções — mantenha o resto '
+                    'byte-a-byte idêntico.\n'
+                    '4. Chame a tool novamente com o payload editado.\n\n'
+                    'Erro que permanece não resolvido:\n'
+                    + '\n'.join(f'- {e}' for e in validation.errors)
+                ),
+                retryable=True,
+                tool='generate_sow_document',
+                suggestion=(
+                    'Edite o payload anterior no lugar. Não regenere do zero.'
+                ),
+            )
+
         return ToolError(
             status='error',
             error=(
@@ -198,6 +257,7 @@ async def generate_sow_document(
     if validation.warnings:
         logger.warning(
             'structural_validation_warnings',
+            sow_data_hash=raw_hash,
             count=len(validation.warnings),
             warnings=[str(w) for w in validation.warnings],
         )
@@ -291,7 +351,11 @@ async def generate_sow_document(
                     error_type=type(artifact_err).__name__,
                 )
 
-        logger.info('document_generated', path=output_path)
+        logger.info(
+            'document_generated',
+            sow_data_hash=raw_hash,
+            path=output_path,
+        )
 
         return ToolSuccess(
             status='success',

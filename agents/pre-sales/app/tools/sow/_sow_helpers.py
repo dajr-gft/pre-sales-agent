@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json as _json
 from pathlib import Path
 
 import structlog
@@ -98,3 +100,87 @@ def load_logo(
             str(err),
         )
         return f'[{label.capitalize()} Logo]'
+
+def sow_data_hash(data: dict | str) -> str:
+    """Stable 12-char hash of a sow_data payload for log correlation.
+
+    Normalizes JSON serialization (sort_keys=True) so that logically identical
+    payloads produce identical hashes even if serialized differently by the
+    calling agent.
+
+    Args:
+        data: Either the parsed dict or the raw JSON string.
+
+    Returns:
+        12-char hex prefix of SHA256. Returns 'unhashable' on any error
+        (never raises — diagnostic code must not break the caller).
+    """
+    try:
+        parsed = _json.loads(data) if isinstance(data, str) else data
+        normalized = _json.dumps(parsed, sort_keys=True, ensure_ascii=False)
+        return hashlib.sha256(normalized.encode('utf-8')).hexdigest()[:12]
+    except Exception:
+        return 'unhashable'
+
+
+def sow_data_preview(data: dict | str, max_chars: int = 2000) -> str:
+    """Structural preview of a sow_data payload for failure logs.
+
+    Shows the SHAPE of the payload (top-level keys, list lengths, sampled
+    first item per list, truncated long strings) without dumping full
+    content. Better than a flat truncation for diagnosing structural issues
+    ("which field is malformed?") and reduces incidental content exposure
+    in logs.
+
+    Only call on the failure path — on successful runs the hash alone is
+    enough.
+
+    Args:
+        data: Parsed dict or raw JSON string.
+        max_chars: Hard cap on output length.
+
+    Returns:
+        JSON-formatted preview string. Returns '<preview_failed: ...>' on
+        any error (never raises).
+    """
+    try:
+        parsed = _json.loads(data) if isinstance(data, str) else data
+        if not isinstance(parsed, dict):
+            return f'<not_a_dict: type={type(parsed).__name__}>'
+
+        preview: dict = {}
+        for k, v in parsed.items():
+            if isinstance(v, list):
+                if v:
+                    first = v[0]
+                    if isinstance(first, str):
+                        sample = first[:100] + ('…' if len(first) > 100 else '')
+                    elif isinstance(first, dict):
+                        sample = {
+                            sk: (
+                                (str(sv)[:80] + '…')
+                                if len(str(sv)) > 80
+                                else sv
+                            )
+                            for sk, sv in list(first.items())[:5]
+                        }
+                    else:
+                        sample = first
+                    preview[k] = {'_count': len(v), '_first': sample}
+                else:
+                    preview[k] = {'_count': 0}
+            elif isinstance(v, dict):
+                preview[k] = {'_keys': list(v.keys())[:10]}
+            elif isinstance(v, str):
+                preview[k] = v[:150] + ('…' if len(v) > 150 else '')
+            else:
+                preview[k] = v
+
+        serialized = _json.dumps(
+            preview, ensure_ascii=False, indent=2, default=str
+        )
+        if len(serialized) > max_chars:
+            serialized = serialized[:max_chars] + '…<truncated>'
+        return serialized
+    except Exception as e:
+        return f'<preview_failed: {type(e).__name__}: {e}>'
