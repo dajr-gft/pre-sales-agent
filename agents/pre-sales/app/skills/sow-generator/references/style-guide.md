@@ -43,6 +43,9 @@
 - Numbered table with unique IDs (NFR-01, NFR-02...).
 - Quantifiable targets. Reference specific standards (TLS 1.3, AES-256).
 - Use NFRs to reinforce scope boundaries where applicable.
+- **Consultancy scope rule (non-negotiable):** NFRs describe architectural qualities GFT implements during the engagement — they do NOT commit to production uptime or availability percentages. This rule applies strictly to availability/uptime/SLA phrasings; latency, throughput, accuracy, security standards, and other quantitative targets are unaffected by this rule.
+    - **FORBIDDEN phrasings:** "shall maintain [N]% uptime", "guaranteed availability of [X]%", "SLA of [Y]% availability", "uptime commitment of [Z]%", or any variant that commits Partner to a production availability percentage.
+    - **REQUIRED phrasing for the Reliability pillar:** "The platform shall be architected for high availability using [specific services/patterns — e.g., multi-region Cloud Run deployment, Cloud SQL automatic failover, health checks]. Ongoing availability management remains with the Customer post-handover."
 
 ### Architecture Overview
 See `references/architecture-guide.md` Parts 1-3. All rules there are binding.
@@ -127,6 +130,7 @@ Use "including but not limited to" for broad coverage with named technologies.
 14. **Excluded documentation processing**: Ingestion/preprocessing of customer internal docs
 15. **Excluded revisions post-approval**: Changes to approved deliverables require CR
 16. **Catch-all**: "Any additions, enhancements, or modifications without formally approved Change Request"
+17. **Excluded service-level commitments**: Any guarantee of uptime, availability, or service-level agreements (SLAs) for production workloads. The solution is architected to support the reliability targets informed during discovery, but sustained production availability remains the Customer's responsibility after handover.
 
 ### Change Request Policy
 - Include immediately after Out-of-Scope.
