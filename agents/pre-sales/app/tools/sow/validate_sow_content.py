@@ -14,6 +14,7 @@ from google.adk.tools import ToolContext
 from ...shared.errors import safe_tool
 from ...shared.types import ToolError, ToolSuccess
 from ...shared.validators import ContentValidator
+from ._sow_helpers import sow_data_hash
 
 logger = structlog.get_logger()
 
@@ -53,6 +54,9 @@ async def validate_sow_content(
         - issues: list of {severity, field, message, suggestion}
         - summary: human-readable summary string for the agent to relay.
     """
+    raw_hash = sow_data_hash(sow_data)
+    logger.info('validate_sow_content_invoked', sow_data_hash=raw_hash)
+
     try:
         data = json.loads(sow_data)
     except json.JSONDecodeError as e:
@@ -73,9 +77,14 @@ async def validate_sow_content(
 
     logger.info(
         'sow_validation_completed',
+        sow_data_hash=raw_hash,
+        stage=stage_normalized,
+        funding_type=ft,
         passed=result.passed,
         errors=len(result.errors),
         warnings=len(result.warnings),
+        error_details=[str(e) for e in result.errors],
+        warning_details=[str(w) for w in result.warnings],
     )
 
     result_dict = result.to_dict()

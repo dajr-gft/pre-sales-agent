@@ -194,7 +194,7 @@ class ContentValidator:
     def _validate_consumption_plan(
         self, data: dict, funding_type: str, result: ValidationResult
     ) -> None:
-        cp = data.get('consumption_plan')
+        cp = data.get('consumption_plan_table') or data.get('consumption_plan')
 
         if funding_type == 'PSF' and not cp:
             result.issues.append(
