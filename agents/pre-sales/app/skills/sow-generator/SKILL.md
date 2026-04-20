@@ -69,7 +69,7 @@ Ask: Out-of-scope items, team composition (partner + customer), payment model (s
 #### Block 4 — Intelligent Follow-up (after Block 3, 0-3 rounds)
 
 **Mandatory collection** (always ask if missing):
-1. **Quantitative NFR targets** — latency, SLA%, scalability, accuracy, compliance. These are business decisions that cannot be inferred.
+1. **Quantitative NFR targets** — latency, scalability, accuracy, compliance. These are business decisions that cannot be inferred.
 2. **Known constraints or prerequisites** — Does the customer have any known constraints? (e.g., data residency, compliance requirements, existing GCP organization, VPN/firewall restrictions, team availability windows). These directly shape assumptions and architecture.
 3. **Project timeline expectations** — Desired start date, end date, or duration. Deadlines tied to business events (e.g., "must go live before Q4 campaign").
 
@@ -162,6 +162,8 @@ Cross-reference FRs against Out-of-Scope:
 
 2. **Non-Functional Requirements**: MUST generate at least 5 NFRs aligned with GCP WAF pillars (Security, Reliability, Performance, Operational Excellence, Cost Optimization). Per style-guide.
 
+   **Reliability pillar — consultancy scope rule (non-negotiable):** NFRs describe the resilience architecture GFT delivers (multi-region deployment, automatic failover, health checks, managed service usage) — they do NOT commit to production uptime or availability percentages. Phrasings such as "shall maintain 99.9% uptime", "guaranteed availability of N%", or "SLA of X% availability" are rejected. Use instead: "shall be architected for high availability using [specific services/patterns]; ongoing availability management remains with the Customer post-handover." See `references/style-guide.md` → "Non-Functional Requirements → Consultancy scope rule" for the full FORBIDDEN/REQUIRED phrasing list.
+
 3. **Activities** — Per phase. Every task names specific systems, GCP services, and technical approach. Follow scope-examples good/bad contrast.
 
 4. **Deliverables** — MUST generate at least 10 deliverables. MUST use this structure:
@@ -174,7 +176,9 @@ Cross-reference FRs against Out-of-Scope:
    Include intermediate deliverables (Design Doc, Test Plan, Data Quality Report, UAT Report, Go-Live Runbook, KT docs).
 
 5. **Assumptions & Out-of-Scope**
-   - **Out-of-Scope**: MUST generate 20-30 items covering ALL 16 categories from style-guide. After generating, COUNT — if below 20, add items from uncovered categories until target is met.
+   - **Out-of-Scope**: MUST generate 20-30 items covering ALL 17 categories from style-guide. After generating, COUNT — if below 20, add items from uncovered categories until target is met.
+
+     **Mandatory item (non-negotiable):** at least one Out-of-Scope item MUST explicitly exclude uptime, availability, or service-level agreements (SLAs) for production workloads, framing sustained availability as the Customer's responsibility after handover. This item is required regardless of project type or funding (DAF/PSF). See `references/style-guide.md` → "Out-of-Scope → Category 17" for approved phrasings.
    - **Assumptions**: MUST generate 15-25 items covering ALL 15 categories from style-guide. Every customer-dependent assumption MUST follow this format: "[Customer] must [obligation] [by when]. [Consequence if not met: timeline extension / additional cost / scope reduction]." An assumption without an explicit consequence sentence is incomplete. After generating, COUNT — if below 15, add items from uncovered categories until target is met.
    - **Change Request Policy**: Per style-guide spec.
 

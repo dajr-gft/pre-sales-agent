@@ -95,6 +95,28 @@ APIs, does not build them. The API development responsibility stays with the cus
 **Why it works**: Constrains the technology choices AND defines what happens if
 a deviation is needed (Change Request).
 
+### Good: Reliability as architecture, not availability commitment
+> "NFR05: Reliability: The platform shall be architected for high availability
+> using Cloud Run multi-region deployment across us-central1 and us-east1, Cloud
+> SQL with automatic failover, and health checks on all managed services. Ongoing
+> availability management and production SLA monitoring remain the Customer's
+> responsibility post-handover."
+
+**Why it works**: Describes what Partner IMPLEMENTS (multi-region deployment,
+failover, health checks) and explicitly hands operational responsibility to the
+Customer. No uptime percentage is committed. This is the REQUIRED phrasing
+pattern for the Reliability pillar.
+
+### Bad: Reliability NFR phrased as production service-level commitment
+> "NFR05: Reliability: The platform shall maintain 99.9% uptime and guarantee
+> service availability over a rolling 30-day window."
+
+**Why it fails**: Partner does not operate the platform in production and cannot
+commit to sustained availability. This NFR creates a contractual obligation
+the Partner cannot enforce post-handover. It is a FORBIDDEN phrasing under the
+consultancy scope rule. Rewrite as an architectural quality (see "Good: Reliability
+as architecture" above).
+
 ---
 
 ## Out-of-Scope Patterns
