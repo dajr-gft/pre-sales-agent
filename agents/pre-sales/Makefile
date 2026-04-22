@@ -68,6 +68,13 @@ test:
 	$(VENV_BIN)/pip install -r requirements-dev.txt
 	$(VENV_BIN)/pytest tests/unit && $(VENV_BIN)/pytest tests/integration
 
+test-unit:
+	$(VENV_BIN)/pytest tests/unit
+
+test-cov:
+	$(VENV_BIN)/pip install -r requirements-dev.txt
+	$(VENV_BIN)/pytest tests/unit --cov --cov-report=term-missing --cov-report=html
+
 eval:
 	@echo "==============================================================================="
 	@echo "| Running Agent Evaluation                                                    |"
