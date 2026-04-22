@@ -70,7 +70,7 @@ This chain becomes the primary path in the diagram. Secondary flows (monitoring,
 
 **This step is mandatory. Do NOT produce any architecture output (text, table, or diagram) until all checks below pass.**
 
-After completing Steps 1-4, you have a draft list of nodes, clusters, and edges. Before producing any output, walk through every node and every cluster and answer these questions:
+After completing Steps 1-4, you have a draft list of nodes and edges. Before producing any output, walk through every node and answer these questions:
 
 **For EACH node, ask:**
 
@@ -79,17 +79,15 @@ After completing Steps 1-4, you have a draft list of nodes, clusters, and edges.
    - If NO (it is a policy, configuration, or encryption layer — e.g., IAM, TLS, AES-256) → remove from diagram. Represent in textual description and/or edge labels only.
 
 2. **"Does this node represent two different systems merged into one?"**
-   - If YES (e.g., a GCP gateway + the external service behind it) → split into 2 separate nodes in their correct clusters.
+   - If YES (e.g., a GCP gateway + the external service behind it) → split into 2 separate nodes with appropriate `parent_cluster` each.
    - If NO → keep as single node.
 
-**For EACH cluster assignment, ask:**
-
 3. **"Is this product's infrastructure hosted on Google Cloud?"**
-   - If YES → the node MUST be in the Google Cloud cluster, regardless of who manages or administers it.
-   - If NO (it runs on customer premises or third-party infrastructure) → place in the appropriate external cluster.
+   - If YES → declare `parent_cluster: Google Cloud Platform`, regardless of who manages or administers it.
+   - If NO → declare `parent_cluster: Customer Environment` (on-premises or internal) or `Third-Party Services` (SaaS, partner APIs).
 
-4. **"Is this node an entry point (user, portal, API consumer) sharing a cluster with third-party services (SaaS, payment gateways, credit bureaus)?"**
-   - If YES → separate them. Entry points go in a "User / Consumer" cluster; third-party services go in a "Third-Party Services" cluster. They are never in the same cluster.
+4. **"Is this node an entry point (user, portal, API consumer)?"**
+   - If YES → declare `parent_cluster: User / Consumer`. Entry points are always separate from third-party services.
 
 **For the diagram as a whole, ask:**
 
@@ -103,52 +101,31 @@ After completing Steps 1-4, you have a draft list of nodes, clusters, and edges.
 
 ## Part 2 — Diagram Construction Rules
 
-### Cluster Strategy
+### Cluster Model
 
-Organize nodes into clusters by **responsibility zone**, following Google Cloud's official diagram conventions:
+Each node declares two cluster fields.
 
-**Mandatory clusters:**
-- **Google Cloud Platform** — all GCP services used by the solution (including services managed by the customer like Apigee X, Cloud Build, etc.)
-- **Customer Environment** (or "[Customer Name] On-Premises") — systems running on the customer's own infrastructure: internal portals, legacy servers, proprietary databases, on-prem ERPs
+**`parent_cluster`** — required enum, one of four values:
 
-**Conditional clusters (use when the architecture includes the corresponding node type):**
-- **Third-Party / External** — external services not owned by the customer or GCP: SaaS products, payment gateways, credit bureaus, partner APIs
-- **User / Consumer** — end users, devices, portals, mobile apps, or external API consumers that initiate the primary data flow (entry points)
+| Value | Use for |
+|---|---|
+| `Google Cloud Platform` | ALL GCP products, even when customer-administered (Apigee, Cloud Build, BigQuery remain GCP regardless of who manages them). |
+| `Customer Environment` | On-premises or internal systems running on the customer's own infrastructure. |
+| `Third-Party Services` | SaaS products, payment gateways, credit bureaus, partner APIs. |
+| `User / Consumer` | Entry points that initiate the flow: end users, portals, mobile apps, API consumers. |
 
-**Cluster separation rule:** Entry points (users, portals, API consumers) and third-party services (SaaS, payment gateways, credit bureaus) serve fundamentally different roles — one initiates the flow, the other is consumed by it. They MUST be in separate clusters, even when both are outside GCP. Never group them in a single "External" cluster.
+The tool rejects incoherent service/zone pairs. Vertex AI cannot be placed outside `Google Cloud Platform`, and a `Client/User` service cannot be placed outside `User / Consumer`.
 
-**Cluster naming conventions (aligned with Google Cloud official guidelines):**
-- Use clear, descriptive names: "Google Cloud Platform", "Customer On-Premises", "Third-Party Services", "User Applications"
-- For customer-specific clusters, prefer the customer name: "[Customer Name] — Internal Systems"
-- Avoid generic names like "External" or "Other" — name the environment specifically. "External" as a standalone cluster name is a defect.
-- **Automatic color coding:** The diagram tool auto-detects cluster type from the name and applies Google's official zone colors. Use these keywords in cluster names to trigger the correct color:
-  - "Google Cloud" → blue (#E3F2FD)
-  - "On-Premises" or "Internal" → warm gray (#EFEBE9)
-  - "Third-Party" or "External" → teal (#E0F2F1)
-  - "User" or "Consumer" or "Portal" → white (#FFFFFF)
+**`sub_cluster`** — optional free-form string. Creates a named sub-group rendered as a box inside `parent_cluster`. Leave null when a single top-level zone suffices.
 
-**Recommended Google Cloud sub-clusters (use when ≥ 6 GCP nodes):**
-- "Google Cloud — Compute & Orchestration"
-- "Google Cloud — AI / ML"
-- "Google Cloud — Data & Storage"
-- "Google Cloud — Security & Identity"
-- "Google Cloud — Observability"
+| Inside | When to set | Example labels |
+|---|---|---|
+| `Google Cloud Platform` | ≥ 6 GCP nodes total | `AI / ML`, `Data & Storage`, `Observability`, `Compute & Orchestration`, `Security & Identity` |
+| `Customer Environment` | Multiple distinct internal systems | `Legacy ERP`, `Internal Data Lake`, `Identity Provider` |
+| `Third-Party Services` | Multiple services grouped by category | `Payment Providers`, `Credit Bureaus` |
+| `User / Consumer` | Rare — only when multiple distinct entry-point groups exist | Usually leave null |
 
-**When to use a single Google Cloud cluster:** When the project has ≤ 5 GCP nodes total. Splitting into sub-clusters with 1 node each looks worse than one cluster.
-
-**When to use sub-clusters:** When there are ≥ 6 GCP nodes. Group by responsibility. Each sub-cluster should have ≥ 2 nodes.
-
-### Cluster Assignment Rule
-
-Assign nodes to clusters based on **where the product runs**, NOT who manages it:
-- **Google Cloud cluster**: ALL GCP products, even if managed by the customer. Examples: Apigee X, Cloud Build, BigQuery, Cloud SQL — these are GCP products regardless of who administers them.
-- **Customer On-Premises / Internal cluster**: Only systems that run on the customer's own infrastructure — legacy servers, internal portals, proprietary databases, on-prem ERPs.
-- **Third-Party cluster**: External services not owned by the customer or GCP — SaaS products, payment gateways, credit bureaus, partner APIs.
-- **User / Consumer cluster**: Entry points that initiate the primary data flow — end-user applications, portals, mobile apps, API consumers. These are the starting nodes of the architecture, not integration targets.
-
-**Common mistake 1:** Placing Apigee in the customer's on-prem cluster because "the customer manages it." Apigee X is a Google Cloud product — it belongs in the GCP cluster. The same applies to Cloud Build, BigQuery, or any GCP service the customer administers.
-
-**Common mistake 2:** Grouping the client application (entry point) in the same cluster as third-party services like payment gateways or credit bureaus. The client initiates the flow; third-party services are consumed by it. They belong in separate clusters ("User Applications" vs. "Third-Party Services"), never in a shared "External" cluster.
+Each sub-cluster should have ≥ 2 nodes. A sub-cluster with a single node adds visual noise without value.
 
 ### Node Granularity Rules
 
@@ -156,12 +133,12 @@ Assign nodes to clusters based on **where the product runs**, NOT who manages it
 - Every GCP service that appears in the Technology Stack table (except IAM — see below)
 - Every external system the solution integrates with
 - Every entry point (user, portal, API consumer)
-- **Gateway split**: When an external service is consumed through a GCP gateway, proxy, or API management layer (e.g., Apigee X, API Gateway, Cloud Endpoints), create 2 nodes: the GCP component in the Google Cloud cluster + the external service in its proper external cluster. Example: `[GCP Gateway] → [External System]` — two nodes, two clusters, one edge between them with the protocol label. Do NOT merge them into a single node, even when the external service is "accessed via" the gateway.
+- **Gateway split**: When an external service is consumed through a GCP gateway, proxy, or API management layer (e.g., Apigee X, API Gateway, Cloud Endpoints), create 2 nodes: the GCP component with `parent_cluster: Google Cloud Platform` + the external service with `parent_cluster: Customer Environment` or `Third-Party Services`. Example: `[GCP Gateway] → [External System]` — two nodes, two zones, one edge between them with the protocol label. Do NOT merge them into a single node.
 
 **NEVER include as diagram nodes:**
 - **IAM** — it is a policy layer, not a runtime component. It does not process requests, store data, or participate in the data flow. Represent it only in the textual description and optionally in edge labels (e.g., "Auth via IAM"). Creating an IAM node with edges distorts the diagram layout.
-- **Built-in encryption** (TLS, AES-256) — mention in edge labels or NFR, not as a node
-- **Generic concepts** ("Security", "Governance") — use specific services
+- **Built-in encryption** (TLS, AES-256) — mention in edge labels or NFR, not as a node.
+- **Generic concepts** ("Security", "Governance") — use specific services.
 
 ### Edge Rules
 
@@ -284,14 +261,14 @@ The Technology Stack table must be consistent with the architecture description 
 Before finalizing the architecture, verify against this checklist. Check every applicable item:
 
 ### Always required
-- [ ] At least one Entry Point node (user, portal, system consumer) in its own "User / Consumer" cluster — never grouped with third-party services
+- [ ] At least one Entry Point node (service `Client/User` or `Users`, `parent_cluster: User / Consumer`)
 - [ ] At least one Compute node (Cloud Run, GKE, Agent Engine, etc.)
 - [ ] At least one Data/Storage node (Firestore, BigQuery, Cloud SQL, etc.)
 - [ ] Cloud Logging node or textual mention (for any system with audit NFRs)
 - [ ] Cloud Monitoring node or textual mention (for any system with SLA NFRs)
 
 ### Required when consuming external APIs
-- [ ] Each truly external system as a separate node in an external/on-prem cluster (e.g., customer's legacy ERP, SaaS product, partner API). Note: if the external API is consumed through a GCP gateway (e.g., Apigee X), the gateway node belongs in the Google Cloud cluster, not the external cluster.
+- [ ] Each external system as a separate node with `parent_cluster: Customer Environment` (on-prem/internal) or `Third-Party Services` (SaaS/partner APIs). If the external API is consumed through a GCP gateway (e.g., Apigee X), the gateway node uses `parent_cluster: Google Cloud Platform`.
 - [ ] Secret Manager for API credential storage (unless customer manages credentials entirely)
 - [ ] Edge labels showing protocol and version for each integration
 
@@ -324,12 +301,10 @@ Before finalizing the architecture, verify against this checklist. Check every a
 | Hub-and-spoke with > 5 spokes | Unreadable layout | Linearize the primary data flow, branch secondary flows |
 | Edge labels missing | Reader can't understand the integration pattern | Every edge must have a protocol/data label |
 | Architecture description is a bullet list of services | No design reasoning, could be any project | Rewrite as data-flow narrative with justifications |
-| GCP product (e.g., Apigee, Cloud Build, BigQuery) placed in customer on-prem cluster | GCP products run on Google Cloud infrastructure regardless of who manages them | Move to the Google Cloud cluster — on-prem is only for truly on-premises systems |
 | IAM as a standalone node with edges | IAM is a policy layer, not a runtime component — creates visual noise and stretches layout | Remove as node; mention in architecture description or edge labels instead |
 | Generic node labels (`Backend`, `Database`, `Model`, `Gateway`) | Labels must describe the component's role in THIS project, not the product category — the icon already shows the product | Rename to functional role (e.g., `Credit Analysis API`, `Opinion Store`, `Credit Bureau API`) per Part 2 labeling rules |
 | Shortcut edges that skip an intermediary named in the description | Diagram drifts from the architecture text — reader sees a different integration pattern than what was written | Apply Part 2 → "Edge Derivation": one edge per hop the description names |
 | Intermediary inserted into every external flow (even ones the description sends directly) | Gateway/broker becomes a fantasy hub; diagram contradicts the description | Apply Part 2 → "Edge Derivation": an intermediary mediates only the flows assigned to it in the description |
-| Entry point (user, portal, client app) grouped in the same cluster as third-party services | Conflates flow initiators with integration targets — wrong color, wrong semantics, confusing layout | Separate into "User / Consumer" cluster (white) for entry points and "Third-Party Services" cluster (teal) for consumed services. Never use a shared "External" cluster for both. |
 
 ---
 
@@ -356,8 +331,7 @@ The audit enforces rules from Parts 2–6 mechanically. You do not need to menta
 - Node labels must be functional and project-specific (Part 2 → Node Labeling Rules).
 - IAM must never appear as a diagram node (Part 2 → Node Granularity Rules).
 - Every edge must have a protocol/data label (Part 2 → Edge Hygiene).
-- Entry points must not share a cluster with third-party services (Part 2 → Cluster Strategy).
-- GCP products must sit in the Google Cloud cluster (Part 2 → Cluster Assignment Rule).
+- Every node's `service` must be compatible with its `parent_cluster` (Part 2 → Cluster Model).
 - Every GCP service mentioned in the description must also appear in the Technology Stack table and as a diagram node (Part 4).
 - At minimum one Entry Point, one Compute, and one Data node must be present (Part 5).
 

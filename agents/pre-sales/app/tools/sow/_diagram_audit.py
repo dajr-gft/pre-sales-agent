@@ -1,6 +1,6 @@
 """Deterministic structural audit for architecture diagrams.
 
-Runs the AUD-01..AUD-20 checklist from architecture-guide.md Part 7
+Runs the AUD-01..AUD-19 checklist from architecture-guide.md Part 7
 without invoking any LLM. Returns a structured result the caller can
 surface as a tool error to trigger agent-side revision.
 
@@ -17,6 +17,13 @@ Severity policy (intentional):
 - WARNINGs are used for heuristics over free-form text (description
   parsing, justification detection, external-API credential handling).
   These surface useful signal without risking destructive retries.
+
+Historical note: AUD-08 and AUD-09 performed keyword-based cluster
+classification ("is this cluster name GCP-ish?" / "does it look like a
+third-party bucket?"). Those checks are retired -- the underlying bug
+class is now structurally impossible because `parent_cluster` is a
+closed enum (ClusterZone) and AUD-19 validates the service↔zone pair
+directly against `expected_zones_for()`.
 """
 
 import re
@@ -26,7 +33,9 @@ from typing import Literal
 from ._diagram_models import (
     ArchitectureEdge,
     ArchitectureNode,
+    ClusterZone,
     GcpServiceEnum,
+    expected_zones_for,
 )
 
 Severity = Literal['BLOCKER', 'WARNING']
@@ -198,6 +207,60 @@ def _stack_services_to_enum(
     return result
 
 
+def _format_zone_list(zones: frozenset[ClusterZone]) -> str:
+    """Render a deterministic, comma-separated list of zone display names."""
+    return ', '.join(
+        f"'{z.value}'" for z in sorted(zones, key=lambda z: z.value)
+    )
+
+
+def _aud19_defect_message(node: ArchitectureNode) -> str:
+    """Context-specific explanation for a service↔zone mismatch.
+
+    The generic "invalid zone" message is technically correct but not
+    useful for the LLM to self-correct. Tailoring the message by service
+    category makes the fix obvious on the first retry.
+    """
+    service_name = _service_display_name(node.service)
+    declared = node.parent_cluster.value
+
+    if node.service in _ENTRY_POINT_SERVICES:
+        return (
+            f"Node '{node.id}' is an entry point ({service_name}) but was "
+            f"placed in parent_cluster='{declared}'. Entry points "
+            f"(Client/User, Users) MUST be in 'User / Consumer'."
+        )
+
+    if node.service == GcpServiceEnum.ON_PREM_SERVER:
+        return (
+            f"Node '{node.id}' is an on-premises server but was placed in "
+            f"parent_cluster='{declared}'. On-prem systems MUST be in "
+            f"'Customer Environment'."
+        )
+
+    if node.service in _NON_GCP_SERVICES:
+        # Self-managed DBs (Postgres/MySQL/Mongo) and GENERIC — valid in
+        # either Customer Environment or Third-Party Services depending
+        # on who hosts them.
+        valid = _format_zone_list(expected_zones_for(node.service))
+        return (
+            f"Node '{node.id}' (service={service_name}) cannot be in "
+            f"'{declared}'. Self-managed databases or generic non-GCP "
+            f'systems must be in one of: {valid}. If the service is '
+            f'actually managed by Google Cloud, use the GCP-specific '
+            f'enum value (e.g. Cloud SQL instead of PostgreSQL).'
+        )
+
+    # GCP-native service in a non-GCP zone — the most common mistake
+    return (
+        f"Node '{node.id}' uses GCP service '{service_name}' but was "
+        f"placed in parent_cluster='{declared}'. ALL GCP products MUST "
+        f"be in 'Google Cloud Platform', regardless of who administers "
+        f'them (Apigee, Cloud Build, BigQuery, etc. remain GCP even '
+        f'when customer-managed).'
+    )
+
+
 def audit_architecture(
     nodes: list[ArchitectureNode],
     edges: list[ArchitectureEdge],
@@ -225,6 +288,9 @@ def audit_architecture(
         n.service for n in nodes if n.service not in _NON_GCP_SERVICES
     }
 
+    # ------------------------------------------------------------------
+    # AUD-05: generic labels
+    # ------------------------------------------------------------------
     for n in nodes:
         if n.label.strip().lower() in _GENERIC_LABELS:
             failures.append(
@@ -237,6 +303,9 @@ def audit_architecture(
                 )
             )
 
+    # ------------------------------------------------------------------
+    # AUD-06: label repeats product name
+    # ------------------------------------------------------------------
     for n in nodes:
         if n.service in _NON_GCP_SERVICES:
             continue
@@ -252,6 +321,9 @@ def audit_architecture(
                 )
             )
 
+    # ------------------------------------------------------------------
+    # AUD-07: external node label lacks system name or version
+    # ------------------------------------------------------------------
     for n in nodes:
         if n.service not in _EXTERNAL_SYSTEM_SERVICES:
             continue
@@ -270,6 +342,9 @@ def audit_architecture(
                 )
             )
 
+    # ------------------------------------------------------------------
+    # AUD-10: IAM as node (policy layer, not runtime component)
+    # ------------------------------------------------------------------
     for n in nodes:
         if n.service in _POLICY_LAYER_SERVICES:
             failures.append(
@@ -283,50 +358,34 @@ def audit_architecture(
                 )
             )
 
-    third_party_keywords = ['third-party', 'third party', 'saas']
+    # ------------------------------------------------------------------
+    # AUD-19: parent_cluster ↔ service coherence
+    #
+    # Consolidates the old AUD-08 (GCP in non-GCP cluster) and AUD-09
+    # (entry point in third-party cluster) into a single structural
+    # check. Uses `expected_zones_for()` from the model layer as the
+    # single source of truth for what zones a given service may inhabit.
+    #
+    # Most mismatches become structurally impossible thanks to
+    # constrained decoding (Gemini cannot emit an invalid ClusterZone
+    # value). This check catches the residual case where the value is
+    # syntactically valid but semantically wrong -- e.g. a Vertex AI
+    # node declared in 'Customer Environment'.
+    # ------------------------------------------------------------------
     for n in nodes:
-        if n.service not in _ENTRY_POINT_SERVICES:
-            continue
-        cluster = (n.cluster or '').lower()
-        if any(kw in cluster for kw in third_party_keywords):
+        valid_zones = expected_zones_for(n.service)
+        if n.parent_cluster not in valid_zones:
             failures.append(
                 AuditFailure(
-                    'AUD-09',
+                    'AUD-19',
                     'BLOCKER',
-                    f"Entry point node '{n.id}' is in cluster "
-                    f"'{n.cluster}', which is a third-party/external "
-                    f'cluster. Entry points must be in a dedicated '
-                    f"'User / Consumer' cluster.",
+                    _aud19_defect_message(n),
                 )
             )
 
-    on_prem_markers = [
-        'on-prem',
-        'on prem',
-        'customer environment',
-        'customer on-premises',
-        'internal systems',
-    ]
-    for n in nodes:
-        if n.service in _NON_GCP_SERVICES:
-            continue
-        cluster = (n.cluster or '').lower()
-        if not cluster:
-            continue
-        looks_non_gcp = any(m in cluster for m in on_prem_markers)
-        looks_gcp = 'google cloud' in cluster or 'gcp' in cluster
-        if looks_non_gcp and not looks_gcp:
-            failures.append(
-                AuditFailure(
-                    'AUD-08',
-                    'BLOCKER',
-                    f"GCP service '{_service_display_name(n.service)}' "
-                    f"(node '{n.id}') is in non-GCP cluster '{n.cluster}'. "
-                    f'GCP products belong in the Google Cloud cluster '
-                    f'regardless of who administers them.',
-                )
-            )
-
+    # ------------------------------------------------------------------
+    # AUD-11: edge integrity (labels, endpoints, connectivity)
+    # ------------------------------------------------------------------
     for i, e in enumerate(edges):
         if not e.label or not e.label.strip():
             src = node_by_id.get(e.source_id)
@@ -379,6 +438,9 @@ def audit_architecture(
                 )
             )
 
+    # ------------------------------------------------------------------
+    # AUD-14: minimum component checklist (entry + compute + data)
+    # ------------------------------------------------------------------
     has_entry = any(n.service in _ENTRY_POINT_SERVICES for n in nodes)
     has_compute = any(n.service in _COMPUTE_SERVICES for n in nodes)
     has_data = any(n.service in _DATA_SERVICES for n in nodes)
@@ -413,6 +475,9 @@ def audit_architecture(
             )
         )
 
+    # ------------------------------------------------------------------
+    # AUD-02 / AUD-03: stack ↔ diagram consistency
+    # ------------------------------------------------------------------
     stack_services: set[GcpServiceEnum] = set()
     if technology_stack is not None:
         stack_services = _stack_services_to_enum(technology_stack)
@@ -441,6 +506,9 @@ def audit_architecture(
                 )
             )
 
+    # ------------------------------------------------------------------
+    # Description-driven checks (AUD-01, AUD-15, AUD-16, AUD-17, AUD-18)
+    # ------------------------------------------------------------------
     if description:
         desc_lower = description.lower()
         mentioned_in_desc = _extract_mentioned_services(description)

@@ -81,6 +81,60 @@ class GcpServiceEnum(str, Enum):
     GENERIC = 'Generic'
 
 
+class ClusterZone(str, Enum):
+    """Top-level architectural zone for a node.
+
+    Closed set — constrained decoding guarantees the LLM picks one of these
+    four values. Each zone has a distinct visual treatment (color, position)
+    and semantic meaning in the architecture:
+
+    - GOOGLE_CLOUD: runs on Google Cloud Platform infrastructure
+    - CUSTOMER_ENVIRONMENT: runs on the customer's own infrastructure
+    - THIRD_PARTY: SaaS or external services consumed by the solution
+    - USER_CONSUMER: entry points that initiate the primary data flow
+    """
+
+    GOOGLE_CLOUD = 'Google Cloud Platform'
+    CUSTOMER_ENVIRONMENT = 'Customer Environment'
+    THIRD_PARTY = 'Third-Party Services'
+    USER_CONSUMER = 'User / Consumer'
+
+
+_NON_GCP_SERVICE_ZONES: dict[GcpServiceEnum, frozenset[ClusterZone]] = {
+    GcpServiceEnum.CLIENT: frozenset({ClusterZone.USER_CONSUMER}),
+    GcpServiceEnum.USERS: frozenset({ClusterZone.USER_CONSUMER}),
+    GcpServiceEnum.ON_PREM_SERVER: frozenset(
+        {ClusterZone.CUSTOMER_ENVIRONMENT}
+    ),
+    GcpServiceEnum.POSTGRESQL: frozenset(
+        {ClusterZone.CUSTOMER_ENVIRONMENT, ClusterZone.THIRD_PARTY}
+    ),
+    GcpServiceEnum.MYSQL: frozenset(
+        {ClusterZone.CUSTOMER_ENVIRONMENT, ClusterZone.THIRD_PARTY}
+    ),
+    GcpServiceEnum.MONGODB: frozenset(
+        {ClusterZone.CUSTOMER_ENVIRONMENT, ClusterZone.THIRD_PARTY}
+    ),
+    GcpServiceEnum.GENERIC: frozenset(
+        {ClusterZone.CUSTOMER_ENVIRONMENT, ClusterZone.THIRD_PARTY}
+    ),
+}
+
+
+def expected_zones_for(service: GcpServiceEnum) -> frozenset[ClusterZone]:
+    """Return the valid ClusterZone values for a given service.
+
+    GCP-native services always resolve to {GOOGLE_CLOUD}. Non-GCP services
+    return the subset of zones appropriate to their semantics (e.g.
+    PostgreSQL may live in CUSTOMER_ENVIRONMENT or THIRD_PARTY, but never
+    in GOOGLE_CLOUD — use CLOUD_SQL for managed Postgres on GCP).
+    """
+    return _NON_GCP_SERVICE_ZONES.get(
+        service,
+        frozenset({ClusterZone.GOOGLE_CLOUD}),
+    )
+
+
 _D2_ICON_FILENAME: dict[GcpServiceEnum, str | None] = {
     GcpServiceEnum.CLOUD_RUN: 'Cloud_Run.svg',
     GcpServiceEnum.GKE: 'GKE.svg',
@@ -164,12 +218,33 @@ class ArchitectureNode(BaseModel):
         ...,
         description='GCP service — must be one of the allowed enum values.',
     )
-    cluster: Optional[str] = Field(
+    parent_cluster: ClusterZone = Field(
+        ...,
+        description=(
+            "MANDATORY top-level zone. "
+            "'Google Cloud Platform' = ALL GCP services (Apigee, Cloud Build, "
+            'BigQuery, etc.) including those managed by the customer. '
+            "'Customer Environment' = on-prem or internal systems running on the "
+            "customer's own infrastructure. "
+            "'Third-Party Services' = SaaS, payment gateways, credit bureaus, "
+            'partner APIs. '
+            "'User / Consumer' = entry points that initiate the flow: end users, "
+            'portals, mobile apps, API consumers. '
+            'Entry points and third-party services are NEVER in the same zone.'
+        ),
+    )
+    sub_cluster: Optional[str] = Field(
         default=None,
         description=(
-            'REQUIRED for enterprise architectures. Group services by network zone or responsibility. '
-            "Use standardized names such as: 'Customer Environment', 'Google Cloud (Edge/Security)', "
-            "'Google Cloud (Core/Compute)', 'Google Cloud (Data/Storage)', or 'Google Cloud (Networking)'."
+            'Optional sub-group label rendered as a box inside parent_cluster. '
+            "For 'Google Cloud Platform': use when ≥ 6 GCP nodes exist. "
+            "Suggested labels: 'AI / ML', 'Data & Storage', 'Observability', "
+            "'Compute & Orchestration', 'Security & Identity'. "
+            "For 'Customer Environment': name specific systems (e.g. 'Legacy ERP', "
+            "'Internal Data Lake'). "
+            "For 'Third-Party Services': group related services (e.g. 'Payment "
+            "Providers', 'Credit Bureaus'). "
+            'Leave null when a single top-level zone suffices.'
         ),
     )
 
