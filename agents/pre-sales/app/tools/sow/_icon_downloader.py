@@ -1,10 +1,11 @@
-import logging
 import os
 import tempfile
 import zipfile
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger()
 
 _ICON_BUCKET = os.environ.get('LOGS_BUCKET_NAME')
 _ICON_ZIP_OBJECT = 'gcp-icons-flat.zip'

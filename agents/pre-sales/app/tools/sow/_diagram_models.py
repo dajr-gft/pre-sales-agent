@@ -178,14 +178,11 @@ _D2_ICON_FILENAME: dict[GcpServiceEnum, str | None] = {
     GcpServiceEnum.MONGODB: 'Databases.svg',
     GcpServiceEnum.ON_PREM_SERVER: 'Compute_Engine.svg',
     GcpServiceEnum.GENERIC: 'Compute.svg',
-    GcpServiceEnum.CLIENT: None,
-    GcpServiceEnum.USERS: None,
+    GcpServiceEnum.CLIENT: 'User.svg',
+    GcpServiceEnum.USERS: 'User.svg',
 }
 
-_D2_SHAPE_OVERRIDE: dict[GcpServiceEnum, str | None] = {
-    GcpServiceEnum.CLIENT: 'person',
-    GcpServiceEnum.USERS: 'person',
-}
+_D2_SHAPE_OVERRIDE: dict[GcpServiceEnum, str | None] = {}
 
 
 def get_d2_icon_path(service: GcpServiceEnum) -> str | None:
