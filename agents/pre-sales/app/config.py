@@ -84,6 +84,13 @@ class AgentConfig(BaseSettings):
         description='JSON output for Cloud Logging (False for dev console)',
     )
 
+    # Logo
+    LOGO_DEV_PUBLISHABLE_KEY: str | None = Field(
+        default=None,
+        description="Publishable API key from logo.dev for fetching customer logos in SOW documents",
+        alias='LOGO_DEV_PUBLISHABLE_KEY',
+    )
+
     def resolve_project_id(self) -> str:
         """Return project_id, falling back to ADC if not explicitly set."""
         if self.PROJECT_ID:

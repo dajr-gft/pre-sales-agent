@@ -15,6 +15,7 @@ from google.genai import types as genai_types
 from ...shared.errors import safe_tool
 from ...shared.types import ToolError, ToolSuccess
 from ...shared.validators import ContentValidator
+from ._logo_fetcher import fetch_customer_logo
 from ._sow_helpers import (
     load_logo,
     sow_data_hash,
@@ -30,7 +31,7 @@ _TEMPLATE_FILENAME = 'SOW_Template.docx'
 _PARTNER_LOGO_FILENAME = 'gft_logo.png'
 
 _PARTNER_LOGO_WIDTH_MM = 41
-_CUSTOMER_LOGO_WIDTH_MM = 43
+_CUSTOMER_LOGO_WIDTH_MM = 35
 
 _content_validator = ContentValidator()
 
@@ -61,12 +62,12 @@ async def generate_sow_document(
             - project_start_date, project_end_date (strings)
             - engagement_type: "project", "pilot", "POC", or "assessment"
             - organization_term: "phases", "workstreams", or "activities"
-            - customer_logo_filename: optional. Filename of the customer logo
-              the user uploaded earlier in the conversation (e.g.
-              "test_customer_logo.png"). When the user uploads a file in
-              Gemini Enterprise, you will see it in the message history as
-              `<start_of_user_uploaded_file: NAME>` — pass that NAME here.
-              Omit if the user skipped the logo step.
+            - customer_primary_domain: optional string. The customer's
+              main institutional domain, without protocol or www (e.g.
+              "itau.com.br", "bv.com.br", "btgpactual.com.br"). Used
+              to automatically fetch the customer logo. Omit if the
+              customer's domain is not publicly known — the document
+              will render a placeholder.
 
             Simple lists:
             - activities (list of strings — high-level activity descriptions)
@@ -282,9 +283,9 @@ async def generate_sow_document(
             doc, partner_logo_path, 'partner', _PARTNER_LOGO_WIDTH_MM
         )
 
-        customer_logo_filename = data.get('customer_logo_filename')
-        customer_logo_tempfile = await _load_artifact_to_tempfile(
-            tool_context, customer_logo_filename, 'customer logo'
+        customer_logo_tempfile = _fetch_customer_logo_to_tempfile(
+            customer_name=data.get('customer_name', ''),
+            customer_primary_domain=data.get('customer_primary_domain'),
         )
         if customer_logo_tempfile:
             data['customer_logo'] = load_logo(
@@ -427,6 +428,42 @@ async def _load_artifact_to_tempfile(
             error=str(err),
         )
         return None
+
+
+def _fetch_customer_logo_to_tempfile(
+    customer_name: str,
+    customer_primary_domain: str | None,
+) -> Path | None:
+    """Fetch customer logo via logo.dev and persist bytes to a tempfile.
+
+    docxtpl/InlineImage needs a file path, so we materialize the bytes on
+    disk. The caller is responsible for cleaning up the tempfile after
+    rendering (handled by the existing finally block in
+    ``generate_sow_document``).
+
+    Returns None when no logo could be retrieved — caller should render
+    a placeholder.
+    """
+    if not customer_name:
+        return None
+
+    logo_bytes = fetch_customer_logo(
+        customer_name=customer_name,
+        inferred_domain=customer_primary_domain,
+    )
+    if not logo_bytes:
+        return None
+
+    fd, tempfile_path = tempfile.mkstemp(suffix='.png')
+    os.close(fd)
+    tmp = Path(tempfile_path)
+    tmp.write_bytes(logo_bytes)
+    logger.info(
+        'customer_logo_fetched',
+        customer_name=customer_name,
+        size=len(logo_bytes),
+    )
+    return tmp
 
 
 def _apply_defaults(data: dict) -> None:
