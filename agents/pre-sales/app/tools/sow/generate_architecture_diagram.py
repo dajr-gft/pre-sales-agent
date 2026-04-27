@@ -44,14 +44,6 @@ _DIAGRAM_ARTIFACT_KEY = 'architecture_diagram_artifact'
 
 _NEEDS_QUOTING = re.compile(r'[.()/#"\'{}:;\\]')
 
-
-# ---------------------------------------------------------------------------
-# Zone rendering configuration
-#
-# Every zone has a deterministic D2 key (identifier), display label, and color
-# palette. Ordered list below controls rendering order in the D2 source —
-# it also influences ELK's left-to-right placement tendency when direction=right.
-# ---------------------------------------------------------------------------
 _ZONE_D2_KEY: dict[ClusterZone, str] = {
     ClusterZone.USER_CONSUMER: 'user_consumer',
     ClusterZone.CUSTOMER_ENVIRONMENT: 'customer_env',
@@ -62,37 +54,34 @@ _ZONE_D2_KEY: dict[ClusterZone, str] = {
 _ZONE_STYLE: dict[ClusterZone, dict[str, Any]] = {
     ClusterZone.USER_CONSUMER: {
         'label': 'User / Consumer',
-        'fill': '#FFF8E1',
-        'stroke': '#FFA000',
-        'font_color': '#E65100',
+        'fill': '#F1F3F4',
+        'stroke': '#9AA0A6',
+        'font_color': '#3C4043',
         'border_radius': 8,
     },
     ClusterZone.CUSTOMER_ENVIRONMENT: {
         'label': 'Customer Environment',
-        'fill': '#EFEBE9',
-        'stroke': '#795548',
-        'font_color': '#4E342E',
+        'fill': '#E8EAED',
+        'stroke': '#5F6368',  
+        'font_color': '#3C4043',
         'border_radius': 8,
     },
     ClusterZone.GOOGLE_CLOUD: {
         'label': 'Google Cloud Platform',
-        'fill': '#E3F2FD',
+        'fill': '#E8F0FE',
         'stroke': '#4285F4',
-        'font_color': '#1A73E8',
+        'font_color': '#1967D2',
         'border_radius': 12,
     },
     ClusterZone.THIRD_PARTY: {
         'label': 'Third-Party Services',
-        'fill': '#E0F2F1',
-        'stroke': '#009688',
-        'font_color': '#00695C',
+        'fill': '#E6F4EA',
+        'stroke': '#34A853',
+        'font_color': '#137333',
         'border_radius': 8,
     },
 }
 
-# Sub-cluster styles. Only GCP has a distinct inner palette (lighter blue)
-# to demarcate responsibility groups. For other zones, sub-clusters inherit
-# the parent's style — the label alone is enough to signal the grouping.
 _SUB_CLUSTER_STYLE: dict[ClusterZone, dict[str, Any]] = {
     ClusterZone.GOOGLE_CLOUD: {
         'fill': '#F0F7FE',
@@ -102,15 +91,30 @@ _SUB_CLUSTER_STYLE: dict[ClusterZone, dict[str, Any]] = {
     },
 }
 
-# Render order. Clients first (entry points), customer env next (sources of
-# data), GCP in the middle (where the work happens), third-party last
-# (external consumers / integrations).
 _ZONE_RENDER_ORDER: list[ClusterZone] = [
     ClusterZone.USER_CONSUMER,
     ClusterZone.CUSTOMER_ENVIRONMENT,
     ClusterZone.GOOGLE_CLOUD,
     ClusterZone.THIRD_PARTY,
 ]
+
+# Threshold for rendering a node with style.multiple (stacked-card visual).
+# When a node has at least this many connections (in-degree + out-degree),
+# it is treated as a "hub" in the architecture — typically an orchestrator,
+# API gateway, or high-fan-out service — and rendered as stacked cards to
+# visually communicate its centrality. Tuned at 3 because 1-2 connections
+# describe a normal participant; 3+ signals a hub role.
+_MULTIPLE_CONNECTION_THRESHOLD: int = 3
+
+# Neutral node palette applied uniformly to every leaf node. Without an
+# explicit override, D2 defaults to a blue theme that visually clashes
+# with the gray zones (Customer Environment, User/Consumer) and the green
+# zone (Third-Party Services). A consistent neutral frame lets the zone
+# color carry the categorization signal while the node stays discrete.
+# Colors come from Google's UI palette (Grey 800) for consistency with
+# the font-color used in the User/Consumer and Customer Environment zones.
+_NODE_STROKE: str = '#3C4043'
+_NODE_FONT_COLOR: str = '#3C4043'
 
 
 def _escape_d2(text: str) -> str:
@@ -133,8 +137,68 @@ def _normalize_sub(sub: Optional[str]) -> Optional[str]:
     return stripped or None
 
 
-def _render_d2_node(node: ArchitectureNode, indent: str = '') -> list[str]:
-    """Generate D2 code lines for a single node."""
+def _compute_hub_node_ids(
+    nodes: list[ArchitectureNode],
+    edges: list[ArchitectureEdge],
+) -> set[str]:
+    """Identify nodes that act as architectural hubs.
+
+    A node qualifies as a hub when the total count of edges referencing it
+    (both incoming and outgoing) meets or exceeds
+    ``_MULTIPLE_CONNECTION_THRESHOLD``. Hubs are rendered with
+    ``style.multiple: true`` so they appear as stacked cards in the diagram,
+    signaling that they orchestrate or serve multiple other components.
+
+    Only endpoints that correspond to actual nodes are counted — orphan
+    references (already logged as warnings in ``_build_d2_code``) do not
+    inflate the degree count.
+    """
+    node_ids = {n.id for n in nodes}
+    degree: dict[str, int] = {nid: 0 for nid in node_ids}
+    for edge in edges:
+        if edge.source_id in degree:
+            degree[edge.source_id] += 1
+        if edge.target_id in degree:
+            degree[edge.target_id] += 1
+    return {
+        nid
+        for nid, count in degree.items()
+        if count >= _MULTIPLE_CONNECTION_THRESHOLD
+    }
+
+
+def _render_d2_node(
+    node: ArchitectureNode,
+    indent: str = '',
+    is_hub: bool = False,
+) -> list[str]:
+    """Generate D2 code lines for a single node.
+
+    Rendering strategy:
+    - Nodes with an explicit shape override (e.g. ``person`` for CLIENT/USERS)
+      keep the shape declaration. Dimensions are left to D2 so the shape grows
+      to fit the label inside its bounding box.
+    - Nodes with an icon get an ``icon:`` field only, keeping the default
+      rectangle shape. This makes the icon render inside the box alongside
+      the label, so the label contributes to the node's bounding box and the
+      ELK engine can balance the layout symmetrically.
+    - Nodes with neither icon nor shape fall back to D2's default rectangle
+      with the label centered inside.
+    - When ``is_hub`` is True, ``style.multiple: true`` is added so the node
+      renders as stacked cards — a visual cue that the component is a hub
+      with many connections (orchestrator, gateway, central API, etc).
+    - Every leaf node receives a neutral stroke/font color (``#3C4043``).
+      Without this override, D2 falls back to its default blue theme palette,
+      which clashes with the gray zones (Customer Environment, User/Consumer)
+      and the green zone (Third-Party Services). A uniform neutral frame lets
+      the zone color carry the categorization signal while the node itself
+      stays visually discrete — the icon and label are the primary content.
+
+    Historical note: previous versions emitted ``shape: image`` with fixed
+    ``width: 80`` / ``height: 80``. That made labels float outside the
+    bounding box, which confused ELK's container sizing and produced
+    asymmetric whitespace on the edge-heavy side of the diagram.
+    """
     lines = []
     label = _escape_d2(node.label)
     lines.append(f'{indent}{node.id}: "{label}" {{')
@@ -144,13 +208,14 @@ def _render_d2_node(node: ArchitectureNode, indent: str = '') -> list[str]:
 
     if shape:
         lines.append(f'{indent}  shape: {shape}')
-        lines.append(f'{indent}  width: 80')
-        lines.append(f'{indent}  height: 80')
     elif icon_path:
         lines.append(f'{indent}  icon: {icon_path}')
-        lines.append(f'{indent}  shape: image')
-        lines.append(f'{indent}  width: 80')
-        lines.append(f'{indent}  height: 80')
+
+    lines.append(f'{indent}  style.stroke: "{_NODE_STROKE}"')
+    lines.append(f'{indent}  style.font-color: "{_NODE_FONT_COLOR}"')
+
+    if is_hub:
+        lines.append(f'{indent}  style.multiple: true')
 
     lines.append(f'{indent}}}')
     return lines
@@ -228,7 +293,8 @@ def _build_d2_code(
     if title:
         lines.extend(_render_title(title))
 
-    # zones[zone][sub_cluster_or_None] -> list[ArchitectureNode]
+    hub_node_ids = _compute_hub_node_ids(nodes, edges)
+
     zones: dict[
         ClusterZone, dict[Optional[str], list[ArchitectureNode]]
     ] = defaultdict(lambda: defaultdict(list))
@@ -237,7 +303,6 @@ def _build_d2_code(
         sub = _normalize_sub(node.sub_cluster)
         zones[node.parent_cluster][sub].append(node)
 
-    # node_d2_path maps node.id -> fully-qualified D2 path, needed for edges
     node_d2_path: dict[str, str] = {}
 
     for zone in _ZONE_RENDER_ORDER:
@@ -249,22 +314,30 @@ def _build_d2_code(
 
         sub_groups = zones[zone]
 
-        # 1) Nodes without a sub_cluster render directly inside the zone
         for node in sub_groups.get(None, []):
-            lines.extend(_render_d2_node(node, indent='  '))
+            lines.extend(
+                _render_d2_node(
+                    node,
+                    indent='  ',
+                    is_hub=node.id in hub_node_ids,
+                )
+            )
             lines.append('')
             node_d2_path[node.id] = f'{zone_key}.{node.id}'
 
-        # 2) Nodes grouped under named sub_clusters render inside sub-boxes.
-        #    Insertion order is preserved (Python dict semantics) — the LLM
-        #    can control visual ordering by ordering nodes in the input.
         for sub_name, sub_nodes in sub_groups.items():
             if sub_name is None:
                 continue
             sub_key = _d2_key(sub_name)
             lines.extend(_render_sub_cluster_header(zone, sub_name))
             for node in sub_nodes:
-                lines.extend(_render_d2_node(node, indent='    '))
+                lines.extend(
+                    _render_d2_node(
+                        node,
+                        indent='    ',
+                        is_hub=node.id in hub_node_ids,
+                    )
+                )
                 lines.append('')
                 node_d2_path[node.id] = f'{zone_key}.{sub_key}.{node.id}'
             lines.append('  }')
@@ -388,11 +461,6 @@ async def generate_architecture_diagram(
             suggestion='Verifique se source_id e target_id correspondem a nós existentes.',
         )
 
-    # ------------------------------------------------------------------
-    # Structural audit (AUD-01..AUD-19) — runs BEFORE rendering.
-    # BLOCKER failures halt rendering and force a revision cycle.
-    # WARNING failures are logged but do not block.
-    # ------------------------------------------------------------------
     audit = audit_architecture(
         nodes=nodes,
         edges=edges,
