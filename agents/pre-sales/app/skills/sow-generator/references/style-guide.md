@@ -19,10 +19,6 @@
 - Scope boundary statement early (e.g., "This engagement is strictly limited to...").
 - Bullet points for activities and objectives.
 
-### Key Engagement Details Table
-- Place at beginning of Executive Summary, before overviews.
-- Fields: Partner (legal name), Customer (legal name), Effective Date, GCP Deployment Location, Service Delivery model, Pricing Model.
-
 ### Partner Overview
 - With search data: 4-6 lines — Google Cloud certs/specializations, certified engineers count, global presence, awards, industry expertise.
 - Without search data: 3-4 lines from Phase 1 context.

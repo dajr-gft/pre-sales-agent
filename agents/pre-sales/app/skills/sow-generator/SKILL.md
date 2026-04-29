@@ -319,7 +319,7 @@ If the user mentioned a system, data source, or GCP service during Phase 1 that 
 
    Format, TLD, and stripping rules live in Phase 3 Step 1 → `customer_primary_domain`. Apply them when you commit the value.
 
-4. **Executive Summary** — Key Engagement Details table, Partner Overview, Customer Overview, Project Overview, Objectives. Scope boundary statement early. This section is generated LAST because it synthesizes all content from Steps 1 and 3.
+4. **Executive Summary** — Partner Overview, Customer Overview, Project Overview, Objectives. Scope boundary statement early. This section is generated LAST because it synthesizes all content from Steps 1 and 3.
 
 ### Step 4 — Present Architecture Review
 
@@ -332,7 +332,7 @@ Present in the conversation language with COMPLETE content. **The section labels
 - **GCP Consumption Plan**: Full 12-month table with per-service breakdown and notes
 - **Partner Overview**: GFT Technologies — certifications, specializations, global presence
 - **Customer Overview**: Customer — history, market position, key metrics
-- **Executive Summary**: Key Engagement Details + Partner Overview + Customer Overview + Project Overview with scope boundary + Objectives
+- **Executive Summary**: Partner Overview + Customer Overview + Project Overview with scope boundary + Objectives
 
 Ask the user to review the architecture, technology stack, consumption plan, and executive summary. Focus exclusively on the review — do NOT mention document assembly or any subsequent steps.
 
@@ -387,7 +387,7 @@ Do NOT mention this tracker or its contents to the user during Step 1. It is con
 - `executive_summary`: Complete, self-contained paragraph — no prefix added by tool.
 - ALL structured array fields must be populated (not empty): `functional_requirements`, `activity_phases`, `deliverables`, `timeline`, `partner_roles`, `customer_roles`, `architecture_components`, `architecture_integrations`.
 - ALL list fields must be populated: `activities`, `objectives`, `out_of_scope`, `assumptions`, `success_criteria`.
-- Include: `key_engagement_details`, `technology_stack` (GCP only), `consumption_plan` (required for PSF), `risks` (if not removed), `milestones` (if payment model uses milestones).
+- Include: `technology_stack` (GCP only), `consumption_plan` (required for PSF), `risks` (if not removed), `milestones` (if payment model uses milestones).
 - `customer_primary_domain`: optional string. The customer's official institutional domain, captured in Phase 2 Step 3 from a homepage search result URL. Used by the document tool to auto-fetch the customer logo.
   - **Format**: domain only — no protocol, no `www.`, no path, no query string. Any TLD is valid; the TLD reflects the company's actual homepage and there is no preferred TLD. Examples across regions and TLD formats: `inter.co`, `nubank.com.br`, `vale.com`, `caixa.gov.br`, `bbva.es`, `commerzbank.de`, `tcs.com`, `aramco.com`, `bp.com`, `samsung.com`.
   - **Value to pass**: pass the exact domain captured in Phase 2 Step 3, byte-for-byte. Treat the captured string as immutable.

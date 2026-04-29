@@ -54,7 +54,6 @@ class TestApplyDefaults:
         [
             ('taxes_included', True),
             ('non_commit_psf', False),
-            ('key_engagement_details', []),
             ('technology_stack', []),
             ('milestones', []),
             ('risks', []),
@@ -194,32 +193,6 @@ class TestAutoDeriveFields:
         assert data['technology_stack'] == [
             {'service': 'x', 'purpose': 'y'}
         ]
-
-    def test_default_engagement_details_generated(self):
-        data = {
-            'partner_name': 'GFT',
-            'customer_name': 'Acme',
-            'project_start_date': '2026-01-01',
-        }
-        _auto_derive_fields(data)
-        details = {d['label']: d['value'] for d in data['key_engagement_details']}
-        assert details['Partner'] == 'GFT'
-        assert details['Customer'] == 'Acme'
-        assert details['Effective Date'] == '2026-01-01'
-        assert details['Service Delivery'] == 'Remote'
-        assert details['Pricing Model'] == 'Fixed Fee'
-
-    def test_existing_engagement_details_preserved(self):
-        data = {
-            'key_engagement_details': [
-                {'label': 'Custom', 'value': 'Val'}
-            ]
-        }
-        _auto_derive_fields(data)
-        assert data['key_engagement_details'] == [
-            {'label': 'Custom', 'value': 'Val'}
-        ]
-
 
 class TestInferProjectType:
     def test_genai_detected_from_vertex_ai(self):

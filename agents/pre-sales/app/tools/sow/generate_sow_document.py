@@ -88,10 +88,6 @@ async def generate_sow_document(
             - customer_roles: list of {"role": "Product Owner", "responsibilities": "Define priorities..."}
 
             Optional structured arrays:
-            - key_engagement_details: list of {"label": "Partner", "value": "GFT Brasil"}.
-              Summary table rendered at the beginning of Executive Summary.
-              Typical labels: Partner, Customer, Effective Date, GCP Deployment Location,
-              Service Delivery, Pricing Model.
             - technology_stack: list of {"service": "BigQuery", "purpose": "Centralized data warehouse organized in Raw, Trusted, and Refined layers."}
               Rendered as a table inside Architecture Overview after components list.
               Map ONLY Google Cloud services to their specific role in the architecture.
@@ -484,7 +480,6 @@ def _apply_defaults(data: dict) -> None:
 
     data.setdefault('taxes_included', True)
     data.setdefault('non_commit_psf', False)
-    data.setdefault('key_engagement_details', [])
     data.setdefault('technology_stack', [])
     data.setdefault('milestones', [])
     data.setdefault('risks', [])
@@ -537,24 +532,6 @@ def _auto_derive_fields(data: dict) -> None:
 
     if not data.get('project_type'):
         data['project_type'] = _infer_project_type(data)
-
-    if not data.get('key_engagement_details'):
-        data['key_engagement_details'] = [
-            {
-                'label': 'Partner',
-                'value': data.get('partner_name', '[Partner]'),
-            },
-            {
-                'label': 'Customer',
-                'value': data.get('customer_name', '[Customer]'),
-            },
-            {
-                'label': 'Effective Date',
-                'value': data.get('project_start_date', 'TBD'),
-            },
-            {'label': 'Service Delivery', 'value': 'Remote'},
-            {'label': 'Pricing Model', 'value': 'Fixed Fee'},
-        ]
 
 
 # GenAI/ML service names used to infer project_type for template conditionals.

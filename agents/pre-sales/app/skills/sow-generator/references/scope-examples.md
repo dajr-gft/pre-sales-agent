@@ -506,16 +506,3 @@ estimates. Insufficient for PSF approval.
 **Why it works**: Per-service breakdown shows the reviewer that costs are grounded in
 real workload estimates. Monthly granularity shows growth trajectory. Notes explain
 the assumptions behind the numbers.
-
----
-
-## Key Engagement Details Table Pattern
-
-| Detail | Value |
-|---|---|
-| Partner | [Partner full legal name] |
-| Customer | [Customer full legal name] |
-| Effective Date | Subject to Google PSF Approval |
-| GCP Deployment | [Customer] Tenant ([Customer] billed for GCP consumption) |
-| Service Delivery | Remote from [Country] |
-| Pricing Model | Fixed Price ([DAF/PSF type]) |
