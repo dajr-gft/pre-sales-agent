@@ -38,15 +38,6 @@ def validate_quality_gates(data: dict) -> list[str]:
     if risks and len(risks) < 3:
         errors.append(f'Risks: {len(risks)} itens (mínimo: 3 quando presente)')
 
-    # Consumption plan: required for PSF engagements
-    ft = (
-        data.get('funding_type_short') or data.get('funding_type') or ''
-    ).upper()
-    if 'PSF' in ft:
-        cp = data.get('consumption_plan_table') or data.get('consumption_plan')
-        if not cp:
-            errors.append('Consumption Plan: ausente (obrigatório para PSF)')
-
     return errors
 
 

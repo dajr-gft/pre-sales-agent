@@ -52,12 +52,6 @@ See `references/architecture-guide.md` Part 2. All rules there are binding.
 ### Technology Stack Table
 See `references/architecture-guide.md` Part 4. All rules there are binding.
 
-### Google Cloud Consumption Plan
-- Optional for DAF. Required/recommended for PSF.
-- 12 monthly rows with per-service cost breakdown.
-- Base on realistic GCP pricing for described workloads.
-- **Anti-pattern:** single paragraph with approximate ranges.
-
 ### Activities
 - Action verbs: describe, investigate, review, document, design, develop, perform, integrate, configure, test, validate, deploy.
 - Organize by phases. Meaningful phase names.

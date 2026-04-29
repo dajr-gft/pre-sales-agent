@@ -476,33 +476,3 @@ whether the architecture is sound because no design decisions are explained.
 
 **Why it works**: Each service choice is justified by a specific project requirement.
 The reviewer understands not just what was chosen but why.
-
----
-
-## Google Cloud Consumption Plan Pattern
-
-### Bad: Single paragraph with approximate ranges
-> "Post-implementation, the estimated Google Cloud consumption is projected to start
-> at approximately $5,000/month, scaling to $8,000/month as data volume increases."
-
-**Why it fails**: No per-service breakdown, no monthly granularity, no basis for the
-estimates. Insufficient for PSF approval.
-
-### Good: Monthly table with per-service breakdown
-
-> | Month | BigQuery | Dataflow | Vertex AI | Composer | Storage | Looker | Total |
-> |---|---|---|---|---|---|---|---|
-> | 1 | $1,200 | $800 | $1,500 | $400 | $200 | $1,000 | $5,100 |
-> | 2 | $1,200 | $800 | $500 | $400 | $250 | $1,000 | $4,150 |
-> | 3 | $1,300 | $850 | $500 | $400 | $300 | $1,000 | $4,350 |
-> | ... | ... | ... | ... | ... | ... | ... | ... |
-> | 11 | $1,800 | $1,200 | $600 | $400 | $600 | $1,000 | $5,600 |
-> | 12 | $1,600 | $1,000 | $600 | $400 | $650 | $1,000 | $5,250 |
->
-> Notes: Month 1 includes Vertex AI training costs (~$1,500) for initial model
-> development. Months 2+ reflect prediction-only costs (~$500). BigQuery estimates
-> assume 5TB stored with ~2TB scanned/month. Storage grows ~50GB/month.
-
-**Why it works**: Per-service breakdown shows the reviewer that costs are grounded in
-real workload estimates. Monthly granularity shows growth trajectory. Notes explain
-the assumptions behind the numbers.

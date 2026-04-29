@@ -117,7 +117,7 @@ class ContentValidator:
             data: Parsed sow_data dict.
             funding_type: "PSF" or "DAF". Auto-detected from data if None.
             stage: "content" for Phase 2 Step 1.5 (content-only payload,
-                before architecture and consumption plan are generated).
+                before architecture is generated).
                 "full" for Phase 4 (complete payload before document generation).
         """
         result = ValidationResult()
@@ -139,7 +139,6 @@ class ContentValidator:
         self._validate_deliverable_coverage(data, result)
 
         if stage == 'full':
-            self._validate_consumption_plan(data, funding_type, result)
             self._validate_architecture_description(data, result)
             self._validate_tech_stack_consistency(data, result)
 
@@ -190,60 +189,6 @@ class ContentValidator:
                         suggestion='Use sequential IDs like NFR-01, NFR-02.',
                     )
                 )
-
-    def _validate_consumption_plan(
-        self, data: dict, funding_type: str, result: ValidationResult
-    ) -> None:
-        cp = data.get('consumption_plan_table') or data.get('consumption_plan')
-
-        if funding_type == 'PSF' and not cp:
-            result.issues.append(
-                ValidationIssue(
-                    severity='error',
-                    field='consumption_plan',
-                    message='Consumption plan is required for PSF engagements.',
-                    suggestion='Generate a 12-month per-service consumption table.',
-                )
-            )
-            return
-
-        if not isinstance(cp, dict):
-            return
-
-        services = cp.get('services', [])
-        rows = cp.get('rows', [])
-
-        if len(rows) != 12:
-            result.issues.append(
-                ValidationIssue(
-                    severity='error',
-                    field='consumption_plan',
-                    message=f'Expected 12 monthly rows, found {len(rows)}.',
-                    suggestion='Provide exactly 12 rows (one per month).',
-                )
-            )
-
-        for i, row in enumerate(rows):
-            costs = row.get('costs', [])
-            if len(costs) != len(services):
-                result.issues.append(
-                    ValidationIssue(
-                        severity='error',
-                        field='consumption_plan',
-                        message=f'Row {i + 1}: {len(costs)} costs but {len(services)} services.',
-                        suggestion='Each row must have one cost entry per service.',
-                    )
-                )
-
-        if not cp.get('notes'):
-            result.issues.append(
-                ValidationIssue(
-                    severity='warning',
-                    field='consumption_plan',
-                    message="Missing 'notes' explaining estimation assumptions.",
-                    suggestion='Add notes explaining why values vary across months.',
-                )
-            )
 
     def _validate_role_descriptions(
         self, data: dict, result: ValidationResult

@@ -80,17 +80,12 @@ def build_sow_data(
     *,
     funding: str = 'DAF',
     include_risks: bool = True,
-    include_consumption_plan: bool | None = None,
 ) -> dict[str, Any]:
     """Build a deterministic, fully-valid SOW payload.
 
     Override specific fields in the returned dict for negative-path tests so
-    each test stays readable. ``include_consumption_plan`` defaults to True
-    when ``funding == 'PSF'``.
+    each test stays readable.
     """
-    if include_consumption_plan is None:
-        include_consumption_plan = funding == 'PSF'
-
     data: dict[str, Any] = {
         'partner_name': 'GFT Technologies',
         'customer_name': 'Acme Corp',
@@ -244,16 +239,6 @@ def build_sow_data(
             },
         ]
 
-    if include_consumption_plan:
-        data['consumption_plan'] = {
-            'services': ['Cloud Run', 'BigQuery', 'Vertex AI', 'Cloud Storage'],
-            'rows': [
-                {'month': m, 'costs': ['$50', '$200', '$300', '$30'], 'total': '$580'}
-                for m in range(1, 13)
-            ],
-            'notes': 'Estimates based on development workloads. Production costs may vary.',
-        }
-
     return data
 
 
@@ -265,7 +250,7 @@ def sow_data() -> dict[str, Any]:
 
 @pytest.fixture
 def sow_data_psf() -> dict[str, Any]:
-    """A complete, valid PSF sow_data payload with consumption plan."""
+    """A complete, valid PSF sow_data payload."""
     return build_sow_data(funding='PSF')
 
 

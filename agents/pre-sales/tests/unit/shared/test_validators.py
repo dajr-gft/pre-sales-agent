@@ -93,39 +93,6 @@ class TestValidationResult:
         }
 
 
-class TestFundingTypeDetection:
-    """Auto-detection of funding_type when caller doesn't pass it explicitly."""
-
-    def test_detects_psf_from_short_field(self, sow_data_psf):
-        # PSF payload has no consumption plan removed → should pass entirely
-        result = ContentValidator().validate(sow_data_psf)
-        assert result.passed
-
-    def test_detects_psf_from_long_field(self, sow_data_psf):
-        data = deepcopy(sow_data_psf)
-        data.pop('funding_type_short', None)
-        data['funding_type'] = 'Google PSF Partner Sponsored Funding'
-        result = ContentValidator().validate(data)
-        assert result.passed
-
-    def test_defaults_to_daf_when_no_funding_fields(self, sow_data_minimal):
-        # Minimal payload with no funding fields → defaults to DAF,
-        # so lack of consumption plan is NOT an error
-        result = ContentValidator().validate(sow_data_minimal)
-        assert not any(
-            'consumption' in e.message.lower() for e in result.errors
-        )
-
-    def test_caller_override_beats_autodetect(self, sow_data_psf):
-        data = deepcopy(sow_data_psf)
-        data.pop('consumption_plan')
-        # Force DAF interpretation → missing consumption plan must be tolerated
-        result = ContentValidator().validate(data, funding_type='DAF')
-        assert not any(
-            'consumption' in e.message.lower() for e in result.errors
-        )
-
-
 class TestFunctionalRequirements:
     def test_valid_fr_passes(self, sow_data):
         result = ContentValidator().validate(sow_data)
@@ -185,67 +152,6 @@ class TestNonFunctionalRequirements:
         sow_data['non_functional_requirements'][0]['number'] = good_id
         result = ContentValidator().validate(sow_data)
         assert not any('NFR-XX' in e.message for e in result.errors)
-
-
-class TestConsumptionPlan:
-    def test_psf_without_plan_is_error(self, sow_data_psf):
-        data = deepcopy(sow_data_psf)
-        data.pop('consumption_plan')
-        result = ContentValidator().validate(data)
-        assert not result.passed
-        assert any(
-            'consumption' in e.message.lower()
-            for e in result.errors
-        )
-
-    def test_daf_without_plan_is_ok(self, sow_data):
-        result = ContentValidator().validate(sow_data)
-        assert result.passed
-
-    def test_wrong_number_of_rows_is_error(self, sow_data_psf):
-        sow_data_psf['consumption_plan']['rows'] = (
-            sow_data_psf['consumption_plan']['rows'][:6]
-        )
-        result = ContentValidator().validate(sow_data_psf)
-        assert any(
-            'Expected 12 monthly rows' in e.message for e in result.errors
-        )
-
-    def test_cost_count_mismatch_is_error(self, sow_data_psf):
-        sow_data_psf['consumption_plan']['rows'][0]['costs'] = ['$10']
-        result = ContentValidator().validate(sow_data_psf)
-        assert any(
-            '1 costs but 4 services' in e.message for e in result.errors
-        )
-
-    def test_missing_notes_is_warning(self, sow_data_psf):
-        sow_data_psf['consumption_plan'].pop('notes')
-        result = ContentValidator().validate(sow_data_psf)
-        assert any(
-            'notes' in w.message.lower() for w in result.warnings
-        )
-
-    def test_alternate_plan_key_recognized(self, sow_data_psf):
-        """The validator reads either consumption_plan or consumption_plan_table."""
-        data = deepcopy(sow_data_psf)
-        data['consumption_plan_table'] = data.pop('consumption_plan')
-        result = ContentValidator().validate(data)
-        assert result.passed
-
-    def test_non_dict_plan_silently_skipped(self, sow_data_psf):
-        """Non-dict plan values short-circuit the row/cost checks.
-
-        The PSF "missing plan" check only fires when the value is falsy.
-        A truthy non-dict (e.g. string) is accepted by the missing-plan gate
-        and then silently ignored by the row/cost checks.
-        """
-        sow_data_psf['consumption_plan'] = 'just a note string'
-        result = ContentValidator().validate(sow_data_psf)
-        # No consumption-plan errors expected: missing gate saw truthy string;
-        # row/cost checks saw non-dict and returned early.
-        assert not any(
-            e.field == 'consumption_plan' for e in result.errors
-        )
 
 
 class TestRoleDescriptions:

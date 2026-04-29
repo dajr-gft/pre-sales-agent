@@ -77,59 +77,6 @@ class TestApplyDefaults:
         assert len(data['risks']) == 1
 
 
-class TestApplyDefaultsConsumptionPlan:
-    def test_dict_plan_moved_to_table_key(self):
-        data = {
-            'consumption_plan': {
-                'services': ['Cloud Run'],
-                'rows': [
-                    {'month': m, 'costs': ['$1'], 'total': '$1'}
-                    for m in range(1, 13)
-                ],
-            }
-        }
-        _apply_defaults(data)
-        assert data['consumption_plan_table']
-        assert data['consumption_plan'] == ''
-
-    def test_plan_with_values_key_renamed_to_costs(self):
-        data = {
-            'consumption_plan': {
-                'services': ['Cloud Run'],
-                'rows': [
-                    {'month': 1, 'values': ['$1'], 'total': '$1'}
-                ],
-            }
-        }
-        _apply_defaults(data)
-        row = data['consumption_plan_table']['rows'][0]
-        assert row['costs'] == ['$1']
-        assert 'values' not in row
-
-    def test_plan_missing_costs_and_values_get_empty_list(self):
-        data = {
-            'consumption_plan': {
-                'services': ['Cloud Run'],
-                'rows': [{'month': 1, 'total': '$0'}],
-            }
-        }
-        _apply_defaults(data)
-        row = data['consumption_plan_table']['rows'][0]
-        assert row['costs'] == []
-
-    def test_string_plan_preserved_and_table_nulled(self):
-        data = {'consumption_plan': 'notes only — see appendix'}
-        _apply_defaults(data)
-        assert data['consumption_plan'] == 'notes only — see appendix'
-        assert data['consumption_plan_table'] is None
-
-    def test_empty_plan_normalized(self):
-        data = {}
-        _apply_defaults(data)
-        assert data['consumption_plan'] == ''
-        assert data['consumption_plan_table'] is None
-
-
 class TestAutoDeriveFields:
     def test_activities_derived_from_phases_when_missing(self):
         data = {

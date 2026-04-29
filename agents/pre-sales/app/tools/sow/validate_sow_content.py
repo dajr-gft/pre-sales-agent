@@ -42,7 +42,7 @@ async def validate_sow_content(
         funding_type: "PSF" or "DAF". If empty, auto-detected from
             sow_data fields (funding_type_short or funding_type).
         stage: "content" for Phase 2 Step 1.5 validation (payload has
-            content but no architecture or consumption plan yet).
+            content but no architecture yet).
             "full" for Phase 4 validation (complete payload before
             document generation). Default: "full".
 

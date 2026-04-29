@@ -211,7 +211,7 @@ Cross-reference FRs against Out-of-Scope:
 
 ### Step 1.5 — Validate Content (silent, before presenting to user)
 
-After generating all content in Step 1, call `validate_sow_content` with the assembled JSON and `stage="content"`. This tells the validator that architecture and consumption plan are intentionally absent (they are generated later in Step 3) — checks for those sections are skipped.
+After generating all content in Step 1, call `validate_sow_content` with the assembled JSON and `stage="content"`. This tells the validator that architecture is intentionally absent (it is generated later in Step 3) — checks for that section are skipped.
 
 - If there are **errors**: fix them silently and re-validate with the same `stage="content"` argument. Do NOT present content with errors.
 - If there are **warnings**: note them for your own reference but proceed to review.
@@ -291,19 +291,7 @@ If the user mentioned a system, data source, or GCP service during Phase 1 that 
 
    If the tool returns a `ToolError` listing structural defects, silently revise the offending artifact — (1b) description, (1c) technology stack, or (1d) diagram spec — and call the tool again. Maximum 3 consecutive retries. Do not mention the audit, the failures, or the retry to the user. See `references/architecture-guide.md` Part 7 for full tool behavior.
 
-2. **Google Cloud Consumption Plan**: Required for PSF, optional for DAF. MUST produce a table in this exact format:
-   ```
-   | Month | [Service 1] | [Service 2] | ... | Total |
-   |-------|-------------|-------------|-----|-------|
-   | 1     | $X          | $Y          | ... | $Z    |
-   | 2     | $X          | $Y          | ... | $Z    |
-   | ...   | ...         | ...         | ... | ...   |
-   | 12    | $X          | $Y          | ... | $Z    |
-   Notes: [explain why values change — dev months vs. production, storage growth, etc.]
-   ```
-   MUST have 12 rows, one column per GCP service, and values MUST vary across months (dev phase ≠ production steady-state). Pass as `consumption_plan` in JSON.
-
-3. **Partner & Customer Research**: Call the web search tool for these 4 queries:
+2. **Partner & Customer Research**: Call the web search tool for these 4 queries:
    - `"GFT Technologies" Google Cloud partner specialization` → use results for `partner_overview`
    - `"[Customer Name]" [sector] company overview` → use results for `customer_overview`
    - `"[Customer Name]" [sector] market share competitors` → enrich `customer_overview`
@@ -319,7 +307,7 @@ If the user mentioned a system, data source, or GCP service during Phase 1 that 
 
    Format, TLD, and stripping rules live in Phase 3 Step 1 → `customer_primary_domain`. Apply them when you commit the value.
 
-4. **Executive Summary** — Partner Overview, Customer Overview, Project Overview, Objectives. Scope boundary statement early. This section is generated LAST because it synthesizes all content from Steps 1 and 3.
+3. **Executive Summary** — Partner Overview, Customer Overview, Project Overview, Objectives. Scope boundary statement early. This section is generated LAST because it synthesizes all content from Steps 1 and 3.
 
 ### Step 4 — Present Architecture Review
 
@@ -329,12 +317,11 @@ Present in the conversation language with COMPLETE content. **The section labels
 - **Architecture Diagram**: Reference the diagram generated in Step 3 (the artifact is rendered automatically in ADK Web UI). Mention that the diagram is available for the user to review.
 - **GCP Services (Technology Stack)**: Table with ALL services and project-specific descriptions
 - **Integrations**: Source systems + method (batch/streaming/API) + protocol
-- **GCP Consumption Plan**: Full 12-month table with per-service breakdown and notes
 - **Partner Overview**: GFT Technologies — certifications, specializations, global presence
 - **Customer Overview**: Customer — history, market position, key metrics
 - **Executive Summary**: Partner Overview + Customer Overview + Project Overview with scope boundary + Objectives
 
-Ask the user to review the architecture, technology stack, consumption plan, and executive summary. Focus exclusively on the review — do NOT mention document assembly or any subsequent steps.
+Ask the user to review the architecture, technology stack, and executive summary. Focus exclusively on the review — do NOT mention document assembly or any subsequent steps.
 
 **Canonical example (translate to the conversation language):**
 > "Please review the content above carefully. Are the technical specifications aligned with your expectations, or would you like to change, adjust, remove, or elaborate on any point before we proceed?"
@@ -363,7 +350,6 @@ Concrete protocol:
 - Keep the previous `sow_data` JSON verbatim as your base.
 - Read the validator's error: it names the specific field(s) that failed.
 - Apply the minimum change to fix those field(s). Leave every other field byte-for-byte identical — same items, same order, same IDs, same text.
-- Example: if the error is "consumption_plan: required for PSF engagements", add the `consumption_plan` object. Do NOT touch `assumptions`, `out_of_scope`, `functional_requirements`, or any other field.
 - Example: if the error is "FR-08: description too short", rewrite only FR-08's description. Do NOT renumber other FRs, do NOT rewrite other descriptions, do NOT reorder the list.
 
 If the tool returns a meta-error stating that you submitted an identical payload twice in a row, that means you broke this rule — you regenerated the payload instead of editing it. Recover by literally copying the previous payload as your starting point and editing surgically from there.
@@ -387,7 +373,7 @@ Do NOT mention this tracker or its contents to the user during Step 1. It is con
 - `executive_summary`: Complete, self-contained paragraph — no prefix added by tool.
 - ALL structured array fields must be populated (not empty): `functional_requirements`, `activity_phases`, `deliverables`, `timeline`, `partner_roles`, `customer_roles`, `architecture_components`, `architecture_integrations`.
 - ALL list fields must be populated: `activities`, `objectives`, `out_of_scope`, `assumptions`, `success_criteria`.
-- Include: `technology_stack` (GCP only), `consumption_plan` (required for PSF), `risks` (if not removed), `milestones` (if payment model uses milestones).
+- Include: `technology_stack` (GCP only), `risks` (if not removed), `milestones` (if payment model uses milestones).
 - `customer_primary_domain`: optional string. The customer's official institutional domain, captured in Phase 2 Step 3 from a homepage search result URL. Used by the document tool to auto-fetch the customer logo.
   - **Format**: domain only — no protocol, no `www.`, no path, no query string. Any TLD is valid; the TLD reflects the company's actual homepage and there is no preferred TLD. Examples across regions and TLD formats: `inter.co`, `nubank.com.br`, `vale.com`, `caixa.gov.br`, `bbva.es`, `commerzbank.de`, `tcs.com`, `aramco.com`, `bp.com`, `samsung.com`.
   - **Value to pass**: pass the exact domain captured in Phase 2 Step 3, byte-for-byte. Treat the captured string as immutable.

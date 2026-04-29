@@ -262,25 +262,6 @@ def _make_sow_data(
             },
         ]
 
-    if funding == 'PSF':
-        data['consumption_plan'] = {
-            'services': [
-                'Cloud Run',
-                'BigQuery',
-                'Vertex AI',
-                'Cloud Storage',
-            ],
-            'rows': [
-                {
-                    'month': m,
-                    'costs': ['$50', '$200', '$300', '$30'],
-                    'total': '$580',
-                }
-                for m in range(1, 13)
-            ],
-            'notes': 'Estimates based on development workloads. Production costs may vary.',
-        }
-
     return data
 
 
@@ -307,18 +288,6 @@ class TestContentValidator:
         result = ContentValidator().validate(data)
         assert not result.passed
         assert any('NFR-XX' in e.message for e in result.errors)
-
-    def test_psf_requires_consumption_plan(self):
-        data = _make_sow_data(funding='PSF')
-        del data['consumption_plan']
-        result = ContentValidator().validate(data)
-        assert not result.passed
-        assert any('consumption' in e.message.lower() for e in result.errors)
-
-    def test_psf_with_consumption_plan_passes(self):
-        data = _make_sow_data(funding='PSF')
-        result = ContentValidator().validate(data)
-        assert result.passed
 
     def test_short_architecture_description_warns(self):
         data = _make_sow_data()
@@ -357,14 +326,6 @@ class TestQualityGates:
         _apply_defaults(data)
         errors = validate_quality_gates(data)
         assert any('Assumptions' in e for e in errors)
-
-    def test_psf_without_consumption_plan_fails(self):
-        data = _make_sow_data(funding='PSF')
-        del data['consumption_plan']
-        _apply_defaults(data)
-        errors = validate_quality_gates(data)
-        assert any('Consumption Plan' in e for e in errors)
-
 
 class TestProjectTypeInference:
     """Tests for project_type auto-derivation."""
@@ -433,14 +394,6 @@ class TestTemplateRendering:
         assert 'FR-01' in full_text
         assert 'NFR-01' in full_text
         assert 'Phase 1: Discovery' in full_text
-
-    @pytest.mark.skipif(
-        not _TEMPLATE_PATH.exists(),
-        reason='SOW template not found',
-    )
-    def test_psf_template_renders_with_consumption_plan(self):
-        full_text = self._render_to_text(_make_sow_data(funding='PSF'))
-        assert 'PSF' in full_text
 
     @pytest.mark.skipif(
         not _TEMPLATE_PATH.exists(),

@@ -64,24 +64,6 @@ class TestQualityGates:
         errors = validate_quality_gates(sow_data)
         assert not any('Risks' in e for e in errors)
 
-    def test_psf_without_consumption_plan_fails(self, sow_data_psf):
-        sow_data_psf.pop('consumption_plan')
-        errors = validate_quality_gates(sow_data_psf)
-        assert any('Consumption Plan' in e for e in errors)
-
-    def test_psf_with_consumption_plan_table_ok(self, sow_data_psf):
-        """Accept either consumption_plan or consumption_plan_table."""
-        sow_data_psf['consumption_plan_table'] = sow_data_psf.pop(
-            'consumption_plan'
-        )
-        errors = validate_quality_gates(sow_data_psf)
-        assert not any('Consumption Plan' in e for e in errors)
-
-    def test_daf_without_plan_ok(self, sow_data):
-        errors = validate_quality_gates(sow_data)
-        assert not any('Consumption Plan' in e for e in errors)
-
-
 class TestSowDataHash:
     def test_dict_and_json_produce_same_hash(self, sow_data):
         h1 = sow_data_hash(sow_data)

@@ -69,24 +69,6 @@ class TestFundingTypeHandling:
         )
         assert result['data']['passed'] is True
 
-    async def test_explicit_funding_type_beats_autodetect(
-        self, sow_data_psf, mock_tool_context
-    ):
-        """Explicit DAF skips the PSF consumption plan requirement."""
-        del sow_data_psf['consumption_plan']
-        result = await validate_sow_content(
-            sow_data=json.dumps(sow_data_psf),
-            funding_type='DAF',
-            tool_context=mock_tool_context,
-        )
-        # No PSF consumption-plan error because we forced DAF interpretation
-        issues = result['data']['issues']
-        assert not any(
-            'consumption' in i['message'].lower() for i in issues
-            if i['severity'] == 'error'
-        )
-
-
 class TestStageHandling:
     async def test_content_stage_skips_arch_checks(
         self, sow_data, mock_tool_context

@@ -96,21 +96,6 @@ async def generate_sow_document(
               (omit if single payment at project completion)
             - risks: list of {"description": "Data quality issues...", "mitigation": "Implement validation..."}
               (optional — if provided, content will be added to Assumptions section)
-            - consumption_plan: dict (optional — required for PSF, omit for DAF
-              unless requested). Monthly GCP consumption estimates for 12 months.
-              Structure:
-              {
-                "services": ["Cloud Run", "Vertex AI", "Firestore"],
-                "rows": [
-                  {"month": 1, "costs": ["$20", "$150", "$10"], "total": "$180"},
-                  {"month": 2, "costs": ["$20", "$150", "$10"], "total": "$180"},
-                  ...
-                ],
-                "notes": "Estimates based on 1,200 monthly requests."
-              }
-              The "services" list defines table column headers (GCP services only).
-              Each "rows" entry must have the same number of "costs" as "services".
-              The "notes" field provides estimation assumptions rendered below the table.
 
             Optional simple fields:
             - taxes_included (boolean — default true. Controls which cost table and
@@ -484,26 +469,6 @@ def _apply_defaults(data: dict) -> None:
     data.setdefault('milestones', [])
     data.setdefault('risks', [])
     data.setdefault('architecture_diagram', '')
-
-    cp_raw = data.get('consumption_plan')
-    if isinstance(cp_raw, dict) and 'rows' in cp_raw and 'services' in cp_raw:
-        processed_rows = []
-        for row in cp_raw.get('rows', []):
-            new_row = dict(row)
-            if 'values' in new_row:
-                new_row['costs'] = new_row.pop('values')
-            elif 'costs' not in new_row:
-                new_row['costs'] = []
-            processed_rows.append(new_row)
-        cp_raw['rows'] = processed_rows
-        data['consumption_plan_table'] = cp_raw
-        data['consumption_plan'] = ''
-    elif isinstance(cp_raw, str) and cp_raw.strip():
-        data['consumption_plan_table'] = None
-        data['consumption_plan'] = cp_raw
-    else:
-        data['consumption_plan_table'] = None
-        data['consumption_plan'] = ''
 
 
 def _auto_derive_fields(data: dict) -> None:
