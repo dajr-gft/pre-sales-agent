@@ -14,6 +14,7 @@ from google.genai import types
 import google.auth
 from .callbacks import after_tool_callback, before_tool_callback
 from .config import config
+from .guardrails import scope_guardrail
 from .prompts import build_instruction
 from .shared.logging_config import setup_logging
 from .tools.sow.generate_architecture_diagram import (
@@ -40,6 +41,26 @@ pre_sales_skill_toolset = skill_toolset.SkillToolset(
     ]
 )
 
+_SAFETY_THRESHOLD = types.HarmBlockThreshold(config.SAFETY_HARM_BLOCK_THRESHOLD)
+_SAFETY_SETTINGS = [
+    types.SafetySetting(
+        category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+        threshold=_SAFETY_THRESHOLD,
+    ),
+    types.SafetySetting(
+        category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+        threshold=_SAFETY_THRESHOLD,
+    ),
+    types.SafetySetting(
+        category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+        threshold=_SAFETY_THRESHOLD,
+    ),
+    types.SafetySetting(
+        category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+        threshold=_SAFETY_THRESHOLD,
+    ),
+]
+
 # --- Sub-agents ---
 google_search_agent = Agent(
     name='google_search_agent',
@@ -52,6 +73,7 @@ google_search_agent = Agent(
     tools=[GoogleSearchTool()],
     generate_content_config=types.GenerateContentConfig(
         temperature=config.TEMPERATURE,
+        safety_settings=_SAFETY_SETTINGS,
     ),
 )
 
@@ -78,10 +100,12 @@ root_agent = Agent(
     ),
     instruction=build_instruction(company_name=config.COMPANY_NAME),
     tools=_TOOLS,
+    before_model_callback=scope_guardrail,
     before_tool_callback=before_tool_callback,
     after_tool_callback=after_tool_callback,
     generate_content_config=types.GenerateContentConfig(
         temperature=config.TEMPERATURE,
+        safety_settings=_SAFETY_SETTINGS,
         thinking_config=types.ThinkingConfig(
             include_thoughts=False,
             thinking_budget=config.THINKING_BUDGET,
@@ -100,4 +124,7 @@ logger.info(
     tools=len(_TOOLS),
     thinking_budget=config.THINKING_BUDGET,
     skills_dir=str(_SKILLS_DIR),
+    safety_threshold=config.SAFETY_HARM_BLOCK_THRESHOLD,
+    safety_guardrail_enabled=config.SAFETY_GUARDRAIL_ENABLED,
+    safety_judge_model=config.SAFETY_JUDGE_MODEL,
 )

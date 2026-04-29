@@ -91,6 +91,38 @@ class AgentConfig(BaseSettings):
         alias='LOGO_DEV_PUBLISHABLE_KEY',
     )
 
+    # Safety — content filters (Layer 2)
+    SAFETY_HARM_BLOCK_THRESHOLD: str = Field(
+        default='BLOCK_MEDIUM_AND_ABOVE',
+        description=(
+            'Gemini configurable harm-category block threshold. One of '
+            'BLOCK_NONE, BLOCK_ONLY_HIGH, BLOCK_MEDIUM_AND_ABOVE, '
+            'BLOCK_LOW_AND_ABOVE, OFF.'
+        ),
+    )
+
+    # Safety — scope/injection guardrail (Layer 3)
+    SAFETY_GUARDRAIL_ENABLED: bool = Field(
+        default=True,
+        description=(
+            'Enable the LLM-as-a-judge scope/injection guardrail that runs as '
+            'before_model_callback on the root agent.'
+        ),
+    )
+    SAFETY_JUDGE_MODEL: str = Field(
+        default='gemini-flash-lite-latest',
+        description=(
+            'Model used by the scope guardrail to classify user input as '
+            'on-topic / off-topic / injection. Should be a fast, cheap model.'
+        ),
+    )
+    SAFETY_JUDGE_TIMEOUT_S: float = Field(
+        default=8.0,
+        ge=1.0,
+        le=30.0,
+        description='Timeout (seconds) for the judge model call. Fails open on timeout.',
+    )
+
     def resolve_project_id(self) -> str:
         """Return project_id, falling back to ADC if not explicitly set."""
         if self.PROJECT_ID:
