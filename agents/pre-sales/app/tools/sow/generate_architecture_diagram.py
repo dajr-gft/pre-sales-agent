@@ -361,7 +361,10 @@ def _build_d2_code(
 
         if edge.label:
             label = _escape_d2(edge.label)
-            lines.append(f'{src_path} -> {tgt_path}: "{label}"')
+            lines.append(f'{src_path} -> {tgt_path}: "{label}" {{')
+            lines.append('  style.bold: true')
+            lines.append(f'  style.font-color: "{_NODE_FONT_COLOR}"')
+            lines.append('}')
         else:
             lines.append(f'{src_path} -> {tgt_path}')
 

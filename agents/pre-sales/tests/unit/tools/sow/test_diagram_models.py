@@ -127,8 +127,23 @@ class TestGetD2IconPath:
         assert path is not None
         assert Path(path).name == 'BigQuery.svg'
 
-    def test_returns_none_for_service_without_icon(self, fake_icon_base):
-        assert get_d2_icon_path(GcpServiceEnum.CLIENT) is None
+    def test_returns_none_when_filename_missing_from_map(
+        self, fake_icon_base, monkeypatch
+    ):
+        """If a service has no entry in _D2_ICON_FILENAME, returns None.
+
+        Every service in the current map points to a real file, so we
+        simulate the "unmapped" path by removing one entry — this exercises
+        the ``filename is None`` guard regardless of which services happen
+        to share icons today.
+        """
+        patched = {
+            k: v
+            for k, v in dm._D2_ICON_FILENAME.items()
+            if k != GcpServiceEnum.BIGQUERY
+        }
+        monkeypatch.setattr(dm, '_D2_ICON_FILENAME', patched)
+        assert get_d2_icon_path(GcpServiceEnum.BIGQUERY) is None
 
     def test_returns_none_when_file_missing(self, fake_icon_base):
         (fake_icon_base / 'BigQuery.svg').unlink()
@@ -146,11 +161,14 @@ class TestGetD2IconPath:
 
 
 class TestGetD2Shape:
-    def test_client_users_have_person_shape(self):
-        assert get_d2_shape(GcpServiceEnum.CLIENT) == 'person'
-        assert get_d2_shape(GcpServiceEnum.USERS) == 'person'
-
-    def test_other_services_have_no_shape_override(self):
+    def test_no_services_have_shape_override(self):
+        """Shape overrides are no longer used — every node renders as the
+        default D2 rectangle and relies on its icon (or label only) for
+        visual identity. CLIENT/USERS specifically use the User.svg icon
+        instead of the previous ``person`` shape.
+        """
+        assert get_d2_shape(GcpServiceEnum.CLIENT) is None
+        assert get_d2_shape(GcpServiceEnum.USERS) is None
         assert get_d2_shape(GcpServiceEnum.CLOUD_RUN) is None
         assert get_d2_shape(GcpServiceEnum.BIGQUERY) is None
 

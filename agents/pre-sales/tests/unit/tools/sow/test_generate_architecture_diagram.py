@@ -101,19 +101,32 @@ class TestRenderD2Node:
         assert lines[0].startswith('api')
         assert lines[-1].strip() == '}'
 
-    def test_renders_shape_for_client(self):
+    def test_renders_icon_for_user_service(self):
+        """USERS / CLIENT now render via the User.svg icon — no shape
+        override and no fixed dimensions, so the label can grow naturally
+        inside the default D2 rectangle.
+        """
         node = ArchitectureNode(
             id='u', label='User',
             service=GcpServiceEnum.USERS,
             parent_cluster=ClusterZone.USER_CONSUMER,
         )
-        lines = gad._render_d2_node(node)
+        with patch(
+            'app.tools.sow.generate_architecture_diagram.get_d2_icon_path',
+            return_value='/icons/User.svg',
+        ):
+            lines = gad._render_d2_node(node)
         joined = '\n'.join(lines)
-        assert 'shape: person' in joined
-        assert 'width: 80' in joined
-        assert 'height: 80' in joined
+        assert 'icon: /icons/User.svg' in joined
+        assert 'shape:' not in joined
+        assert 'width:' not in joined
+        assert 'height:' not in joined
 
     def test_renders_icon_for_gcp_service(self):
+        """GCP services render with ``icon:`` only — the previous ``shape:
+        image`` plus ``width/height`` block was removed because it pushed
+        labels outside the bounding box and broke ELK's container sizing.
+        """
         node = ArchitectureNode(
             id='bq', label='Warehouse',
             service=GcpServiceEnum.BIGQUERY,
@@ -126,7 +139,10 @@ class TestRenderD2Node:
             lines = gad._render_d2_node(node)
         joined = '\n'.join(lines)
         assert 'icon: /icons/BigQuery.svg' in joined
-        assert 'shape: image' in joined
+        assert 'shape:' not in joined
+        # Neutral palette is applied uniformly so zone color carries the signal.
+        assert 'style.stroke' in joined
+        assert 'style.font-color' in joined
 
     def test_indentation_applied(self):
         node = ArchitectureNode(
