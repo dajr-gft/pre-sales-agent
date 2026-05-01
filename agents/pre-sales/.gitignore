@@ -200,3 +200,5 @@ my_env.tfvars
 
 # A2A Inspector
 tools/a2a-inspector/
+
+.adk

@@ -11,6 +11,43 @@
 
 ---
 
+## Self-sufficiency contract (cross-cutting rule — applies to FRs, NFRs, OOS, Assumptions)
+
+The SOW is a contractual document. It MUST be readable and executable WITHOUT opening any other artifact. Every Functional Requirement, Non-Functional Requirement, Out-of-Scope item, and Assumption is self-contained.
+
+**Rule 1 — No external scope delegation.** No FR, NFR, OOS, or Assumption may delegate its definition to an external document. The document being drafted IS the scope. Phrasings that reference external artifacts to define what is or isn't in scope are FORBIDDEN, including:
+
+- "as listed in [Appendix / Annex / Matrix / Capability Sheet / Attachment]"
+- "all capabilities defined in [external doc name]"
+- "strictly limited to the items in [external doc]"
+- "the scope is bounded by [external doc]"
+- Any equivalent phrasing in any language that makes scope dependent on opening a separate file.
+
+When the discovery Manifest references a source document by name (capability matrix, RACI, technical annex, kickoff deck, etc.), that source name is metadata for the agent during generation — it MUST NOT appear in any FR/NFR/OOS/Assumption text in the SOW. Translate the items themselves into the SOW; never translate a pointer to the items.
+
+**Rule 2 — Map Manifest items into requirements with flexible grouping.** Each Manifest item whose category is in `[Briefing, Integrations, NFRs]` MUST appear named literally (by name, feature, or direct description) in at least one FR or NFR. Grouping is allowed when natural, required when not:
+
+- **Group into ONE requirement** when items are instances of the same operation differing only by target/channel/system/parameter (e.g., items "X for A", "X for B", "X for C" → one FR: "The platform shall provide X for A, B, and C") — or when items are synonyms of the same concept (e.g., "STT" and "Speech-to-Text support" → one FR).
+- **Keep SEPARATE requirements** when items describe functionally distinct capabilities, even if related by domain. Examples: short-term session-scoped memory vs long-term cross-session memory are different mechanisms — two FRs; model training vs model serving are different lifecycle stages — two FRs.
+
+**Self-sufficiency invariant (non-negotiable):** grouping consolidates operations but NEVER erases names. If you group 4 channels into 1 FR, all 4 channel names appear in that FR's text. Every Manifest item must be findable in the SOW by name.
+
+**Decision test:** would the grouped requirement read naturally as "operation X parameterized by [list]"? If yes, group. If you have to invent a fake parent concept to glue items together (e.g., "STT", "DLP", and "RAG" under "AI capabilities"), separate. When in doubt, separate — one extra FR costs less than an artificial umbrella.
+
+**Rule 3 — Counter ranges are floors when the Manifest is rich.** The targets defined per section below (10-20 FRs, 5+ NFRs, 20-30 OOS, 15-25 Assumptions) are MINIMUM floors and SOFT design targets. They are NEVER hard caps. When the Manifest covers more capabilities than the soft target accommodates, exceed the target. A Manifest with 60 distinct capabilities in `[Briefing, Integrations, NFRs]` produces 50+ FRs/NFRs — that is the correct outcome, not an error to be compressed. Compression that creates an "umbrella requirement" pointing at a Manifest category or external document is a SEVERE failure of this contract.
+
+**Anti-patterns (all rejected, in any language):**
+
+> FR-XX: The solution shall implement all capabilities listed in the customer's capability matrix.
+>
+> FR-XX: The scope is strictly limited to the items defined in the project's technical annex.
+>
+> FR-XX: The solution shall comply with all requirements detailed in the reference documentation provided by the Customer.
+
+Each is rejected on three grounds: (a) delegates scope to an external document (Rule 1), (b) collapses N capabilities into one umbrella (Rule 2), (c) makes the SOW non-self-sufficient. The defect is structural — it does not depend on the document's specific name. The correct treatment for any of them is to expand into N individual FRs, one per capability, each naming the capability literally in the FR text — even if N is 50 or more (Rule 3).
+
+---
+
 ## Section Rules
 
 ### Executive Summary
@@ -30,8 +67,9 @@
 ### Functional Requirements
 - "Shall" language. Boundary-setting where applicable.
 - Numbered table with unique IDs (FR-01, FR-02...).
-- **Target: 10-20 FRs.**
+- **Target: 10-20 FRs** (floor; exceed when Manifest demands per Self-sufficiency Rule 3).
 - Each FR must name specific systems, data flows, APIs, or behaviors — not generic capabilities.
+- Self-sufficiency contract applies in full — every Manifest-captured capability must be named literally in some FR.
 - Infer implicit requirements: authentication/authorization, error handling, audit logging, data validation, admin monitoring, edge cases.
 
 ### Non-Functional Requirements
@@ -39,6 +77,7 @@
 - Numbered table with unique IDs (NFR-01, NFR-02...).
 - Quantifiable targets. Reference specific standards (TLS 1.3, AES-256).
 - Use NFRs to reinforce scope boundaries where applicable.
+- Self-sufficiency contract applies in full — every Manifest-captured NFR must be named literally in some NFR.
 - **Consultancy scope rule (non-negotiable):** NFRs describe architectural qualities GFT implements during the engagement — they do NOT commit to production uptime or availability percentages. This rule applies strictly to availability/uptime/SLA phrasings; latency, throughput, accuracy, security standards, and other quantitative targets are unaffected by this rule.
     - **FORBIDDEN phrasings:** "shall maintain [N]% uptime", "guaranteed availability of [X]%", "SLA of [Y]% availability", "uptime commitment of [Z]%", or any variant that commits Partner to a production availability percentage.
     - **REQUIRED phrasing for the Reliability pillar:** "The platform shall be architected for high availability using [specific services/patterns — e.g., multi-region Cloud Run deployment, Cloud SQL automatic failover, health checks]. Ongoing availability management remains with the Customer post-handover."
@@ -72,7 +111,7 @@ See `references/architecture-guide.md` Part 4. All rules there are binding.
 
 ### Assumptions & Prerequisites
 
-**Target: 15-25 assumptions.**
+**Target: 15-25 assumptions** (floor; exceed when project demands).
 
 Every customer-dependent assumption MUST include explicit consequence.
 Pattern: "[Customer] must [obligation] [by when]. [Consequence if not met]."
@@ -97,10 +136,15 @@ Pattern: "[Customer] must [obligation] [by when]. [Consequence if not met]."
 
 ### Out-of-Scope
 
-**Target: 20-30 items.** Each item: complete, self-contained, unambiguous.
+**Target: 20-30 items** (floor; exceed when project demands). Each item: complete, self-contained, unambiguous.
 Use "including but not limited to" for broad coverage with named technologies.
 
 **Disambiguation rule:** When OOS item could contradict an in-scope FR, MUST distinguish excluded vs. included with cross-reference. Apply ONLY when both FR and conflicting OOS exist. If FR was removed, write OOS normally.
+
+**FR/OOS pre-generation cross-check:**
+- User/Manifest explicitly contains the capability → keep FR, disambiguate OOS item.
+- Capability was inferred (not present in Manifest, not in user answers) → remove FR, keep OOS as-is.
+- Concrete pattern: if OOS mentions model maintenance/retraining/model ops post go-live → do NOT infer FR for automated retraining unless the Manifest explicitly captures it.
 
 **Categories to cover (adapt to project):**
 
@@ -120,7 +164,7 @@ Use "including but not limited to" for broad coverage with named technologies.
 14. **Excluded documentation processing**: Ingestion/preprocessing of customer internal docs
 15. **Excluded revisions post-approval**: Changes to approved deliverables require CR
 16. **Catch-all**: "Any additions, enhancements, or modifications without formally approved Change Request"
-17. **Excluded service-level commitments**: Any guarantee of uptime, availability, or service-level agreements (SLAs) for production workloads. The solution is architected to support the reliability targets informed during discovery, but sustained production availability remains the Customer's responsibility after handover.
+17. **Excluded service-level commitments**: Any guarantee of uptime, availability, or service-level agreements (SLAs) for production workloads. The solution is architected to support the reliability targets informed during discovery, but sustained production availability remains the Customer's responsibility after handover. **This category is mandatory regardless of project type or funding (DAF/PSF).**
 
 ### Change Request Policy
 - Include immediately after Out-of-Scope.

@@ -1,16 +1,20 @@
 ---
 name: sow-generator
 description: >
-  Generates a complete Statement of Work (SOW) document following the Google DAF/PSF template.
-  Use when the user asks to create, build, write, or draft a SOW, Statement of Work,
-  proposta técnica, escopo de trabalho, or any request related to creating a project
-  scope document for a customer engagement.
+  Generates a complete Statement of Work (SOW) document following the Google DAF/PSF
+  template, consuming an Extraction Manifest produced by `sow-discovery`. Use when the
+  user asks to create, build, write, or draft a SOW, Statement of Work, proposta técnica,
+  escopo de trabalho, or any request related to producing a project scope document — AFTER
+  project context has been captured by `sow-discovery`. If no Extraction Manifest exists in
+  the session, the agent redirects the user to run `sow-discovery` first instead of
+  re-interviewing.
 metadata:
-  pattern: pipeline + inversion + generator
+  pattern: pipeline + generator
   interaction: multi-turn
   output-format: docx
   conversation-language: same as user
   document-language: en
+  upstream-skill: sow-discovery
 ---
 
 # SOW Generator
@@ -38,113 +42,74 @@ metadata:
 - Use exact quantities — never "up to", "various", "several".
 - Never include hours, hourly rates, or rate cards.
 - Use scope boundary language: "strictly limited to", "exclusively", "explicitly excluded".
-- **Professionalize all user input.** Never echo user's exact words in review or document. Rewrite in professional consulting language preserving original meaning.
+- **Professionalize all input.** Never echo the user's exact words or the Manifest's raw phrasing in review or document. Rewrite in professional consulting language preserving original meaning.
 
-DO NOT generate any document content until all information is collected in Phase 1.
+DO NOT generate any document content until the Extraction Manifest has been loaded and the Inference Summary has been confirmed by the user in Phase 1.
 
 ---
 
-## Phase 1 — Project Discovery
+## Phase 1 — Manifest Loading
 
-Two input paths (root agent determines which):
-- **Path A (Guided):** Interactive Blocks 1-4.
-- **Path B (Transcript):** Extract from recording/transcript/notes, ask only for gaps.
+This skill does NOT discover project context. Discovery is the responsibility of `sow-discovery`, which produces an Extraction Manifest validated against a Pydantic schema and persisted in the session. Phase 1 here is purely about loading that Manifest, surfacing blocking gaps, and confirming the Inference Summary with the user before generation begins.
 
-Both paths converge at gate: **DO NOT proceed to Phase 2 until user explicitly confirms.**
+**Tool usage in Phase 1:** `load_extraction_manifest` is the only mandatory call. File-reading tools are permitted ONLY if the user attached files alongside the SOW request and you need to verify a hard gap; otherwise do NOT re-read raw artifacts at this stage — the Manifest is the canonical project context. Web searches and content generation tools belong to Phase 2.
 
-**Phase 1 is conversation only.** Do NOT load references (load_skill_resource), perform web searches (google_search_agent), or call any tools during this phase — with one exception: Path B Step 1 may use file-reading tools to access uploaded transcripts, audio files, or documents. All other tool calls happen in Phase 2 after the user confirms.
+### Step 1 — Load and verify (silent)
 
-### Path A — Guided Discovery
+Call `load_extraction_manifest()`. Handle the return:
 
-#### Block 1 — Identity
-Partner is always **GFT Technologies** — do not ask.
-Ask: Customer name, Project title, Funding type (DAF/PSF).
+- `{status: "ok", manifest: {...}}` — silently verify these three flags before proceeding:
+  - `manifest.manifest_version` is recognized (currently `"1.0"`).
+  - `manifest.self_audit.all_required_categories_covered == true`.
+  - `manifest.self_audit.all_artifacts_contributed == true`.
+  
+  If any flag is missing or false, surface the issue to the user in their language and ask whether to proceed despite the warning or to re-run `sow-discovery`. If all three pass, proceed silently to Step 2.
 
-#### Block 2 — Project Briefing
-Single open-ended question: problem, solution, technical approach.
-- If user describes solution → infer GCP services silently.
-- Ask about GCP services only if user describes only the problem with no technical hints.
+- `{status: "not_found", manifest: null}` — redirect the user (translate to their language):
+  > "I do not see an Extraction Manifest in this session. Project discovery is handled by `sow-discovery`, which inventories your artifacts and extracts the context I need to generate the SOW. Please run `sow-discovery` first — once the Manifest is saved, return here and I will assemble the document."
+  
+  STOP. Do not attempt to interview the user as a fallback. The split is intentional.
 
-#### Block 2.5 — Integrations & Data Sources
-Ask which systems, APIs, or data sources will be integrated or consumed by the solution (e.g., SAP, Salesforce, internal APIs, existing databases, CSV/Parquet files).
-- Capture: system name, data direction (source/target/bidirectional), protocol if known (REST, gRPC, batch file, CDC).
-- If user says "none" or "only GCP services" → skip.
-- If user already described integrations in Block 2 → confirm and ask if there are others.
-- This ensures architecture and assumptions have explicit integration context rather than inferring from vague Block 2 descriptions.
+- `{status: "corrupted", error: "..."}` or `{status: "load_failed", error: "..."}` — surface the error in the user's language and ask whether to re-run `sow-discovery` or abort. Do NOT attempt to repair the Manifest.
 
-#### Block 3 — Scope, Team & Payment
-Ask: Out-of-scope items, team composition (partner + customer), payment model (single/milestones).
+### Step 2 — Resolve blocking gaps
 
-#### Block 4 — Intelligent Follow-up (after Block 3, 0-3 rounds)
+Walk `manifest.gaps.hard_gaps`. For each entry where `blocks_sow_generation: true` and `user_response` is empty/unset, prompt the user with the gap's `question` field (translated to their language). Capture the answers and treat them as authoritative additions to the Manifest for the rest of the conversation.
 
-**Mandatory collection** (always ask if missing):
-1. **Quantitative NFR targets** — latency, scalability, accuracy, compliance. These are business decisions that cannot be inferred.
-2. **Known constraints or prerequisites** — Does the customer have any known constraints? (e.g., data residency, compliance requirements, existing GCP organization, VPN/firewall restrictions, team availability windows). These directly shape assumptions and architecture.
-3. **Project timeline expectations** — Desired start date, end date, or duration. Deadlines tied to business events (e.g., "must go live before Q4 campaign").
+For entries where `blocks_sow_generation: false`, do NOT interrupt — they will be handled as `[TO BE DEFINED]` markers later. Re-interrogating the user about non-blocking gaps is the failure mode the Manifest exists to prevent.
 
-**Conditional collection** (ask only when relevant):
-- **Data volume and velocity** — If the project involves data processing/analytics/ML: approximate data volume (GB/TB), update frequency (real-time, hourly, daily), number of sources.
-- **Authentication/authorization model** — If the project involves user-facing systems or APIs: how users authenticate (SSO, OAuth, API keys), who manages identity.
+`manifest.gaps.pending_decisions` are also NOT user gaps — they are items the customer hasn't decided yet. They become Assumptions (with consequence clause) or `[TO BE DEFINED]` markers in Phase 2. Do not ask about them here.
 
-**Inferrable gaps** (ask only if cannot confidently infer): Ambiguous technical choices, data formats, environment strategy (dev/staging/prod).
+### Step 3 — Inference Summary
 
-- Max 3 rounds total, max 3 questions per round.
-- After 3 rounds → `[TO BE DEFINED]` for remaining gaps.
-- Prioritize questions by impact: a missing NFR target or timeline constraint affects the entire SOW; a missing data format affects one FR.
+Build the summary directly from the Manifest. Do NOT re-interview. Map fields like this:
 
-**Infer silently (do NOT ask):** GCP services, FRs, NFR categories, architecture, assumptions, success criteria, risks, out-of-scope expansion.
+- **Project, Customer, Funding** ← `extracted_items` where `category == "Identity"`.
+- **Problem and Proposed Solution** ← `extracted_items` where `category == "Briefing"`.
+- **Inferred GCP services** ← derived from `category == "Briefing"` + `category == "Integrations"` (the Manifest captures facts; GCP service selection is your inference layer — mark inferred services with the equivalent of "(inferred)").
+- **Identified integrations** ← `category == "Integrations"`.
+- **Architecture style** ← derived from Briefing + Integrations (inferred).
+- **Planned phases** ← `category == "Timeline"`.
+- **Key constraints/assumptions** ← `category == "Constraints"` + `category == "Decisions"` + `manifest.gaps.pending_decisions`.
 
-After answers, present an **Inference Summary** before asking to proceed. This lets the user correct wrong inferences BEFORE the agent spends tokens generating full content.
-
-Present the summary in the user's language using this structure (translate labels to the conversation language):
+Present the summary in the user's language using this structure (translate labels):
 - **Project:** [title] | [funding type] | [customer name]
-- **Problem:** [1-2 sentences summarizing the problem from Block 2]
-- **Proposed solution:** [1-2 sentences summarizing the technical approach]
-- **Inferred GCP services:** [list of GCP services based on Blocks 2-3]
-- **Identified integrations:** [list from Block 2.5, or "none mentioned"]
+- **Problem:** [1-2 sentences]
+- **Proposed solution:** [1-2 sentences]
+- **Inferred GCP services:** [list]
+- **Identified integrations:** [list, or "none captured in the Manifest"]
 - **Architecture style:** [e.g., "event-driven pipeline", "request-response API", "batch ETL", "multi-agent AI"]
 - **Planned phases:** [e.g., "3 phases: Discovery (2 weeks), Build (6 weeks), Deploy (2 weeks)"]
-- **Key constraints/assumptions:** [from Block 4, e.g., "data residency in Brazil", "must use existing VPN"]
+- **Key constraints/assumptions:** [from Constraints + Decisions + pending_decisions]
 
 Then ask the user to confirm or correct.
 
 **Canonical example (translate to the conversation language):**
-> "Does this look right? If anything is off, let me know now — it's easier to correct before I generate the full content. Otherwise, shall I proceed?"
+> "Does this look right? If anything is off, let me know now — corrections here are cheap. Once you confirm, I will generate functional and non-functional requirements, scope, deliverables, and the rest. Shall I proceed?"
 
-**Why this step matters:** The agent will generate 10-20 FRs, 15-25 assumptions, and a full architecture based on these inferences. A wrong GCP service or missed integration here means rework in Phase 2 review. Catching it now costs one message; catching it later costs regenerating entire sections.
+**Why this gate matters:** Phase 2 will generate 10-20 FRs, 15-25 assumptions, 20-30 out-of-scope items, and a full architecture based on the Manifest plus your inferences. A wrong inferred GCP service or missed integration here means rework downstream. Catching it now costs one message; catching it later costs regenerating entire sections.
 
-### Path B — Transcript Extraction
-
-#### Step 1 — Analyze and Extract
-Extract ALL fields Blocks 1-4 would collect, including:
-- Identity (Block 1): customer name, project title, funding type
-- Technical approach (Block 2): problem, solution, GCP services
-- Integrations (Block 2.5): systems, APIs, data sources mentioned in the transcript
-- Scope, team, payment (Block 3): out-of-scope items, roles, payment model
-- NFR targets, constraints, and timeline (Block 4): quantitative targets, prerequisites, timeline expectations
-
-**Tool usage:** File-reading tools (to access uploaded transcripts, audio files, or documents) are permitted in this step. Web searches, reference loading, and content generation tools are NOT permitted — those belong to Phase 2.
-
-Rules:
-- Extract only what was explicitly stated or clearly implied.
-- Flag contradictions between speakers — do not choose one.
-- Ignore off-topic conversation.
-- Capture exclusion phrases (e.g., "this is out of scope", "isso fica fora").
-- Capture integration mentions (e.g., "connect with", "pull data from", "integrate with").
-
-#### Step 2 — Present Summary, Gaps & Contradictions
-Present in the user's language by category. List gaps (especially NFR quantitative targets, integrations, constraints, and timeline) and contradictions.
-
-#### Step 3 — Collect Missing
-Same rules as Block 4: mandatory NFR targets, constraints, timeline expectations. Max 3 rounds, then `[TO BE DEFINED]` for remaining gaps.
-
-#### Step 4 — Inference Summary
-After collecting all missing information, present the same **Inference Summary** as Path A Block 4 (project, solution, inferred GCP services, integrations, architecture style, phases, constraints). Ask user to confirm before proceeding.
-
-**Canonical example (translate to the conversation language):**
-> "Does this look right? If anything is off, let me know now — it's easier to correct before I generate the full content. Otherwise, shall I proceed?"
-
-**DO NOT proceed to Phase 2 until user explicitly confirms.**
+**DO NOT proceed to Phase 2 until the user explicitly confirms.**
 
 ---
 
@@ -162,14 +127,14 @@ Generate each section in English. If a section has a target, meet it. If a secti
 
 #### Pre-generation checks
 Cross-reference FRs against Out-of-Scope:
-- **User explicitly requested** the capability → keep FR, disambiguate OOS item.
-- **Capability was inferred** (not explicitly requested) → remove FR, keep OOS as-is.
+- **User/Manifest explicitly contains** the capability → keep FR, disambiguate OOS item.
+- **Capability was inferred** (not present in `manifest.extracted_items` and not requested in Phase 1 Step 2 answers) → remove FR, keep OOS as-is.
 - Apply disambiguation ONLY when both FR and conflicting OOS exist.
-- Concrete pattern: if OOS mentions model maintenance/retraining/model ops post go-live → do NOT infer FR for automated retraining unless user explicitly requested it.
+- Concrete pattern: if OOS mentions model maintenance/retraining/model ops post go-live → do NOT infer FR for automated retraining unless the Manifest explicitly captures it.
 
 #### Section generation order
 
-1. **Functional Requirements**: MUST generate 10-20 FRs. Per style-guide rules and scope-examples patterns. Infer implicit requirements (authentication, error handling, audit logging, data validation) to reach the minimum.
+1. **Functional Requirements**: MUST generate 10-20 FRs. Per style-guide rules (including Self-sufficiency contract for Manifest coverage) and scope-examples patterns. Infer implicit requirements (authentication, error handling, audit logging, data validation) to reach the minimum.
 
 2. **Non-Functional Requirements**: MUST generate at least 5 NFRs aligned with GCP WAF pillars (Security, Reliability, Performance, Operational Excellence, Cost Optimization). Per style-guide.
 
@@ -209,6 +174,65 @@ Cross-reference FRs against Out-of-Scope:
 
 11. **Acceptance** — Signature block for Customer and Partner.
 
+### Step 1.4 — Source Coverage Self-Check (silent)
+
+After Step 1 completes, audit coverage of the Extraction Manifest before structural validation. Goal: every concrete item the Manifest captured must be accounted for in the generated content — covered, excluded, or captured as a dependency. Nothing silently dropped.
+
+This step requires exhaustive enumeration. Default concision does not apply — operate on items individually, do not collapse into categories.
+
+**Source material** is the Extraction Manifest loaded in Phase 1, treated as the canonical project context:
+
+- `manifest.extracted_items` — every concrete item the discovery skill captured from artifacts, organized by category. This is the primary input for the audit.
+- `manifest.gaps.pending_decisions` — items the customer has not decided yet. Each becomes an Assumption with consequence clause (preferred) or a `[TO BE DEFINED]` marker. They are NOT user-facing gaps and must NOT be re-interrogated.
+- `manifest.gaps.hard_gaps` and `manifest.gaps.ambiguities` — items with `blocks_sow_generation: true` were resolved by the user in Phase 1 Step 2 and have authoritative `user_response` text. Items with `blocks_sow_generation: false` and unresolved responses become `[TO BE DEFINED]` markers in the relevant section.
+- Any user answers captured in Phase 1 Step 2 (blocking-gap resolutions) and Phase 1 Step 3 (Inference Summary corrections). These have equal weight to `extracted_items`.
+
+**Trampoline mechanism:** when an `extracted_items[].source[]` entry is too summarized to draft FR/NFR/OOS/Assumption text — for example, the Manifest says "integration with the partner billing API" but you need the field-level contract to write a deliverable — reopen the original artifact at the precise location named in `source[].anchor` (page number, timestamp, section heading, or line range as captured by `sow-discovery`). Use this ONLY when the Manifest entry is genuinely insufficient. The Manifest is the default truth; reopening source artifacts is a fallback, not a habit. Do NOT reopen artifacts to re-discover items already captured — that defeats the purpose of the split.
+
+**Tool usage:** file-reading tools may be used in this step EXCLUSIVELY to follow `source[].anchor` references via the trampoline mechanism above. Web searches, reference loading, and content generation tools remain blocked.
+
+**Procedure:**
+
+1. Walk `manifest.extracted_items` (already in your reasoning since Phase 1 — do not call `load_extraction_manifest` again). For each entry, identify its coverage in Step 1's output. **Coverage requires literal naming per the Self-sufficiency contract in `references/style-guide.md`** — generic umbrellas pointing at the Manifest's source document or category do NOT count.
+
+   - Covered by an FR/NFR that names this specific item (or groups it per Rule 2) → record the ID.
+   - Explicitly excluded in Out-of-Scope (with the item named literally) → record the OOS reference.
+   - Captured as an Assumption with consequence clause (with the item named literally) → record the assumption reference.
+   - No literal naming anywhere → flag as gap.
+
+   List Manifest items individually, by name as they appear. Do not collapse into categories ("multiple integrations", "various compliance items"). Do not introduce items not present in the Manifest — this is an audit, not a generator.
+
+   **Calibration:** the depth of enumeration scales with Manifest richness. A Manifest from a short briefing produces a short enumeration — that is correct. Do not inflate to appear thorough. The audit is exhaustive *over what the Manifest contains*, not exhaustive in absolute terms.
+
+2. For each flagged gap, read the entry's `source[].anchor`. Apply the trampoline mechanism: if the Manifest entry alone gives you enough to draft an FR/NFR/OOS/Assumption, do so directly. If not, reopen the original artifact at the anchor location and use the original phrasing as the source of detail. Default to the Manifest; reopen only when you would otherwise have to invent content.
+
+3. Walk `manifest.gaps.pending_decisions`. For each one, decide:
+   - Add as Assumption with explicit consequence clause (preferred when the decision direction is foreseeable). Example: "Customer must select the regional deployment topology by week 2 of Build phase. If selection slips, the timeline extends by the delay period."
+   - Add as `[TO BE DEFINED]` marker in the relevant section (when even the assumption framing would be misleading).
+
+4. Walk `manifest.gaps.hard_gaps` and `manifest.gaps.ambiguities`. For items with `blocks_sow_generation: true`, integrate the Phase 1 Step 2 user answers as authoritative content. For items with `blocks_sow_generation: false` and no user response, place a `[TO BE DEFINED]` marker.
+
+5. Reconcile generic-vs-specific overlap. When a Manifest item matches a Step 1 FR/NFR/Assumption that was inferred generically (auth, error handling, audit logging, environment management, data validation), refine the existing item in place — replace the generic phrasing with the Manifest-specific one and keep the same ID. Do not add a duplicate. Reserve new IDs for items that have no existing coverage of any kind.
+
+6. Resolve every remaining gap before exiting this step:
+   - In scope based on Manifest intent → add the corresponding FR or NFR.
+   - Out of scope based on Manifest intent → add the OOS item.
+   - Customer-side prerequisite or commitment → add the assumption with consequence clause.
+   - Genuinely ambiguous from Manifest + anchor alone → place under the most plausible category with a `[TO BE DEFINED]` marker on the unclear attribute, AND surface the ambiguity in Step 2's review for the user to resolve. Do not silently guess.
+
+**Resolving ambiguities surfaced in Step 2:** when Step 2's review escalates a `[TO BE DEFINED]` item and the user resolves it, refine the affected item in place — same ID, updated content — without re-running the full coverage check. The resolution path is surgical, not a full re-audit. ID stability rules from Step 2 apply.
+
+**Self-review (mandatory before exit):**
+1. Does every `manifest.extracted_items` entry have a recorded coverage entry — FR ID, NFR ID, OOS reference, assumption reference, or `[TO BE DEFINED]` flag with planned Step 2 escalation?
+2. Has every `pending_decision`, `hard_gap`, and `ambiguity` been integrated as an Assumption, a `[TO BE DEFINED]` marker, or authoritative content from Phase 1 Step 2?
+3. Were Manifest items reconciled with existing generic items — refinement, not duplication?
+4. If any artifact was reopened via the trampoline, was that because the Manifest entry was genuinely insufficient — not as a shortcut to skip reading the Manifest?
+5. Does every covered Manifest item appear by name in the SOW text (per Self-sufficiency contract in style-guide)? Umbrella requirements pointing at external docs or Manifest categories are NOT coverage — expand them before exiting.
+
+If any answer is no, return to the corresponding procedure step before proceeding.
+
+**Exit gate:** Step 2 sees only the resulting (now-complete) content. The enumeration, mapping, gap resolution, anchor reopening, and self-review remain internal — never echoed in user-facing output.
+
 ### Step 1.5 — Validate Content (silent, before presenting to user)
 
 After generating all content in Step 1, call `validate_sow_content` with the assembled JSON and `stage="content"`. This tells the validator that architecture is intentionally absent (it is generated later in Step 3) — checks for that section are skipped.
@@ -226,6 +250,9 @@ After generating all content in Step 1, call `validate_sow_content` with the ass
 - Do NOT present review content in a different language than the conversation.
 - Do NOT write things like "X items will be included in the final document." **If the items are not here, they will not exist.**
 - Do NOT label sections as "Key Items" or "Summary." Present COMPLETE content.
+- Do NOT aggregate, truncate, or summarize lists with constructions like "(+ N more items)", "etc.", "...", or category-only descriptions. Render every item individually with its full text.
+
+Before sending the review, verify the count of items in your review matches the count of items you generated for each section. If any section's review count is lower, the review is incomplete — expand it.
 
 Present structured review in the user's language with COMPLETE content. **The section labels below are canonical English references — translate every bold label to the conversation language before presenting. Never present these labels in English when the conversation is in another language.**
 
@@ -234,12 +261,12 @@ Present structured review in the user's language with COMPLETE content. **The se
 - **Functional Requirements**: ALL FRs with IDs. Mark inferred items in the conversation language (e.g., "(inferido)" / "(inferred)")
 - **Non-Functional Requirements**: ALL NFRs with IDs + targets
 - **Activities**: ALL tasks per phase
-- **Deliverables**: ALL deliverables with workstream structure
+- **Deliverables**: ALL deliverables with workstream structure (Objective / Subtopics / Outcomes)
 - **Out of Scope**: ALL 20-30 items. Mark additions in the conversation language (e.g., "(adicionado)" / "(added)")
-- **Assumptions**: ALL 15-25 items with consequences. Mark additions in the conversation language
+- **Assumptions**: ALL 15-25 items with consequence clauses. Mark additions in the conversation language
 - **Risks**: ALL 3-5 risks with mitigations. Mark inferred items in the conversation language
 - **Success Criteria**: ALL criteria
-- **Team**: Partner roles (with 3-sentence responsibilities) + Customer roles
+- **Team**: Partner roles (with full 3-sentence responsibilities inline) + Customer roles
 - **Milestones**: Payment structure with deliverables mapped
 - **Timeline**: Phase | Timeframe | Key Outcomes
 
@@ -264,16 +291,16 @@ Allow section-specific changes. Regenerate only requested sections.
 - `references/scope-examples.md` — **Quality floor.** Contains Architecture Description and Technology Stack Table patterns for calibration.
 
 Step 3 uses TWO sources of input:
-1. **Phase 1 discovery data** — everything the user described (systems, integrations, data sources, business context). This is the primary source of truth for what the solution must connect to.
+1. **Manifest data** — `manifest.extracted_items` (especially `Briefing` and `Integrations` categories) plus `manifest.gaps` resolutions captured in Phase 1. This is the primary source of truth for what the solution must connect to.
 2. **Step 1 outputs** — the FRs, NFRs, Activities, and Deliverables already approved by the user in Step 2. The architecture must cover every requirement.
 
-If the user mentioned a system, data source, or GCP service during Phase 1 that does not appear in Step 1's FRs, it must still be evaluated for inclusion in the architecture.
+If the Manifest captured a system, data source, or GCP service that does not appear in Step 1's FRs, it must still be evaluated for inclusion in the architecture.
 
 #### Section generation order
 
 1. **Architecture Overview**: Execute sub-steps (1a)–(1e) strictly in order. Each sub-step has a completion gate — do not begin the next until the current one is done.
 
-   **(1a) Think (silent).** Execute Part 1 Steps 1–5 of `references/architecture-guide.md` using Phase 1 discovery data + the FRs/NFRs approved in Step 2 as input. Produce an internal draft of: layers, components, cluster assignments, primary data flow chain, cross-cutting concerns. Do not emit this draft.
+   **(1a) Think (silent).** Execute Part 1 Steps 1–5 of `references/architecture-guide.md` using Manifest data + the FRs/NFRs approved in Step 2 as input. Produce an internal draft of: layers, components, cluster assignments, primary data flow chain, cross-cutting concerns. Do not emit this draft.
 
    **(1b) Write the textual description.** 150+ words, data-flow narrative per Part 3. This text is the **single source of truth** for the Technology Stack table and the diagram spec. Every GCP service you mention here must later appear in the table and in the diagram. Every data-flow sentence here must later become an edge in the diagram. Apply the Part 3 self-test before closing this sub-step.
 
@@ -297,7 +324,7 @@ If the user mentioned a system, data source, or GCP service during Phase 1 that 
    - `"[Customer Name]" [sector] market share competitors` → enrich `customer_overview`
    - `"[Customer Name]" official homepage` → use results EXCLUSIVELY to capture `customer_primary_domain`. Do not use this query's results to enrich `customer_overview`.
 
-   No reliable results → elaborate from Phase 1 context. Never include unverified data. Generate `partner_overview` and `customer_overview` following `style-guide.md` Partner/Customer Overview rules.
+   No reliable results → elaborate from Manifest context (`extracted_items` Identity + Briefing). Never include unverified data. Generate `partner_overview` and `customer_overview` following `style-guide.md` Partner/Customer Overview rules.
 
    **Capture the customer's primary domain (4th query only).** From the 4th query's results, identify the customer's official institutional homepage and record its domain for use in Phase 3.
 

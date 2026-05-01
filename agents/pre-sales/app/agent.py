@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 
+import google.auth
 import structlog
 from google.adk.agents import Agent
 from google.adk.apps import App
@@ -11,16 +12,19 @@ from google.adk.tools.agent_tool import AgentTool
 from google.adk.tools.google_search_tool import GoogleSearchTool
 from google.genai import types
 
-import google.auth
 from .callbacks import after_tool_callback, before_tool_callback
 from .config import config
 from .guardrails import scope_guardrail
 from .prompts import build_instruction
 from .shared.logging_config import setup_logging
-from .tools.sow.generate_architecture_diagram import (
-    generate_architecture_diagram,
-)
+from .tools.sow.generate_architecture_diagram import \
+    generate_architecture_diagram
 from .tools.sow.generate_sow_document import generate_sow_document
+from .tools.sow.manifest_tools import (
+    load_extraction_manifest,
+    save_extraction_manifest,
+    validate_extraction_manifest
+)
 from .tools.sow.validate_sow_content import validate_sow_content
 
 # --- Bootstrap ---
@@ -38,6 +42,7 @@ _SKILLS_DIR = Path(__file__).parent / 'skills'
 pre_sales_skill_toolset = skill_toolset.SkillToolset(
     skills=[
         load_skill_from_dir(_SKILLS_DIR / 'sow-generator'),
+        load_skill_from_dir(_SKILLS_DIR / 'sow-discovery')
     ]
 )
 
@@ -84,6 +89,9 @@ _TOOLS = [
     generate_architecture_diagram,
     validate_sow_content,
     generate_sow_document,
+    load_extraction_manifest,
+    save_extraction_manifest,
+    validate_extraction_manifest,
     AgentTool(agent=google_search_agent),
 ]
 
@@ -100,7 +108,7 @@ root_agent = Agent(
     ),
     instruction=build_instruction(company_name=config.COMPANY_NAME),
     tools=_TOOLS,
-    before_model_callback=scope_guardrail,
+    # before_model_callback=scope_guardrail,
     before_tool_callback=before_tool_callback,
     after_tool_callback=after_tool_callback,
     generate_content_config=types.GenerateContentConfig(
