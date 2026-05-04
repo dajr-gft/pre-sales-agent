@@ -21,9 +21,11 @@ from .tools.sow.generate_architecture_diagram import \
     generate_architecture_diagram
 from .tools.sow.generate_sow_document import generate_sow_document
 from .tools.sow.manifest_tools import (
+    append_extraction_items,
+    finalize_extraction_manifest,
+    initialize_extraction_buffer,
     load_extraction_manifest,
-    save_extraction_manifest,
-    validate_extraction_manifest
+    validate_extraction_manifest,
 )
 from .tools.sow.validate_sow_content import validate_sow_content
 
@@ -89,8 +91,10 @@ _TOOLS = [
     generate_architecture_diagram,
     validate_sow_content,
     generate_sow_document,
+    initialize_extraction_buffer,
+    append_extraction_items,
+    finalize_extraction_manifest,
     load_extraction_manifest,
-    save_extraction_manifest,
     validate_extraction_manifest,
     AgentTool(agent=google_search_agent),
 ]

@@ -31,7 +31,7 @@ class TestDefaults:
         assert cfg.GOOGLE_GENAI_USE_VERTEXAI is True
         assert cfg.COMPANY_NAME == 'GFT Technologies'
         assert cfg.TEMPERATURE == 0.2
-        assert cfg.THINKING_BUDGET == 1024
+        assert cfg.THINKING_BUDGET == 2048
         assert cfg.MAX_RETRIES == 3
         assert cfg.LOG_LEVEL == 'INFO'
         assert cfg.LOG_JSON is True
