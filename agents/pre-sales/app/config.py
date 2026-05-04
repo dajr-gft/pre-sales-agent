@@ -60,7 +60,7 @@ class AgentConfig(BaseSettings):
         description='LLM temperature for content generation',
     )
     THINKING_BUDGET: int = Field(
-        default=1024,
+        default=2048,
         ge=0,
         le=24576,
         description='Token budget for Gemini thinking mode',

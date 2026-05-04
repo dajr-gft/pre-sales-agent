@@ -108,7 +108,7 @@ root_agent = Agent(
     ),
     instruction=build_instruction(company_name=config.COMPANY_NAME),
     tools=_TOOLS,
-    # before_model_callback=scope_guardrail,
+    before_model_callback=scope_guardrail,
     before_tool_callback=before_tool_callback,
     after_tool_callback=after_tool_callback,
     generate_content_config=types.GenerateContentConfig(

@@ -159,16 +159,20 @@ class TestGuardrailSkipsInternalTurns:
         assert ctx.state[_STATE_LAST_JUDGED_COUNT] == 1
 
     @pytest.mark.asyncio
-    async def test_second_user_message_judged_separately(self, monkeypatch):
+    async def test_second_user_message_judged_with_context(self, monkeypatch):
+        """Judge must classify the latest user message AND see prior turns
+        as conversation context — short follow-ups need that context to be
+        interpreted correctly.
+        """
         monkeypatch.setattr(guardrails.config, 'SAFETY_GUARDRAIL_ENABLED', True)
         ctx = _make_callback_context({_STATE_LAST_JUDGED_COUNT: 1})
         req = _make_request(
-            _user_msg('first message'),
-            _model_msg('first response'),
-            _user_msg('second message — extracted from transcript'),
+            _user_msg('first message about a SOW for Acme'),
+            _model_msg('first response — drafting the SOW'),
+            _user_msg('seria só isso'),
         )
 
-        verdict = _JudgeVerdict(category='on_topic', reason='ok')
+        verdict = _JudgeVerdict(category='on_topic', reason='follow-up in on-topic chat')
         with patch.object(
             guardrails, '_judge', new=AsyncMock(return_value=verdict)
         ) as mock_judge:
@@ -176,11 +180,67 @@ class TestGuardrailSkipsInternalTurns:
 
         assert result is None
         mock_judge.assert_awaited_once()
-        # Judge must see ONLY the latest user message — not the first one.
         called_text = mock_judge.await_args.args[0]
-        assert 'second message' in called_text
-        assert 'first message' not in called_text
+        # The latest user message must sit inside the message_to_classify block.
+        assert '<message_to_classify>' in called_text
+        assert '</message_to_classify>' in called_text
+        assert 'seria só isso' in called_text
+        # Prior turns must be present as conversation context so the judge can
+        # interpret short follow-ups against the ongoing on-topic conversation.
+        assert '<conversation_context>' in called_text
+        assert '</conversation_context>' in called_text
+        assert 'first message about a SOW for Acme' in called_text
+        assert 'first response — drafting the SOW' in called_text
+        # Prior turns must appear BEFORE the message-to-classify block.
+        assert called_text.index('<conversation_context>') < called_text.index(
+            '<message_to_classify>'
+        )
         assert ctx.state[_STATE_LAST_JUDGED_COUNT] == 2
+
+    @pytest.mark.asyncio
+    async def test_first_turn_omits_context_block(self, monkeypatch):
+        """On the very first user turn there is no prior context — the
+        context block should be omitted entirely.
+        """
+        monkeypatch.setattr(guardrails.config, 'SAFETY_GUARDRAIL_ENABLED', True)
+        ctx = _make_callback_context()
+        req = _make_request(_user_msg('Help me draft a SOW for Acme'))
+
+        verdict = _JudgeVerdict(category='on_topic', reason='ok')
+        with patch.object(
+            guardrails, '_judge', new=AsyncMock(return_value=verdict)
+        ) as mock_judge:
+            await scope_guardrail(ctx, req)
+
+        called_text = mock_judge.await_args.args[0]
+        assert '<conversation_context>' not in called_text
+        assert '<message_to_classify>' in called_text
+        assert 'Help me draft a SOW for Acme' in called_text
+
+    @pytest.mark.asyncio
+    async def test_long_prior_turn_is_truncated(self, monkeypatch):
+        """Prior turns are truncated to keep the judge prompt cheap on
+        Flash-Lite — full message bodies aren't needed, just the topic.
+        """
+        monkeypatch.setattr(guardrails.config, 'SAFETY_GUARDRAIL_ENABLED', True)
+        ctx = _make_callback_context({_STATE_LAST_JUDGED_COUNT: 1})
+        long_reply = 'A' * 2000
+        req = _make_request(
+            _user_msg('SOW for Acme'),
+            _model_msg(long_reply),
+            _user_msg('ok pode seguir'),
+        )
+
+        verdict = _JudgeVerdict(category='on_topic', reason='ok')
+        with patch.object(
+            guardrails, '_judge', new=AsyncMock(return_value=verdict)
+        ) as mock_judge:
+            await scope_guardrail(ctx, req)
+
+        called_text = mock_judge.await_args.args[0]
+        # Truncated, not full 2000 chars.
+        assert long_reply not in called_text
+        assert '…' in called_text
 
 
 class TestGuardrailFailsOpen:
