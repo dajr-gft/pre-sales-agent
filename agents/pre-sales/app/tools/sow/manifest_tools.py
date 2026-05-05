@@ -158,8 +158,8 @@ async def initialize_extraction_buffer(
         }
 
     warnings: list[str] = []
-    if _BUFFER_STATE_KEY in tool_context.state:
-        prior = tool_context.state[_BUFFER_STATE_KEY]
+    prior = tool_context.state.get(_BUFFER_STATE_KEY)
+    if prior is not None:
         prior_items = len(prior.get("extracted_items", []))
         warnings.append(
             f"Overwrote existing buffer with {prior_items} extracted_items. "
@@ -507,7 +507,7 @@ async def finalize_extraction_manifest(
             "artifact_saved": False,
         }
 
-    tool_context.state.pop(_BUFFER_STATE_KEY, None)
+    tool_context.state[_BUFFER_STATE_KEY] = None
 
     logger.info(
         "manifest_artifact_saved",

@@ -51,10 +51,52 @@ Each is rejected on three grounds: (a) delegates scope to an external document (
 ## Section Rules
 
 ### Executive Summary
-- Business value first, then technical outcomes.
-- Length scales with project magnitude.
-- Scope boundary statement early (e.g., "This engagement is strictly limited to...").
-- Bullet points for activities and objectives.
+
+The Executive Summary MUST follow the Google DAF/PSF SOW template language and expand it with project-specific business value and high-level technical outcomes.
+
+**Required opening sentence:**
+
+Start with this exact sentence pattern, replacing the bracketed instruction with project-specific content:
+
+> "This Statement of Work (SOW) outlines the scope, activities, deliverables, and estimated timelines for [project-specific business value and high-level technical outcomes]."
+
+The required opening sentence is not an example. It is mandatory template text. Do NOT leave bracketed placeholder text in the document.
+
+**Required funding sentence:**
+
+End the Executive Summary with this exact sentence, selecting the correct funding type from the Manifest:
+
+> "This scope of work will be funded with Google [Deal Acceleration Funds (DAF) | Google Partner Services Funds (PSF)]."
+
+If the funding type is not stated, write:
+
+> "This scope of work will be funded with Google [TO BE DEFINED]."
+
+The funding sentence is not an example. It is mandatory template text. A summary that does not start with the required opening sentence and end with the required Google funding sentence is non-compliant, regardless of whether the content is otherwise well written.
+
+**Depth requirements:**
+
+- Implementation, platform, migration, foundation, or multi-phase engagements: 250-450 words.
+- Assessment-only engagements: 150-250 words.
+
+**Required content order:**
+
+1. Customer business context and why the engagement matters.
+2. Business value expected from the engagement, such as operational efficiency, scalability, governance, modernization, acceleration, risk reduction, or improved customer experience.
+3. High-level technical outcomes, naming the platform, workload, systems, integrations, or Google Cloud services when known.
+4. Main activities and deliverables at a high level, not a detailed task list.
+5. Timeline or engagement shape when material to scope.
+6. Scope boundary statement, including what the engagement is strictly limited to when relevant.
+7. Required Google funding sentence using the exact template wording above.
+
+**Quality bar:**
+
+- Do not write a shallow project description that merely restates the solution.
+- Do not start directly with a technical implementation detail.
+- Do not use generic phrases such as "digital transformation", "innovative solution", or "leveraging AI" unless immediately grounded in the customer's actual business context.
+- Do not include unsupported metrics, market claims, or benefits not present in the Manifest, approved inference, web-verified research, or user-approved content.
+- The Executive Summary must be readable by an executive sponsor and still be technically credible to a reviewer.
+- Bullet points are allowed only when they improve readability; they are not required by default. The required template opening and funding sentence remain mandatory even when bullets are used.
 
 ### Partner Overview
 - With search data: 4-6 lines — Google Cloud certs/specializations, certified engineers count, global presence, awards, industry expertise.

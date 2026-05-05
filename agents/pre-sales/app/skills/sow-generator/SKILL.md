@@ -44,7 +44,57 @@ metadata:
 - Use scope boundary language: "strictly limited to", "exclusively", "explicitly excluded".
 - **Professionalize all input.** Never echo the user's exact words or the Manifest's raw phrasing in review or document. Rewrite in professional consulting language preserving original meaning.
 
+## Reference authority and depth rules
+
+The loaded reference files are the binding quality contract for SOW generation — not optional examples, loose inspiration, or style suggestions.
+
+Priority order for generated content quality:
+
+1. `references/style-guide.md` — binding structure, required wording, minimums, targets, section rules, self-tests, and anti-patterns.
+2. `references/scope-examples.md` — quality floor and calibration; generated content must match or exceed its depth and professionalism.
+3. `references/architecture-guide.md` — binding architecture and diagram rules when architecture is generated.
+4. This `SKILL.md` — workflow orchestration, tool order, review gates, and state management.
+
+If this skill says to generate a section and a reference defines how that section must be written, the reference controls the content. Do not simplify, shorten, or reinterpret reference requirements unless the reference explicitly allows it.
+
+**Brevity scope rule:** instructions such as "brief", "concise", "direct", or "short" apply only to conversational orchestration messages, confirmations, redirects, and error handling. They do NOT apply to SOW document content or review content. For SOW sections, follow the depth, structure, minimums, required wording, and quality rules from the loaded references.
+
 DO NOT generate any document content until the Extraction Manifest has been loaded and the Inference Summary has been confirmed by the user in Phase 1.
+
+## Generation State Machine — non-negotiable
+
+The SOW Generator has four approval states:
+
+1. `manifest_summary_confirmed`
+2. `content_review_approved`
+3. `architecture_review_approved`
+4. `final_document_generated`
+
+A user approval after the Inference Summary sets ONLY `manifest_summary_confirmed = true` and authorizes Phase 2 Step 1 content generation.
+
+A user approval after Content Review sets ONLY `content_review_approved = true`. It does NOT authorize final document generation. After `content_review_approved = true`, the next mandatory action is Phase 2 Step 3 — Generate Architecture, followed by Phase 2 Step 4 — Present Architecture Review.
+
+A user approval after Architecture Review sets ONLY `architecture_review_approved = true` and authorizes Phase 3 Document Assembly.
+
+You may call `validate_sow_content(stage="full")` or `generate_sow_document` only if:
+
+- `manifest_summary_confirmed = true`
+- `content_review_approved = true`
+- `architecture_review_approved = true`
+- `architecture_description` is populated
+- `technology_stack` is populated
+- `architecture_integrations` is populated
+- the Architecture Review has been shown to the user
+- the user explicitly approved the Architecture Review
+
+Interpret continuation messages according to the current state:
+
+- After Inference Summary, "pode prosseguir", "go ahead", or equivalent means: generate Content Review.
+- After Content Review, "pode prosseguir", "go ahead", or equivalent means: generate Architecture and Diagram Review.
+- After Architecture Review, "pode prosseguir", "go ahead", or equivalent means: assemble the final document.
+
+If the current state is ambiguous, do not assume final approval. Continue to the next missing review gate.
+
 
 ---
 
@@ -119,11 +169,11 @@ Phase 2 has two stages, each with its own user-facing review and approval gate. 
 
 ### Step 1 — Generate Content (silent)
 
-**Load before starting:**
-- `references/style-guide.md` — **Mandatory rules.** Every rule is binding. Every target is a hard minimum. No exceptions.
-- `references/scope-examples.md` — **Quality floor.** Every section MUST match or exceed the depth and professionalism demonstrated in these examples.
+**Pre-step — Load and apply references (mandatory gate before any drafting):**
+- `references/style-guide.md` — **Binding quality contract.** Every section rule, required wording, target, minimum, self-test, and anti-pattern is mandatory. No exceptions.
+- `references/scope-examples.md` — **Quality floor.** Every generated section MUST match or exceed the depth, specificity, and professionalism demonstrated in these examples.
 
-Generate each section in English. If a section has a target, meet it. If a section has a self-test, apply it. If a section has an anti-pattern, avoid it.
+Generate each section in English. If a reference defines a structure, use it. If it defines required wording, include it. If it defines a target or minimum, meet or exceed it. If it defines a self-test or anti-pattern, apply it before moving on.
 
 #### Pre-generation checks
 Cross-reference FRs against Out-of-Scope:
@@ -241,6 +291,12 @@ After generating all content in Step 1, call `validate_sow_content` with the ass
 - If there are **warnings**: note them for your own reference but proceed to review.
 - This step is invisible to the user — never mention validation results unless errors persist after 2 fix attempts.
 
+### Step 1.6 — Reference Compliance Gate (silent)
+
+Before any user-facing review, verify the generated sections against the loaded references. Content passes only if every applicable rule from `references/style-guide.md` is satisfied and every section matches or exceeds the quality floor in `references/scope-examples.md`.
+
+This gate includes required wording, minimum counts, required structures, section-specific depth, self-tests, anti-patterns, and scope-boundary requirements. If any section fails, rewrite only the failing section before presenting it to the user. Do not ask the user to approve non-compliant content.
+
 ### Step 2 — Present Content Review
 
 **Language rule:** The review MUST be presented in the same language the user is using in this conversation. The final .docx is always generated in English regardless of the conversation language. All section content (FRs, NFRs, OOS, Assumptions, Activities, Deliverables, Roles) must be in the conversation language — not in the document language.
@@ -275,10 +331,10 @@ Present structured review in the user's language with COMPLETE content. **The se
 - If the user asks to remove an item (e.g., "remove FR-05"), delete that item but keep all other IDs unchanged.
 - New items → append after last existing ID.
 
-Ask the user to review the content above and confirm to proceed to architecture generation.
+Ask the user to review the content above and confirm ONLY whether the content sections are approved for architecture generation. This approval is not authorization to generate the final document.
 
 **Canonical example (translate to the conversation language):**
-> "Please review the content above. Do the specifications align? Once you're satisfied, confirm so I can proceed with the technical architecture and diagram generation."
+> "Please review the content above. Do the specifications align? Once you're satisfied, confirm so I can proceed with the technical architecture and diagram review. This is not the final document generation step."
 
 Allow section-specific changes. Regenerate only requested sections.
 
@@ -287,8 +343,9 @@ Allow section-specific changes. Regenerate only requested sections.
 ### Step 3 — Generate Architecture (silent)
 
 **Load before starting:**
+- `references/style-guide.md` — **Binding quality contract.** Re-apply it for Partner Overview, Customer Overview, Executive Summary, Architecture-adjacent sections, and all final review content.
 - `references/architecture-guide.md` — **Binding rules.** Every rule in this file is mandatory. Execute the thinking process (Part 1), follow all diagram construction rules (Part 2), apply description rules (Part 3), verify Technology Stack consistency (Part 4), check the minimum component checklist (Part 5), and avoid all listed anti-patterns (Part 6). Part 7 describes the structural audit that the `generate_architecture_diagram` tool runs automatically before rendering — non-compliance with any rule surfaces as a tool error.
-- `references/scope-examples.md` — **Quality floor.** Contains Architecture Description and Technology Stack Table patterns for calibration.
+- `references/scope-examples.md` — **Quality floor.** Contains Architecture Description, Technology Stack Table, and Executive Summary patterns for calibration.
 
 Step 3 uses TWO sources of input:
 1. **Manifest data** — `manifest.extracted_items` (especially `Briefing` and `Integrations` categories) plus `manifest.gaps` resolutions captured in Phase 1. This is the primary source of truth for what the solution must connect to.
@@ -318,6 +375,8 @@ If the Manifest captured a system, data source, or GCP service that does not app
 
    If the tool returns a `ToolError` listing structural defects, silently revise the offending artifact — (1b) description, (1c) technology stack, or (1d) diagram spec — and call the tool again. Maximum 3 consecutive retries. Do not mention the audit, the failures, or the retry to the user. See `references/architecture-guide.md` Part 7 for full tool behavior.
 
+   If diagram generation still fails after the allowed retries, do NOT proceed to document assembly. Present the Architecture Review without the rendered diagram only after the textual architecture sections pass the Reference Compliance Gate. A diagram tooling failure does not set `architecture_review_approved = true` and does not relax the requirement for explicit user approval of the Architecture Review.
+
 2. **Partner & Customer Research**: Call the web search tool for these 4 queries:
    - `"GFT Technologies" Google Cloud partner specialization` → use results for `partner_overview`
    - `"[Customer Name]" [sector] company overview` → use results for `customer_overview`
@@ -334,7 +393,13 @@ If the Manifest captured a system, data source, or GCP service that does not app
 
    Format, TLD, and stripping rules live in Phase 3 Step 1 → `customer_primary_domain`. Apply them when you commit the value.
 
-3. **Executive Summary** — Partner Overview, Customer Overview, Project Overview, Objectives. Scope boundary statement early. This section is generated LAST because it synthesizes all content from Steps 1 and 3.
+3. **Executive Summary** — Generate LAST because it synthesizes all approved content from Steps 1 and 3. Follow `references/style-guide.md` → "Executive Summary" exactly, including any required template wording, depth requirements, scope-boundary rules, and funding sentence. Do not treat it as a short project overview; it is SOW document content and must meet the reference quality contract.
+
+### Step 3.5 — Reference Compliance Gate (silent)
+
+Before presenting the Architecture Review, verify all Step 3 sections against the loaded references: Architecture Description, Technology Stack, Integrations, Partner Overview, Customer Overview, and Executive Summary.
+
+Do not present the review until each section satisfies the applicable `style-guide.md`, `scope-examples.md`, and `architecture-guide.md` rules. If a tool failure occurs, such as diagram rendering failure, it does not relax this gate for textual sections. Rewrite only the failing section and continue.
 
 ### Step 4 — Present Architecture Review
 
@@ -364,10 +429,28 @@ Allow section-specific changes. If the user requests changes to the architecture
 **Precondition:** Phase 2 fully approved (both Step 2 and Step 4 gates passed).
 
 **Step 1** — Validate and generate the document.
-1. Call `validate_sow_content` with the assembled `sow_data` JSON containing ALL Phase 2 content (from both Step 2 and Step 4 reviews) and `stage="full"` (or omit the argument — "full" is the default). The architecture diagram and Partner/Customer Overviews were already generated in Phase 2 Step 3.
-2. If errors are returned, fix them, re-validate, and record each fix in an internal revision tracker (see "Revision tracking" below). Max 2 fix attempts — if errors persist, STOP and present the remaining issues to the user for guidance in the conversation language, instead of continuing to retry.
-3. Warnings do not block — note them and proceed.
-4. Call `generate_sow_document` with the validated `sow_data` JSON. If the tool itself returns errors (quality gates, structural validation), apply the same tracker + 2-attempt rule.
+0. Run the Final Document Preflight Gate below. If it fails, STOP and return to the missing phase instead of generating the document.
+1. Re-run the Reference Compliance Gate against the exact content that will be sent in `sow_data`. If any section violates the loaded references, rewrite only that section before validation.
+2. Call `validate_sow_content` with the assembled `sow_data` JSON containing ALL Phase 2 content (from both Step 2 and Step 4 reviews) and `stage="full"` (or omit the argument — "full" is the default). The architecture diagram and Partner/Customer Overviews were already generated in Phase 2 Step 3.
+3. If errors are returned, fix them, re-validate, and record each fix in an internal revision tracker (see "Revision tracking" below). Max 2 fix attempts — if errors persist, STOP and present the remaining issues to the user for guidance in the conversation language, instead of continuing to retry.
+4. Warnings do not block — note them and proceed.
+5. Call `generate_sow_document` with the validated `sow_data` JSON. If the tool itself returns errors (quality gates, structural validation), apply the same tracker + 2-attempt rule.
+
+
+#### Final Document Preflight Gate — mandatory
+
+Before calling `validate_sow_content(stage="full")` or `generate_sow_document`, verify all conditions below:
+
+1. Content Review was presented to the user and explicitly approved.
+2. Architecture Review was presented to the user and explicitly approved.
+3. The exact Architecture Description shown to the user is present in `sow_data.architecture_description`.
+4. The exact Technology Stack shown to the user is present in `sow_data.technology_stack`.
+5. The exact Integrations shown to the user are present in `sow_data.architecture_integrations`.
+6. Executive Summary has been generated after architecture, not before it.
+7. No architecture section is empty, placeholder-only, or generated only after final document assembly.
+8. `architecture_review_approved = true` in the internal state machine.
+
+If any condition fails, STOP. Do not generate the document. Return to the missing phase and present the missing review to the user.
 
 **Incremental editing rule (non-negotiable):**
 
