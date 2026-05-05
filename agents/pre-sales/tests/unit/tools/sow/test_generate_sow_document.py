@@ -14,10 +14,14 @@ from unittest.mock import patch
 
 import pytest
 
+from docxtpl import InlineImage, Listing, RichText
+
 from app.tools.sow.generate_sow_document import (
     _apply_defaults,
     _auto_derive_fields,
     _infer_project_type,
+    _normalize_multiline_string,
+    _normalize_text_fields,
     generate_sow_document,
 )
 
@@ -293,3 +297,109 @@ class TestGenerateSowDocumentErrorPaths:
             )
         # When template is missing → ToolError, not success
         assert result['status'] == 'error'
+
+
+class TestNormalizeMultilineString:
+    def test_plain_string_passthrough(self):
+        assert _normalize_multiline_string('single line') == 'single line'
+
+    def test_empty_string_passthrough(self):
+        assert _normalize_multiline_string('') == ''
+
+    def test_real_newline_wraps_into_listing(self):
+        result = _normalize_multiline_string('line one\nline two')
+        assert isinstance(result, Listing)
+
+    def test_literal_backslash_n_is_normalized_then_wrapped(self):
+        # Model double-escaped: JSON string contains the two characters \ and n
+        result = _normalize_multiline_string('line one\\nline two')
+        assert isinstance(result, Listing)
+        # The Listing's internal text now contains a real newline, not the
+        # literal two-character sequence.
+        assert '\n' in str(result)
+        assert '\\n' not in str(result)
+
+    def test_crlf_normalized_to_lf(self):
+        result = _normalize_multiline_string('line one\r\nline two')
+        assert isinstance(result, Listing)
+        assert '\r' not in str(result)
+
+    def test_lone_cr_normalized_to_lf(self):
+        result = _normalize_multiline_string('line one\rline two')
+        assert isinstance(result, Listing)
+        assert '\r' not in str(result)
+
+    def test_runs_of_blank_lines_collapse_to_two(self):
+        result = _normalize_multiline_string('a\n\n\n\n\nb')
+        assert isinstance(result, Listing)
+        assert '\n\n\n' not in str(result)
+        assert '\n\n' in str(result)
+
+
+class TestNormalizeTextFields:
+    def test_top_level_strings_with_newlines_become_listing(self):
+        data = {
+            'executive_summary': 'Para 1.\n\nPara 2.',
+            'partner_name': 'GFT',  # no newline → stays str
+        }
+        _normalize_text_fields(data)
+        assert isinstance(data['executive_summary'], Listing)
+        assert data['partner_name'] == 'GFT'
+
+    def test_recurses_into_list_of_dicts(self):
+        data = {
+            'functional_requirements': [
+                {'number': 'FR-01', 'description': 'Line A\nLine B'},
+                {'number': 'FR-02', 'description': 'Single line.'},
+            ],
+        }
+        _normalize_text_fields(data)
+        assert isinstance(
+            data['functional_requirements'][0]['description'], Listing
+        )
+        assert (
+            data['functional_requirements'][1]['description']
+            == 'Single line.'
+        )
+        # Sibling fields without newlines stay untouched
+        assert data['functional_requirements'][0]['number'] == 'FR-01'
+
+    def test_recurses_into_simple_lists(self):
+        data = {'objectives': ['short objective', 'multi\nline objective']}
+        _normalize_text_fields(data)
+        assert data['objectives'][0] == 'short objective'
+        assert isinstance(data['objectives'][1], Listing)
+
+    def test_preserves_inline_image_and_richtext(self):
+        # Use sentinel objects of the preserved types
+        image = InlineImage.__new__(InlineImage)
+        rich = RichText('already rich')
+        listing = Listing('already a listing')
+        data = {
+            'partner_logo': image,
+            'rich_field': rich,
+            'listing_field': listing,
+        }
+        _normalize_text_fields(data)
+        assert data['partner_logo'] is image
+        assert data['rich_field'] is rich
+        assert data['listing_field'] is listing
+
+    def test_idempotent_on_second_pass(self):
+        data = {'executive_summary': 'a\nb'}
+        _normalize_text_fields(data)
+        first = data['executive_summary']
+        _normalize_text_fields(data)
+        # Second pass keeps the same Listing instance (preserved by guard)
+        assert data['executive_summary'] is first
+
+    def test_non_string_scalars_passthrough(self):
+        data = {
+            'taxes_included': True,
+            'non_commit_psf': False,
+            'count': 7,
+        }
+        _normalize_text_fields(data)
+        assert data['taxes_included'] is True
+        assert data['non_commit_psf'] is False
+        assert data['count'] == 7

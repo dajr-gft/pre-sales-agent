@@ -8,7 +8,7 @@ from typing import Any
 
 import structlog
 from docx.shared import Mm
-from docxtpl import DocxTemplate, InlineImage
+from docxtpl import DocxTemplate, InlineImage, Listing, RichText
 from google.adk.tools import ToolContext
 from google.genai import types as genai_types
 
@@ -102,6 +102,16 @@ async def generate_sow_document(
               tax paragraph variant is rendered.)
             - non_commit_psf (boolean — default false. If true, includes the Non-Commit
               PSF 30% reduction paragraph.)
+
+            Multi-line text:
+                Any string field — top-level or nested inside a structured
+                array — may include `\n` to request a line break in the
+                rendered .docx. Use `\n\n` to visually separate paragraphs.
+                The tool normalizes common variants (literal `\\n`, `\r\n`,
+                runs of 3+ blank lines) and converts each `\n` into a Word
+                line break. There is no allowlist: this works on every
+                string field, present or future. Keep short labels and
+                names single-line.
 
     Returns:
         A dictionary with status and the file path of the generated document.
@@ -295,6 +305,8 @@ async def generate_sow_document(
                 'architecture_diagram'
             ] = '[Architecture Diagram — to be generated]'
 
+        _normalize_text_fields(data)
+
         doc.render(data, autoescape=True)
 
         output_dir = Path(tempfile.gettempdir()) / 'sow_documents'
@@ -445,6 +457,60 @@ def _fetch_customer_logo_to_tempfile(
         size=len(logo_bytes),
     )
     return tmp
+
+
+_PRESERVE_TYPES = (Listing, RichText, InlineImage)
+_BLANK_LINE_RUN = re.compile(r'\n{3,}')
+
+
+def _normalize_multiline_string(value: str) -> str | Listing:
+    """Coerce a raw string into the right docxtpl payload for line breaks.
+
+    Without this, ``\\n`` characters reach Word as literal text and render
+    on a single visual line. ``Listing`` causes docxtpl to emit ``<w:br/>``
+    for every newline, which Word renders as a soft line break.
+
+    Defensive normalization handles three model failure modes:
+    - ``\\\\n`` (escaped twice in the JSON string) → real ``\\n``
+    - ``\\r\\n`` / lone ``\\r`` → ``\\n``
+    - runs of 3+ blank lines → 2 (caps visual spacing)
+
+    Strings without any newline are returned unchanged so unaffected
+    fields incur zero overhead and zero behavior change.
+    """
+    if '\\n' in value:
+        value = value.replace('\\n', '\n')
+    if '\r' in value:
+        value = value.replace('\r\n', '\n').replace('\r', '\n')
+    if '\n\n\n' in value:
+        value = _BLANK_LINE_RUN.sub('\n\n', value)
+    if '\n' not in value:
+        return value
+    return Listing(value)
+
+
+def _normalize_text_fields(data: Any) -> Any:
+    """Walk a render payload and normalize every string leaf in place.
+
+    Field-agnostic on purpose: any current or future string in the
+    payload — top-level or nested inside dicts and lists — gets the
+    same treatment. The walker is idempotent (preserves ``Listing``,
+    ``RichText``, and ``InlineImage`` values untouched), so it is safe
+    to re-run on already-normalized data.
+    """
+    if isinstance(data, _PRESERVE_TYPES):
+        return data
+    if isinstance(data, str):
+        return _normalize_multiline_string(data)
+    if isinstance(data, dict):
+        for key, value in list(data.items()):
+            data[key] = _normalize_text_fields(value)
+        return data
+    if isinstance(data, list):
+        for index, item in enumerate(data):
+            data[index] = _normalize_text_fields(item)
+        return data
+    return data
 
 
 def _apply_defaults(data: dict) -> None:
