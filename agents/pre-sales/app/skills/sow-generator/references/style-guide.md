@@ -48,6 +48,26 @@ Each is rejected on three grounds: (a) delegates scope to an external document (
 
 ---
 
+## Paragraph breaks in long-form narrative (cross-cutting rule)
+
+Insert `\n\n` (encoded in the JSON payload sent to the document tool) between distinct topics within long-form narrative fields, so the rendered SOW reads as separate paragraphs. Use `\n\n` only; never emit a lone `\n`.
+
+The trigger is semantic, not numeric — a paragraph break marks a topic shift (business context → business value, one design decision → the next, narrative → required closing sentence). Word count alone never justifies a break.
+
+**Apply to:** narrative fields covering multiple topics — Executive Summary, Partner Overview, Customer Overview, Architecture Description.
+
+**Calibration (anchored to `references/scope-examples.md`):**
+
+- **Executive Summary** — when a section defines a required content order (the 7 items in "Executive Summary → Required content order"), each item is a candidate paragraph boundary. Merge adjacent items only when they share a single line of reasoning. The Template-compliant example in `scope-examples.md` shows ~5 paragraphs for 250-450 words; the required opening sentence and required Google funding sentence are never collapsed into surrounding prose.
+- **Architecture Description** — typically 2-3 paragraphs covering, in order: primary data flow, key service justifications, cross-cutting concerns.
+- **Partner / Customer Overview** — 1-2 paragraphs (4-6 lines per `style-guide.md`); split only on a clear topical shift (e.g., history → current market position).
+
+**Do NOT apply to:** single-sentence fields (individual FRs, NFRs, deliverables, tasks, success criteria, role responsibilities), tabular content already split into rows, list items already split into entries, or short labels and names.
+
+**Anti-pattern (rejected):** an Executive Summary delivered as one uninterrupted block, even if every sentence individually flows. The reviewer cannot scan for business value, technical outcomes, or scope boundary because they are not visually separated. Correct treatment: apply `\n\n` between the required content items, matching the Template-compliant example's shape.
+
+---
+
 ## Section Rules
 
 ### Executive Summary
