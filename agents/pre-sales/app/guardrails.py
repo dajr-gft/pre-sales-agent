@@ -26,8 +26,10 @@ Failure modes
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Literal
 
+import google.auth
 import structlog
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.models import LlmRequest, LlmResponse
@@ -37,6 +39,11 @@ from pydantic import BaseModel
 from .config import config
 
 logger = structlog.get_logger()
+
+_, project_id = google.auth.default()
+os.environ['GOOGLE_CLOUD_PROJECT'] = project_id
+os.environ['GOOGLE_CLOUD_LOCATION'] = 'global'
+os.environ['GOOGLE_GENAI_USE_VERTEXAI'] = 'True'
 
 _STATE_LAST_JUDGED_COUNT = 'safety_last_judged_user_count'
 
@@ -95,14 +102,17 @@ def _get_judge_client() -> Client:
     """Lazy-init a Vertex AI genai client for the judge.
 
     Single client reused across calls so we don't pay TLS/discovery on
-    every guardrail invocation.
+    every guardrail invocation. ``project`` and ``location`` are read
+    from the environment (set by the bootstrap above) instead of from
+    ``config``, because ``config`` is a frozen singleton resolved
+    before the bootstrap can override the deployment env.
     """
     global _judge_client
     if _judge_client is None:
         _judge_client = Client(
             vertexai=True,
-            project=config.resolve_project_id(),
-            location=config.LOCATION,
+            project=os.environ['GOOGLE_CLOUD_PROJECT'],
+            location=os.environ['GOOGLE_CLOUD_LOCATION'],
         )
     return _judge_client
 
