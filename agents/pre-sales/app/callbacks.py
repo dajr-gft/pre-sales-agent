@@ -14,10 +14,73 @@ from typing import Any
 import structlog
 from google.adk.tools import ToolContext
 
+from .tools.sow.confirm_phase import is_architecture_review_approved
+
 logger = structlog.get_logger()
 
 # Maximum JSON input size (chars) to prevent oversized payloads
 _MAX_SOW_DATA_CHARS = 500_000
+
+# Tools whose execution requires the user to have approved the
+# Architecture Review (Phase 2 Step 4). validate_sow_content is gated
+# only when stage='full' (or when stage is omitted — 'full' is the
+# default); stage='content' is used in Phase 2 Step 1.5 BEFORE
+# architecture exists and must remain unblocked.
+_ARCH_REVIEW_GATED_TOOLS = frozenset(
+    {'validate_sow_content', 'generate_sow_document'}
+)
+
+
+def _arch_review_gate_blocks(
+    tool_name: str,
+    args: dict[str, Any],
+    tool_context: ToolContext,
+) -> dict | None:
+    """Return a ToolError dict when the architecture-review gate blocks the call.
+
+    Returns None when the gate passes (call proceeds normally). The dict
+    return short-circuits the tool call; ADK uses it as the tool's
+    response.
+    """
+    if tool_name not in _ARCH_REVIEW_GATED_TOOLS:
+        return None
+
+    # validate_sow_content with stage='content' is used pre-architecture
+    # in Phase 2 Step 1.5 and must NOT be gated.
+    if tool_name == 'validate_sow_content':
+        stage = (args.get('stage') or 'full').strip().lower()
+        if stage != 'full':
+            return None
+
+    if is_architecture_review_approved(tool_context.state):
+        return None
+
+    logger.warning(
+        'arch_review_gate_blocked',
+        tool=tool_name,
+        stage=args.get('stage') if tool_name == 'validate_sow_content' else None,
+    )
+    return {
+        'status': 'error',
+        'error': (
+            'Cannot proceed with final document generation: the '
+            'Architecture Review phase has not been confirmed. '
+            'Required steps:\n'
+            '1. Present the Architecture Review to the user in the '
+            'conversation language.\n'
+            "2. Wait for the user's explicit approval.\n"
+            "3. Call `confirm_phase_completion(phase_key="
+            "'architecture_review_approved')`.\n"
+            '4. Then retry this tool.'
+        ),
+        'retryable': True,
+        'tool': tool_name,
+        'suggestion': (
+            'Return to Phase 2 Step 4, present the Architecture Review, '
+            'wait for approval, and stamp the phase via '
+            "confirm_phase_completion before retrying."
+        ),
+    }
 
 
 def before_tool_callback(
@@ -33,6 +96,13 @@ def before_tool_callback(
     tool_name = getattr(tool, 'name', str(tool))
     log = logger.bind(tool=tool_name)
     log.info('tool_invoked', args_keys=list(args.keys()))
+
+    # Guard: architecture-review approval is a precondition for
+    # final-document tools. Runs FIRST so blocked calls don't pay the
+    # cost of the JSON-size and JSON-parse guards below.
+    gate_block = _arch_review_gate_blocks(tool_name, args, tool_context)
+    if gate_block is not None:
+        return gate_block
 
     # Guard: reject oversized sow_data payloads
     sow_data = args.get('sow_data')

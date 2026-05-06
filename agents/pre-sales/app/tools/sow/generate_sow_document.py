@@ -88,10 +88,6 @@ async def generate_sow_document(
             - customer_roles: list of {"role": "Product Owner", "responsibilities": "Define priorities..."}
 
             Optional structured arrays:
-            - technology_stack: list of {"service": "BigQuery", "purpose": "Centralized data warehouse organized in Raw, Trusted, and Refined layers."}
-              Rendered as a table inside Architecture Overview after components list.
-              Map ONLY Google Cloud services to their specific role in the architecture.
-              Do NOT include programming languages, IaC tools, or generic entries like "Google Cloud".
             - milestones: list of {"name": "Milestone 1: Kickoff", "deliverables": "Project Plan", "estimated_completion": "Week 2", "payment": "30%"}
               (omit if single payment at project completion)
             - risks: list of {"description": "Data quality issues...", "mitigation": "Implement validation..."}
@@ -531,7 +527,6 @@ def _apply_defaults(data: dict) -> None:
 
     data.setdefault('taxes_included', True)
     data.setdefault('non_commit_psf', False)
-    data.setdefault('technology_stack', [])
     data.setdefault('milestones', [])
     data.setdefault('risks', [])
     data.setdefault('architecture_diagram', '')
@@ -552,14 +547,6 @@ def _auto_derive_fields(data: dict) -> None:
             data['funding_type_short'] = 'DAF'
         else:
             data['funding_type_short'] = 'DAF'
-
-    if not data.get('technology_stack') and data.get(
-        'architecture_components'
-    ):
-        data['technology_stack'] = [
-            {'service': comp.get('name', ''), 'purpose': comp.get('role', '')}
-            for comp in data['architecture_components']
-        ]
 
     if not data.get('project_type'):
         data['project_type'] = _infer_project_type(data)
@@ -595,15 +582,11 @@ def _infer_project_type(data: dict) -> str:
     for comp in data.get('architecture_components', []):
         names.add(comp.get('name', '').lower())
         names.add(comp.get('role', '').lower())
-    for tech in data.get('technology_stack', []):
-        names.add(tech.get('service', '').lower())
-        names.add(tech.get('purpose', '').lower())
 
     arch_desc = (data.get('architecture_description') or '').lower()
     exec_summary = (data.get('executive_summary') or '').lower()
     combined_text = ' '.join(names) + ' ' + arch_desc + ' ' + exec_summary
 
-    # GenAI takes precedence over ML (GenAI projects typically also involve ML)
     if any(svc in combined_text for svc in _GENAI_SERVICES):
         return 'genai'
     if any(svc in combined_text for svc in _ML_SERVICES):

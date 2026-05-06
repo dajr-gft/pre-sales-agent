@@ -58,7 +58,6 @@ class TestApplyDefaults:
         [
             ('taxes_included', True),
             ('non_commit_psf', False),
-            ('technology_stack', []),
             ('milestones', []),
             ('risks', []),
             ('architecture_diagram', ''),
@@ -72,12 +71,12 @@ class TestApplyDefaults:
     def test_existing_values_not_overwritten(self):
         data = {
             'taxes_included': False,
-            'technology_stack': [{'service': 'x', 'purpose': 'y'}],
+            'milestones': [{'name': 'M1', 'deliverables': 'd', 'estimated_completion': 'w', 'payment': 'p'}],
             'risks': [{'description': 'r', 'mitigation': 'm'}],
         }
         _apply_defaults(data)
         assert data['taxes_included'] is False
-        assert len(data['technology_stack']) == 1
+        assert len(data['milestones']) == 1
         assert len(data['risks']) == 1
 
 
@@ -119,31 +118,6 @@ class TestAutoDeriveFields:
         data = {'funding_type': 'Anything', 'funding_type_short': 'PSF'}
         _auto_derive_fields(data)
         assert data['funding_type_short'] == 'PSF'
-
-    def test_tech_stack_derived_from_components(self):
-        data = {
-            'architecture_components': [
-                {'name': 'Cloud Run', 'role': 'API'},
-                {'name': 'BigQuery', 'role': 'Warehouse'},
-            ],
-        }
-        _auto_derive_fields(data)
-        assert data['technology_stack'] == [
-            {'service': 'Cloud Run', 'purpose': 'API'},
-            {'service': 'BigQuery', 'purpose': 'Warehouse'},
-        ]
-
-    def test_existing_tech_stack_not_overwritten(self):
-        data = {
-            'technology_stack': [{'service': 'x', 'purpose': 'y'}],
-            'architecture_components': [
-                {'name': 'Cloud Run', 'role': 'API'}
-            ],
-        }
-        _auto_derive_fields(data)
-        assert data['technology_stack'] == [
-            {'service': 'x', 'purpose': 'y'}
-        ]
 
 class TestInferProjectType:
     def test_genai_detected_from_vertex_ai(self):

@@ -25,6 +25,17 @@ def _mock_tool(name: str) -> MagicMock:
     return t
 
 
+def _approve_arch_review(ctx) -> None:
+    """Bypass the architecture-review gate for tests targeting other guards.
+
+    The gated tools (validate_sow_content with stage='full',
+    generate_sow_document) refuse to run until the user has explicitly
+    approved the Architecture Review. Tests that exercise the size or
+    JSON guards downstream must first satisfy that precondition.
+    """
+    ctx.state['phase.architecture_review_approved'] = True
+
+
 class TestBeforeToolCallback:
     def test_normal_args_allowed(self, mock_tool_context):
         out = before_tool_callback(
@@ -35,6 +46,7 @@ class TestBeforeToolCallback:
         assert out is None
 
     def test_oversized_sow_data_blocked(self, mock_tool_context):
+        _approve_arch_review(mock_tool_context)
         big = 'x' * (_MAX_SOW_DATA_CHARS + 1)
         out = before_tool_callback(
             _mock_tool('generate_sow_document'),
@@ -46,6 +58,7 @@ class TestBeforeToolCallback:
         assert 'exceeds maximum size' in out['error']
 
     def test_boundary_size_allowed(self, mock_tool_context):
+        _approve_arch_review(mock_tool_context)
         exact = 'x' * _MAX_SOW_DATA_CHARS
         out = before_tool_callback(
             _mock_tool('generate_sow_document'),
@@ -62,6 +75,7 @@ class TestBeforeToolCallback:
     def test_invalid_json_blocked_for_sow_tools(
         self, mock_tool_context, tool_name
     ):
+        _approve_arch_review(mock_tool_context)
         out = before_tool_callback(
             _mock_tool(tool_name),
             {'sow_data': '{not valid'},
@@ -81,6 +95,7 @@ class TestBeforeToolCallback:
         assert out is None
 
     def test_valid_json_allowed(self, mock_tool_context):
+        _approve_arch_review(mock_tool_context)
         out = before_tool_callback(
             _mock_tool('generate_sow_document'),
             {'sow_data': json.dumps({'key': 'value'})},
@@ -224,6 +239,7 @@ class TestIntegration:
     """Combined before/after flow against a single context."""
 
     def test_full_cycle_records_state(self, mock_tool_context):
+        _approve_arch_review(mock_tool_context)
         tool = _mock_tool('validate_sow_content')
         before = before_tool_callback(
             tool,

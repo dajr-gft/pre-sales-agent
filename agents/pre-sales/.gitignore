@@ -202,3 +202,6 @@ my_env.tfvars
 tools/a2a-inspector/
 
 .adk
+
+# Deployment artifacts (regenerated on every deploy)
+deployment_metadata.json

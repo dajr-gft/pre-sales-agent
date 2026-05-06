@@ -61,40 +61,36 @@ If this skill says to generate a section and a reference defines how that sectio
 
 DO NOT generate any document content until the Extraction Manifest has been loaded and the Inference Summary has been confirmed by the user in Phase 1.
 
-## Generation State Machine — non-negotiable
+## Continuation reply interpretation
 
-The SOW Generator has four approval states:
+A short affirmative or "go ahead" reply from the user — recognized in any language by intent, not literal wording — authorizes ONLY the immediately next step. It NEVER authorizes a multi-step jump to the final document. Map the reply to the next action by your last user-facing review:
 
-1. `manifest_summary_confirmed`
-2. `content_review_approved`
-3. `architecture_review_approved`
-4. `final_document_generated`
+- After Inference Summary → run Phase 2 Step 1 (silent content generation) and emit the Content Review (Phase 2 Step 2).
+- After Content Review → run Phase 2 Step 3 (silent architecture generation) and present the Architecture Review (Phase 2 Step 4).
+- After Architecture Review → run Phase 3 (validation + final document).
 
-A user approval after the Inference Summary sets ONLY `manifest_summary_confirmed = true` and authorizes Phase 2 Step 1 content generation.
+If you cannot identify the last review you sent, default to the EARLIER step in the workflow.
 
-A user approval after Content Review sets ONLY `content_review_approved = true`. It does NOT authorize final document generation. After `content_review_approved = true`, the next mandatory action is Phase 2 Step 3 — Generate Architecture, followed by Phase 2 Step 4 — Present Architecture Review.
+## Runtime-enforced phase confirmation gate
 
-A user approval after Architecture Review sets ONLY `architecture_review_approved = true` and authorizes Phase 3 Document Assembly.
+A single tool, `confirm_phase_completion(phase_key)`, records workflow progress at runtime. It is the only mechanism that advances the agent's phase state, and prose elsewhere in this skill cannot bypass it.
 
-You may call `validate_sow_content(stage="full")` or `generate_sow_document` only if:
+**Phase keys, in workflow order:**
 
-- `manifest_summary_confirmed = true`
-- `content_review_approved = true`
-- `architecture_review_approved = true`
-- `architecture_description` is populated
-- `technology_stack` is populated
-- `architecture_integrations` is populated
-- the Architecture Review has been shown to the user
-- the user explicitly approved the Architecture Review
+- `inference_summary_confirmed` — call after the user explicitly confirms the Inference Summary at the end of Phase 1 Step 3.
+- `content_review_approved` — call after the user explicitly approves the Content Review at the end of Phase 2 Step 2.
+- `architecture_review_approved` — call after the user explicitly approves the Architecture Review at the end of Phase 2 Step 4.
 
-Interpret continuation messages according to the current state:
+**Cascade rule:** each key requires its predecessor to be confirmed first. Calling them out of order returns a `ToolError` instructing you to confirm the missing predecessor first. Phases cannot be skipped — the workflow must be followed in order.
 
-- After Inference Summary, "pode prosseguir", "go ahead", or equivalent means: generate Content Review.
-- After Content Review, "pode prosseguir", "go ahead", or equivalent means: generate Architecture and Diagram Review.
-- After Architecture Review, "pode prosseguir", "go ahead", or equivalent means: assemble the final document.
+**When to call the tool — non-negotiable:**
 
-If the current state is ambiguous, do not assume final approval. Continue to the next missing review gate.
+1. Present the review for the current phase to the user (Inference Summary, Content Review, or Architecture Review).
+2. Wait for the user's explicit confirmation. A reply that requests changes is NOT confirmation — regenerate the affected content, re-present it, and wait again.
+3. Only after explicit confirmation, call `confirm_phase_completion(phase_key)` with the key matching the phase you just completed.
+4. After the tool returns successfully, proceed to the next phase.
 
+**Downstream lock:** the tools `validate_sow_content(stage="full")` and `generate_sow_document` reject calls when `architecture_review_approved` is not set. If you receive that error, you skipped the Architecture Review approval — return to Phase 2 Step 4, present the review, wait for user approval, call `confirm_phase_completion('architecture_review_approved')`, and only then resume Phase 3.
 
 ---
 
@@ -160,6 +156,8 @@ Then ask the user to confirm or correct.
 **Why this gate matters:** Phase 2 will generate 10-20 FRs, 15-25 assumptions, 20-30 out-of-scope items, and a full architecture based on the Manifest plus your inferences. A wrong inferred GCP service or missed integration here means rework downstream. Catching it now costs one message; catching it later costs regenerating entire sections.
 
 **DO NOT proceed to Phase 2 until the user explicitly confirms.**
+
+**After the user explicitly confirms:** call `confirm_phase_completion('inference_summary_confirmed')`. After the tool returns successfully, proceed to Phase 2.
 
 ---
 
@@ -283,19 +281,9 @@ If any answer is no, return to the corresponding procedure step before proceedin
 
 **Exit gate:** Step 2 sees only the resulting (now-complete) content. The enumeration, mapping, gap resolution, anchor reopening, and self-review remain internal — never echoed in user-facing output.
 
-### Step 1.5 — Validate Content (silent, before presenting to user)
+### Step 1.5 — Validate Content (silent)
 
-After generating all content in Step 1, call `validate_sow_content` with the assembled JSON and `stage="content"`. This tells the validator that architecture is intentionally absent (it is generated later in Step 3) — checks for that section are skipped.
-
-- If there are **errors**: fix them silently and re-validate with the same `stage="content"` argument. Do NOT present content with errors.
-- If there are **warnings**: note them for your own reference but proceed to review.
-- This step is invisible to the user — never mention validation results unless errors persist after 2 fix attempts.
-
-### Step 1.6 — Reference Compliance Gate (silent)
-
-Before any user-facing review, verify the generated sections against the loaded references. Content passes only if every applicable rule from `references/style-guide.md` is satisfied and every section matches or exceeds the quality floor in `references/scope-examples.md`.
-
-This gate includes required wording, minimum counts, required structures, section-specific depth, self-tests, anti-patterns, and scope-boundary requirements. If any section fails, rewrite only the failing section before presenting it to the user. Do not ask the user to approve non-compliant content.
+Call `validate_sow_content` with the assembled JSON and `stage="content"` (architecture is intentionally absent — checks for that section are skipped). If errors are returned, fix them silently and re-validate with the same `stage`. Note warnings but proceed. Never mention validation results unless errors persist after 2 fix attempts. Compliance with the loaded references (style-guide, scope-examples) is also required before exiting this step — rewrite any non-compliant section in place.
 
 ### Step 2 — Present Content Review
 
@@ -331,21 +319,23 @@ Present structured review in the user's language with COMPLETE content. **The se
 - If the user asks to remove an item (e.g., "remove FR-05"), delete that item but keep all other IDs unchanged.
 - New items → append after last existing ID.
 
-Ask the user to review the content above and confirm ONLY whether the content sections are approved for architecture generation. This approval is not authorization to generate the final document.
+Close the review by asking the user to confirm whether the content is approved. The next step is the Architecture Review — NOT the final document. Do NOT bundle architecture and final document in the same sentence.
 
 **Canonical example (translate to the conversation language):**
-> "Please review the content above. Do the specifications align? Once you're satisfied, confirm so I can proceed with the technical architecture and diagram review. This is not the final document generation step."
+> "Please review the content above. Once you confirm, I will generate the technical architecture and present it as a separate review for your approval. The final document is a distinct step that comes only after the architecture is approved."
 
 Allow section-specific changes. Regenerate only requested sections.
 
 **DO NOT proceed to Step 3 until user explicitly confirms.**
 
+**After the user explicitly confirms:** call `confirm_phase_completion('content_review_approved')`. After the tool returns successfully, proceed to Step 3.
+
 ### Step 3 — Generate Architecture (silent)
 
 **Load before starting:**
-- `references/style-guide.md` — **Binding quality contract.** Re-apply it for Partner Overview, Customer Overview, Executive Summary, Architecture-adjacent sections, and all final review content.
-- `references/architecture-guide.md` — **Binding rules.** Every rule in this file is mandatory. Execute the thinking process (Part 1), follow all diagram construction rules (Part 2), apply description rules (Part 3), verify Technology Stack consistency (Part 4), check the minimum component checklist (Part 5), and avoid all listed anti-patterns (Part 6). Part 7 describes the structural audit that the `generate_architecture_diagram` tool runs automatically before rendering — non-compliance with any rule surfaces as a tool error.
-- `references/scope-examples.md` — **Quality floor.** Contains Architecture Description, Technology Stack Table, and Executive Summary patterns for calibration.
+- `references/style-guide.md` — re-apply for Partner Overview, Customer Overview, Executive Summary, Architecture-adjacent sections.
+- `references/architecture-guide.md` — **Binding rules.** Execute Part 1 (thinking), Part 2 (diagram construction), Part 3 (description), Part 4 (Technology Stack consistency), Part 5 (minimum component checklist), Part 6 (anti-patterns). Part 7 is the structural audit run by `generate_architecture_diagram` automatically.
+- `references/scope-examples.md` — quality floor for Architecture Description, Technology Stack Table, and Executive Summary.
 
 Step 3 uses TWO sources of input:
 1. **Manifest data** — `manifest.extracted_items` (especially `Briefing` and `Integrations` categories) plus `manifest.gaps` resolutions captured in Phase 1. This is the primary source of truth for what the solution must connect to.
@@ -375,7 +365,7 @@ If the Manifest captured a system, data source, or GCP service that does not app
 
    If the tool returns a `ToolError` listing structural defects, silently revise the offending artifact — (1b) description, (1c) technology stack, or (1d) diagram spec — and call the tool again. Maximum 3 consecutive retries. Do not mention the audit, the failures, or the retry to the user. See `references/architecture-guide.md` Part 7 for full tool behavior.
 
-   If diagram generation still fails after the allowed retries, do NOT proceed to document assembly. Present the Architecture Review without the rendered diagram only after the textual architecture sections pass the Reference Compliance Gate. A diagram tooling failure does not set `architecture_review_approved = true` and does not relax the requirement for explicit user approval of the Architecture Review.
+   If diagram generation still fails after the allowed retries, do NOT skip Step 4. Continue to Step 4 with the textual sections only; the runtime gate still requires explicit user approval and `confirm_phase_completion('architecture_review_approved')` before Phase 3 unlocks.
 
 2. **Partner & Customer Research**: Call the web search tool for these 4 queries:
    - `"GFT Technologies" Google Cloud partner specialization` → use results for `partner_overview`
@@ -395,15 +385,13 @@ If the Manifest captured a system, data source, or GCP service that does not app
 
 3. **Executive Summary** — Generate LAST because it synthesizes all approved content from Steps 1 and 3. Follow `references/style-guide.md` → "Executive Summary" exactly, including any required template wording, depth requirements, scope-boundary rules, and funding sentence. Do not treat it as a short project overview; it is SOW document content and must meet the reference quality contract.
 
-### Step 3.5 — Reference Compliance Gate (silent)
+### Step 3.5 — Reference Compliance (silent)
 
-Before presenting the Architecture Review, verify all Step 3 sections against the loaded references: Architecture Description, Technology Stack, Integrations, Partner Overview, Customer Overview, and Executive Summary.
-
-Do not present the review until each section satisfies the applicable `style-guide.md`, `scope-examples.md`, and `architecture-guide.md` rules. If a tool failure occurs, such as diagram rendering failure, it does not relax this gate for textual sections. Rewrite only the failing section and continue.
+Verify all Step 3 sections against the loaded references (Architecture Description, Technology Stack, Integrations, Partner Overview, Customer Overview, Executive Summary). Rewrite any non-compliant section before continuing.
 
 ### Step 4 — Present Architecture Review
 
-Present in the conversation language with COMPLETE content. **The section labels below are canonical English references — translate every bold label to the conversation language before presenting. Never present these labels in English when the conversation is in another language.**
+Present the review in the conversation language with COMPLETE content. **The section labels below are canonical English references — translate every bold label to the conversation language before presenting. Never present these labels in English when the conversation is in another language.**
 
 - **Architecture**: Full textual description with data flow, service justifications, and cross-cutting concerns
 - **Architecture Diagram**: Reference the diagram generated in Step 3 (the artifact is rendered automatically in ADK Web UI). Mention that the diagram is available for the user to review.
@@ -418,39 +406,24 @@ Ask the user to review the architecture, technology stack, and executive summary
 **Canonical example (translate to the conversation language):**
 > "Please review the content above carefully. Are the technical specifications aligned with your expectations, or would you like to change, adjust, remove, or elaborate on any point before we proceed?"
 
-Allow section-specific changes. If the user requests changes to the architecture, re-run sub-steps (1b)→(1e): revise the description, table, and spec, and call the tool again.
+Allow section-specific changes. If the user requests changes, re-run sub-steps (1b)→(1e) and re-run Step 3.5, then re-present the updated Architecture Review. Do NOT call `confirm_phase_completion` until the user explicitly approves.
 
 **DO NOT proceed to Phase 3 until user explicitly approves.**
+
+**After the user explicitly approves:** call `confirm_phase_completion('architecture_review_approved')`. After the tool returns successfully, proceed to Phase 3.
 
 ---
 
 ## Phase 3 — Document Assembly
 
-**Precondition:** Phase 2 fully approved (both Step 2 and Step 4 gates passed).
+**Precondition:** the user has explicitly approved the Architecture Review and `confirm_phase_completion('architecture_review_approved')` has been called. If you reach this phase without that, return to Phase 2 Step 4, present the Architecture Review, obtain explicit user approval, and call the confirmation tool first. The runtime gate on `validate_sow_content(stage="full")` and `generate_sow_document` will reject calls otherwise.
 
 **Step 1** — Validate and generate the document.
-0. Run the Final Document Preflight Gate below. If it fails, STOP and return to the missing phase instead of generating the document.
-1. Re-run the Reference Compliance Gate against the exact content that will be sent in `sow_data`. If any section violates the loaded references, rewrite only that section before validation.
+1. Re-run reference compliance against the exact content that will be sent in `sow_data`. Rewrite any non-compliant section before validation.
 2. Call `validate_sow_content` with the assembled `sow_data` JSON containing ALL Phase 2 content (from both Step 2 and Step 4 reviews) and `stage="full"` (or omit the argument — "full" is the default). The architecture diagram and Partner/Customer Overviews were already generated in Phase 2 Step 3.
 3. If errors are returned, fix them, re-validate, and record each fix in an internal revision tracker (see "Revision tracking" below). Max 2 fix attempts — if errors persist, STOP and present the remaining issues to the user for guidance in the conversation language, instead of continuing to retry.
 4. Warnings do not block — note them and proceed.
 5. Call `generate_sow_document` with the validated `sow_data` JSON. If the tool itself returns errors (quality gates, structural validation), apply the same tracker + 2-attempt rule.
-
-
-#### Final Document Preflight Gate — mandatory
-
-Before calling `validate_sow_content(stage="full")` or `generate_sow_document`, verify all conditions below:
-
-1. Content Review was presented to the user and explicitly approved.
-2. Architecture Review was presented to the user and explicitly approved.
-3. The exact Architecture Description shown to the user is present in `sow_data.architecture_description`.
-4. The exact Technology Stack shown to the user is present in `sow_data.technology_stack`.
-5. The exact Integrations shown to the user are present in `sow_data.architecture_integrations`.
-6. Executive Summary has been generated after architecture, not before it.
-7. No architecture section is empty, placeholder-only, or generated only after final document assembly.
-8. `architecture_review_approved = true` in the internal state machine.
-
-If any condition fails, STOP. Do not generate the document. Return to the missing phase and present the missing review to the user.
 
 **Incremental editing rule (non-negotiable):**
 

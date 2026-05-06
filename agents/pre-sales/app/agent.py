@@ -17,6 +17,7 @@ from .config import config
 from .guardrails import scope_guardrail
 from .prompts import build_instruction
 from .shared.logging_config import setup_logging
+from .tools.sow.confirm_phase import confirm_phase_completion
 from .tools.sow.generate_architecture_diagram import \
     generate_architecture_diagram
 from .tools.sow.generate_sow_document import generate_sow_document
@@ -89,6 +90,7 @@ _TOOLS = [
     pre_sales_skill_toolset,
     load_artifacts,
     generate_architecture_diagram,
+    confirm_phase_completion,
     validate_sow_content,
     generate_sow_document,
     initialize_extraction_buffer,
