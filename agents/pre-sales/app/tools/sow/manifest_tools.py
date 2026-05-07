@@ -8,22 +8,20 @@ Incremental construction flow:
    they are extracted, eliminating the failure mode where the model declares
    "extracted N items" without ever producing the structured records.
 
-`load_extraction_manifest` retrieves the finalized artifact for the
-sow-generator skill. `validate_extraction_manifest` runs the full schema
-validation against an arbitrary manifest dict without persisting — useful
-for mid-construction self-checks.
+`load_extraction_manifest` retrieves the finalized Manifest from session
+state for the sow-generator skill. `validate_extraction_manifest` runs the
+full schema validation against an arbitrary manifest dict without persisting
+— useful for mid-construction self-checks.
 
 Wire all five tools into the LlmAgent's tools list. The skills' SKILL.md
 files reference them by name.
 """
 
-import json
 from datetime import datetime, timezone
 from typing import Any
 
 import structlog
 from google.adk.tools import ToolContext
-from google.genai import types
 from pydantic import ValidationError
 
 from ._extraction_manifest import (
@@ -34,26 +32,8 @@ from ._extraction_manifest import (
 
 logger = structlog.get_logger()
 
-ARTIFACT_NAME = "extraction_manifest.json"
-_ARTIFACT_MIME = "application/json"
+_MANIFEST_STATE_KEY = "extraction_manifest"
 _BUFFER_STATE_KEY = "extraction_buffer"
-
-
-def _extract_artifact_bytes(part: types.Part | None) -> bytes | None:
-    """Return the raw JSON bytes from an artifact Part, or None if absent.
-
-    Reads `inline_data.data` (current binary format). Falls back to `text` so
-    artifacts saved by older versions of the tool still load.
-    """
-    if part is None:
-        return None
-    inline = getattr(part, "inline_data", None)
-    if inline is not None and getattr(inline, "data", None):
-        return inline.data
-    text = getattr(part, "text", None)
-    if text:
-        return text.encode("utf-8")
-    return None
 
 
 def _format_errors(exc: ValidationError) -> list[dict[str, Any]]:
@@ -391,7 +371,7 @@ async def finalize_extraction_manifest(
     Finalizes the manifest by combining the in-progress buffer with the gaps
     and self_audit collected during Phase 3 and 4, runs full Pydantic
     validation (including all cross-reference validators), and persists the
-    result as the session artifact `extraction_manifest.json`.
+    result in session state under the `extraction_manifest` key.
 
     Call ONCE at the end of Phase 4. After successful persistence, the
     buffer is cleared from session state.
@@ -426,13 +406,11 @@ async def finalize_extraction_manifest(
     Returns:
         On success: {status: 'ok', items_count, inventory_count,
             hard_gaps_count, pending_decisions_count, ambiguities_count,
-            artifact_saved: True}
+            manifest_persisted: True}
         On validation failure: {status: 'error', errors: [...],
-            artifact_saved: False, guidance: <instructional string>}
-        On save failure: {status: 'save_failed', error: <message>,
-            artifact_saved: False}
+            manifest_persisted: False, guidance: <instructional string>}
         On missing buffer: {status: 'error', errors: [...],
-            artifact_saved: False, guidance: <instructional string>}
+            manifest_persisted: False, guidance: <instructional string>}
     """
     buffer = tool_context.state.get(_BUFFER_STATE_KEY)
     if buffer is None:
@@ -450,7 +428,7 @@ async def finalize_extraction_manifest(
                     "type": "buffer_not_initialized",
                 }
             ],
-            "artifact_saved": False,
+            "manifest_persisted": False,
             "guidance": (
                 "Call initialize_extraction_buffer with the confirmed "
                 "inventory, then append_extraction_items per artifact, "
@@ -476,7 +454,7 @@ async def finalize_extraction_manifest(
         return {
             "status": "error",
             "errors": _format_errors(exc),
-            "artifact_saved": False,
+            "manifest_persisted": False,
             "guidance": (
                 "Final validation failed. Each entry in 'errors' has a 'loc' "
                 "(field path) and 'msg' (problem). Fields under "
@@ -489,31 +467,14 @@ async def finalize_extraction_manifest(
             ),
         }
 
-    json_bytes = validated.model_dump_json(indent=2).encode("utf-8")
-
-    try:
-        version = await tool_context.save_artifact(
-            ARTIFACT_NAME,
-            types.Part.from_bytes(data=json_bytes, mime_type=_ARTIFACT_MIME),
-        )
-    except Exception as exc:
-        logger.error(
-            "manifest_save_failed",
-            error=f"{type(exc).__name__}: {exc}",
-        )
-        return {
-            "status": "save_failed",
-            "error": f"{type(exc).__name__}: {exc}",
-            "artifact_saved": False,
-        }
-
+    manifest_dict = validated.model_dump(mode="json")
+    tool_context.state[_MANIFEST_STATE_KEY] = manifest_dict
     tool_context.state[_BUFFER_STATE_KEY] = None
 
     logger.info(
-        "manifest_artifact_saved",
-        filename=ARTIFACT_NAME,
-        version=version,
-        size_bytes=len(json_bytes),
+        "manifest_persisted",
+        storage="session_state",
+        state_key=_MANIFEST_STATE_KEY,
         items_count=len(validated.extracted_items),
         flow="incremental",
     )
@@ -525,52 +486,25 @@ async def finalize_extraction_manifest(
         "hard_gaps_count": len(validated.gaps.hard_gaps),
         "pending_decisions_count": len(validated.gaps.pending_decisions),
         "ambiguities_count": len(validated.gaps.ambiguities),
-        "artifact_saved": True,
+        "manifest_persisted": True,
     }
 
 async def load_extraction_manifest(tool_context: ToolContext) -> dict[str, Any]:
     """
-    Loads the Extraction Manifest from session artifacts.
+    Loads the Extraction Manifest from session state.
 
     Use at the start of sow-generator Phase 1 (Path B) to retrieve the
-    project context produced by sow-discovery. If the manifest is not found,
-    redirect the user to run sow-discovery first.
+    project context produced by sow-discovery. If the manifest is not found
+    in state, redirect the user to run sow-discovery first.
 
     Returns:
         On found: {status: 'ok', manifest: {...}}
         On missing: {status: 'not_found', manifest: null}
-        On corrupted: {status: 'corrupted', manifest: null, error: <message>}
     """
-    try:
-        part = await tool_context.load_artifact(ARTIFACT_NAME)
-    except Exception as exc:
-        logger.error(
-            'manifest_load_failed',
-            error=f'{type(exc).__name__}: {exc}',
-        )
-        return {
-            "status": "load_failed",
-            "manifest": None,
-            "error": f"{type(exc).__name__}: {exc}",
-        }
-
-    raw = _extract_artifact_bytes(part)
-    if raw is None:
-        logger.info(
-            'manifest_not_found',
-            part_type=type(part).__name__ if part is not None else 'None',
-        )
+    manifest_dict = tool_context.state.get(_MANIFEST_STATE_KEY)
+    if manifest_dict is None:
+        logger.info("manifest_not_found", state_key=_MANIFEST_STATE_KEY)
         return {"status": "not_found", "manifest": None}
-
-    try:
-        manifest_dict = json.loads(raw)
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        return {
-            "status": "corrupted",
-            "manifest": None,
-            "error": f"Stored manifest is not valid JSON: {exc}",
-        }
-
     return {"status": "ok", "manifest": manifest_dict}
 
 
