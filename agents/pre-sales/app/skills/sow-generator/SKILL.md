@@ -35,6 +35,24 @@ metadata:
 - **Section labels and headings** shown to the user (e.g., "Functional Requirements", "Architecture", "Executive Summary") MUST be translated to the conversation language — not just the body text. Every English label in this skill file is a canonical reference; translate it before presenting. Examples: PT-BR "Functional Requirements" → "Requisitos Funcionais"; ES "Functional Requirements" → "Requisitos Funcionales"; FR "Functional Requirements" → "Exigences Fonctionnelles".
 - **Examples in this file are canonical English demonstrations of STRUCTURE and TONE.** When your conversation is in another language, reproduce the same structure and tone in that language using your own wording. Do NOT copy English text verbatim when the conversation is in another language. Do NOT be influenced by the English examples to switch your output language.
 
+### Language surface separation
+
+There are two language surfaces:
+
+1. **User-facing surface** — chat messages, Inference Summary, Content Review, Architecture Review, Revision Notes, confirmations, and error messages.
+   - MUST be written in the user's conversation language.
+   - Section bodies shown in reviews MUST also be localized to the conversation language, including Executive Summary, Partner Overview, Customer Overview, Architecture Description, Technology Stack descriptions, and Integrations.
+   - Required template wording from references must be preserved semantically, but translated/localized for the review when the conversation language is not English.
+
+2. **Document surface** — the final `.docx` payload and all `sow_data` fields sent to `generate_sow_document`.
+   - MUST be written in English.
+   - Required Google template wording MUST appear exactly as written in the references.
+   - Do not translate mandatory template sentences inside the final `.docx`.
+
+When the conversation language is not English, maintain two versions internally when needed:
+- localized review text for the user-facing review;
+- English document text for the final `.docx`.
+
 ## Content rules
 
 - Never fabricate data. Use `[TO BE DEFINED]` for truly missing info.
@@ -383,7 +401,7 @@ If the Manifest captured a system, data source, or GCP service that does not app
 
    Format, TLD, and stripping rules live in Phase 3 Step 1 → `customer_primary_domain`. Apply them when you commit the value.
 
-3. **Executive Summary** — Generate LAST because it synthesizes all approved content from Steps 1 and 3. Follow `references/style-guide.md` → "Executive Summary" exactly, including any required template wording, depth requirements, scope-boundary rules, and funding sentence. Do not treat it as a short project overview; it is SOW document content and must meet the reference quality contract.
+3. **Executive Summary** — Generate LAST because it synthesizes all approved content from Steps 1 and 3. Follow `references/style-guide.md` → "Executive Summary" exactly, including any required template wording, depth requirements, scope-boundary rules, and funding sentence. Do not treat it as a short project overview; it is SOW document content and must meet the reference quality contract. Maintain both surfaces when needed: a localized version for the Architecture Review and an English version for the final `.docx` payload.
 
 ### Step 3.5 — Reference Compliance (silent)
 
@@ -392,6 +410,8 @@ Verify all Step 3 sections against the loaded references (Architecture Descripti
 ### Step 4 — Present Architecture Review
 
 Present the review in the conversation language with COMPLETE content. **The section labels below are canonical English references — translate every bold label to the conversation language before presenting. Never present these labels in English when the conversation is in another language.**
+
+Before presenting this review, localize all section bodies to the conversation language. This includes Architecture Description, Technology Stack descriptions, Integrations, Partner Overview, Customer Overview, and Executive Summary. Do not paste the English `.docx` version into the review unless the conversation language is English. The final `.docx` version remains English and must preserve the exact English template wording required by `references/style-guide.md`.
 
 - **Architecture**: Full textual description with data flow, service justifications, and cross-cutting concerns
 - **Architecture Diagram**: Reference the diagram generated in Step 3 (the artifact is rendered automatically in ADK Web UI). Mention that the diagram is available for the user to review.
@@ -420,6 +440,8 @@ Allow section-specific changes. If the user requests changes, re-run sub-steps (
 
 **Step 1** — Validate and generate the document.
 1. Re-run reference compliance against the exact content that will be sent in `sow_data`. Rewrite any non-compliant section before validation.
+
+   Before calling `validate_sow_content` or `generate_sow_document`, convert all user-facing localized review text into the English document surface. Do not send localized review text to the document tools unless the conversation language itself is English. For the Executive Summary, the `.docx` payload MUST start with the exact English template sentence and end with the exact English Google funding sentence from `references/style-guide.md`.
 2. Call `validate_sow_content` with the assembled `sow_data` JSON containing ALL Phase 2 content (from both Step 2 and Step 4 reviews) and `stage="full"` (or omit the argument — "full" is the default). The architecture diagram and Partner/Customer Overviews were already generated in Phase 2 Step 3.
 3. If errors are returned, fix them, re-validate, and record each fix in an internal revision tracker (see "Revision tracking" below). Max 2 fix attempts — if errors persist, STOP and present the remaining issues to the user for guidance in the conversation language, instead of continuing to retry.
 4. Warnings do not block — note them and proceed.
