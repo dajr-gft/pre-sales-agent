@@ -1,5 +1,9 @@
 # SOW Style Guide — Google DAF/PSF Template
 
+## Language surface note
+
+This reference defines the quality contract for the final English `.docx` content. When the same section is presented in a user-facing review, the structure, depth, and meaning remain binding, but the wording must be localized to the user's conversation language. Exact English template sentences are mandatory only for the final `.docx` payload.
+
 ## General Writing Rules
 
 - Clear, professional English. Active voice.
@@ -74,25 +78,35 @@ The trigger is semantic, not numeric — a paragraph break marks a topic shift (
 
 The Executive Summary MUST follow the Google DAF/PSF SOW template language and expand it with project-specific business value and high-level technical outcomes.
 
-**Required opening sentence:**
+#### Final `.docx` requirement — exact English template wording
 
-Start with this exact sentence pattern, replacing the bracketed instruction with project-specific content:
+In the final `.docx`, the Executive Summary MUST start with this exact English sentence pattern, replacing the bracketed instruction with project-specific content:
 
 > "This Statement of Work (SOW) outlines the scope, activities, deliverables, and estimated timelines for [project-specific business value and high-level technical outcomes]."
 
-The required opening sentence is not an example. It is mandatory template text. Do NOT leave bracketed placeholder text in the document.
-
-**Required funding sentence:**
-
-End the Executive Summary with this exact sentence, selecting the correct funding type from the Manifest:
+The final `.docx` Executive Summary MUST end with this exact English sentence, selecting the correct funding type from the Manifest:
 
 > "This scope of work will be funded with Google [Deal Acceleration Funds (DAF) | Google Partner Services Funds (PSF)]."
 
-If the funding type is not stated, write:
+If the funding type is not stated, the final `.docx` MUST end with:
 
 > "This scope of work will be funded with Google [TO BE DEFINED]."
 
-The funding sentence is not an example. It is mandatory template text. A summary that does not start with the required opening sentence and end with the required Google funding sentence is non-compliant, regardless of whether the content is otherwise well written.
+These English sentences are mandatory template text for the final document, not examples. Do NOT leave bracketed instruction text in the document; only the funding placeholder may remain `[TO BE DEFINED]` when funding is genuinely not stated.
+
+#### User-facing review requirement — localized template meaning
+
+When presenting the Executive Summary in a user-facing review, use the conversation language. Preserve the same structure and meaning as the required template wording, but localize it naturally.
+
+For example, in Portuguese, the review version may start with:
+
+> "Este Statement of Work (SOW) descreve o escopo, as atividades, os entregáveis e os cronogramas estimados para [valor de negócio específico do projeto e resultados técnicos de alto nível]."
+
+And may end with:
+
+> "Este escopo de trabalho será financiado com recursos Google [A DEFINIR]."
+
+A non-English review is compliant when it preserves the required template meaning in the user's language. The final `.docx` is compliant only when it uses the exact English template wording.
 
 **Depth requirements:**
 
@@ -107,7 +121,7 @@ The funding sentence is not an example. It is mandatory template text. A summary
 4. Main activities and deliverables at a high level, not a detailed task list.
 5. Timeline or engagement shape when material to scope.
 6. Scope boundary statement, including what the engagement is strictly limited to when relevant.
-7. Required Google funding sentence using the exact template wording above.
+7. Required Google funding sentence: localized meaning in user-facing reviews, exact English template wording in the final `.docx`.
 
 **Quality bar:**
 

@@ -7,7 +7,7 @@ Covers the three tools the discovery skill drives the buffer with:
   resolution, ID uniqueness, status precedence (ok / partial / error),
   buffer persistence across calls.
 - ``finalize_extraction_manifest`` — full Pydantic cross-validation,
-  artifact persistence, buffer clearing on success.
+  manifest persistence in session state, buffer clearing on success.
 - ``validate_extraction_manifest`` — standalone schema check.
 """
 from __future__ import annotations
@@ -17,7 +17,7 @@ from typing import Any
 import pytest
 
 from app.tools.sow.manifest_tools import (
-    ARTIFACT_NAME,
+    _MANIFEST_STATE_KEY,
     append_extraction_items,
     finalize_extraction_manifest,
     initialize_extraction_buffer,
@@ -385,7 +385,7 @@ def _valid_gaps() -> dict[str, Any]:
 
 
 class TestFinalize:
-    async def test_finalize_persists_artifact_and_clears_buffer(
+    async def test_finalize_persists_manifest_and_clears_buffer(
         self, initialized_context
     ):
         # Both inventory entries (A1, A2) must contribute at least one
@@ -404,16 +404,17 @@ class TestFinalize:
             tool_context=initialized_context,
         )
         assert result['status'] == 'ok'
-        assert result['artifact_saved'] is True
+        assert result['manifest_persisted'] is True
         assert result['items_count'] == 3
 
         # Buffer cleared on success.
         assert initialized_context.state['extraction_buffer'] is None
 
-        # Artifact written to the session via save_artifact.
-        initialized_context.save_artifact.assert_called_once()
-        call_args = initialized_context.save_artifact.call_args
-        assert call_args[0][0] == ARTIFACT_NAME
+        # Manifest persisted to session state under the dedicated key.
+        stored = initialized_context.state[_MANIFEST_STATE_KEY]
+        assert stored['manifest_version'] == '1.0'
+        assert len(stored['extracted_items']) == 3
+        assert len(stored['inventory']) == 2
 
     async def test_finalize_without_buffer_returns_error(
         self, mock_tool_context
@@ -424,7 +425,7 @@ class TestFinalize:
             tool_context=mock_tool_context,
         )
         assert result['status'] == 'error'
-        assert result['artifact_saved'] is False
+        assert result['manifest_persisted'] is False
         assert (
             result['errors'][0]['type'] == 'buffer_not_initialized'
         )
@@ -442,7 +443,9 @@ class TestFinalize:
             tool_context=initialized_context,
         )
         assert result['status'] == 'error'
-        assert result['artifact_saved'] is False
+        assert result['manifest_persisted'] is False
+        # Manifest must NOT be persisted on validation failure.
+        assert _MANIFEST_STATE_KEY not in initialized_context.state
         # Buffer preserved so the model can append the missing Identity item.
         assert (
             initialized_context.state['extraction_buffer'] is not None
@@ -486,7 +489,33 @@ class TestValidateStandalone:
 
 
 class TestLoadManifest:
-    async def test_missing_artifact_returns_not_found(self, mock_tool_context):
-        # Default mock_tool_context.load_artifact returns None.
+    async def test_missing_manifest_returns_not_found(self, mock_tool_context):
+        # State has no manifest entry yet.
         result = await load_extraction_manifest(tool_context=mock_tool_context)
         assert result == {'status': 'not_found', 'manifest': None}
+
+    async def test_load_returns_manifest_finalize_persisted(
+        self, initialized_context
+    ):
+        await append_extraction_items(
+            items=[
+                _identity_item(),
+                _make_item(2, artifact_id='A1'),
+                _make_item(3, artifact_id='A2'),
+            ],
+            tool_context=initialized_context,
+        )
+        await finalize_extraction_manifest(
+            gaps=_valid_gaps(),
+            self_audit=_valid_self_audit(),
+            tool_context=initialized_context,
+        )
+        result = await load_extraction_manifest(
+            tool_context=initialized_context
+        )
+        assert result['status'] == 'ok'
+        assert result['manifest'] is not None
+        assert result['manifest'] == initialized_context.state[
+            _MANIFEST_STATE_KEY
+        ]
+        assert len(result['manifest']['extracted_items']) == 3

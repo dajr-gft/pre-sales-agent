@@ -45,9 +45,26 @@ Load only what the active path needs, but treat loaded references as binding:
 - **Path B:** `references/extraction-rules.md` + `references/coverage-protocol.md`
 - **Path A:** `references/extraction-rules.md` + `references/guided-discovery-blocks.md`
 
-`extraction-rules.md` defines the eight categories, required primitives per category, granularity rules, and anchor conventions. `coverage-protocol.md` defines the per-artifact coverage loop, the coverage ledger, dense-artifact chunking, and the global coverage gate before finalize. `guided-discovery-blocks.md` defines the Path A blocks and post-response routine.
+`extraction-rules.md` defines the eight categories, required primitives per category, granularity rules, and anchor conventions. `coverage-protocol.md` defines the per-artifact coverage loop, the coverage ledger, dense-artifact chunking, skip validity, fail/reprocess conditions, and the global coverage gate before finalize. `guided-discovery-blocks.md` defines the Path A blocks and post-response routine.
 
 If extracting without `extraction-rules.md` loaded, stop. If processing artifacts without `coverage-protocol.md` loaded, stop. If running guided discovery without `guided-discovery-blocks.md` loaded, stop.
+
+## Reference authority and coverage rules
+
+The loaded reference files are binding execution contracts, not optional examples, loose guidance, or background reading.
+
+Priority order for discovery execution:
+
+1. `references/coverage-protocol.md` — binding coverage execution contract for Path B. It controls enumeration, extract-or-skip decisions, coverage ledger, dense-artifact chunking, skip validity, fail/reprocess conditions, coverage receipt validity, and the global coverage gate.
+2. `references/extraction-rules.md` — binding extraction schema and granularity contract. It controls categories, primitives, item splitting, anchors, confidence, and required fields.
+3. `references/guided-discovery-blocks.md` — binding guided-interview contract for Path A.
+4. This `SKILL.md` — workflow orchestration, user-facing messages, tool order, and handoff behavior.
+
+If this skill says to process an artifact and `coverage-protocol.md` defines how coverage must pass, the coverage protocol controls. Do not simplify, soften, reinterpret, or bypass coverage rules unless the reference explicitly allows it.
+
+A coverage receipt is valid only if it satisfies `coverage-protocol.md`. For Primary structured artifacts, a receipt that accounts for elements primarily through skips is invalid, even if the arithmetic balances. Skips are not a substitute for extraction when a visible element contains project meaning.
+
+**Brevity scope rule:** instructions such as "brief", "concise", "direct", or "short" apply only to user-facing orchestration messages. They do NOT apply to extraction depth, enumeration, coverage ledgers, primitive population, or artifact processing. For discovery work, follow the depth, granularity, and coverage rules in the loaded references.
 
 ## Persistence model
 
@@ -63,12 +80,12 @@ Do not use `save_extraction_manifest` in the normal workflow — it exists only 
 
 **On `append_extraction_items` errors.** The tool validates each item individually — schema, source artifact existence, ID uniqueness against the buffer. The response shape is:
 
-```
+```json
 {
   "status": "ok" | "partial" | "error",
-  "items_appended_this_call": <int>,
-  "total_items_in_buffer": <int>,
-  "errors_per_item": [{"item_index": <int>, "raw_id": "<id>", "errors": [...]}]
+  "items_appended_this_call": 0,
+  "total_items_in_buffer": 0,
+  "errors_per_item": [{"item_index": 0, "raw_id": "<id>", "errors": []}]
 }
 ```
 
@@ -88,7 +105,7 @@ Allowed user-visible messages:
 
 Never show: enumeration lists, visible-count declarations, extract/skip decisions, skip reasons, reconciliation maps, internal trackers, raw tool fields, self-audit results, or any other internal reasoning. Phase 1 anchor messages are exceptions — they are public commitments by design (see Phase 1).
 
-Receipt numbers must come from the internal coverage ledger and from the `append_extraction_items` tool response. Both must agree.
+Receipt numbers must come from the internal coverage ledger and from the `append_extraction_items` tool response. Both must agree. A receipt may not be emitted if the artifact fails any `coverage-protocol.md` fail/reprocess condition.
 
 ## Workflow
 
@@ -118,7 +135,7 @@ Triage is based on artifact type, name, and Phase 0 hypothesis — not on openin
 
 **Initialize the buffer (closing action of Phase 0.5).** After the user confirms the order, call:
 
-```
+```text
 initialize_extraction_buffer(
   conversation_language=<detected language code>,
   inventory=<final ordered inventory: Primary → Secondary → Context>
@@ -129,16 +146,33 @@ initialize_extraction_buffer(
 
 ### Phase 1 — Per-Artifact Extraction (Path B only)
 
-For each artifact in the confirmed triage order, run the full per-artifact loop defined in `coverage-protocol.md`:
+For each artifact in the confirmed triage order, run the full per-artifact loop defined in `coverage-protocol.md`.
 
-**Primary structured artifact rule.** For Primary structured artifacts, semantic skips are forbidden. Capability rows, RACI rows, project-plan rows, integration rows, NFR rows, timeline rows, responsibilities, milestones, roles, systems, constraints, and delivery activities are presumed extractable. If such an element is not assigned to GFT or is only informational, extract it as a responsibility boundary, constraint, decision, scope item, or pending decision — do not skip it.
+**Primary structured artifact rule.** For Primary structured artifacts, semantic skips are forbidden. Capability rows, RACI rows, project-plan rows, integration rows, NFR rows, timeline rows, responsibilities, milestones, roles, systems, constraints, and delivery activities are presumed extractable. If such an element is not assigned to the partner, is owned by another party, or is only informational, extract it as a responsibility boundary, constraint, decision, scope item, dependency, or pending decision — do not skip it.
 
 1. **Pre-compute density** internally (visible rows / bullets / boxes / labels / capability cells / responsibility cells / named subjects).
 2. **Enumerate every concrete element** in your reasoning, with numbered IDs. This step is mandatory and must produce a literal numbered list before any extraction begins.
 3. **Extract or skip every enumerated element.** Each numbered entry results in either an `extracted_item` OR an explicit skip-with-reason. There is no third option.
-4. **Build and verify the coverage ledger.** Apply the invariants in `coverage-protocol.md` — `enumerated == extracted + skipped`, structured artifacts require `enumerated == visible_element_count`, etc.
-5. **Append the items.** Call `append_extraction_items(items=[...])`. Use chunking (per `coverage-protocol.md`) when `visible_element_count > 40`.
-6. **Emit the coverage receipt** (see below).
+4. **Build and verify the coverage ledger.** Apply the invariants and fail/reprocess conditions in `coverage-protocol.md`.
+5. **Run the coverage receipt lock.** Before appending or emitting any receipt, re-check the artifact against `coverage-protocol.md` → "Fail and reprocess when" and the additional lock below.
+6. **Append the items.** Call `append_extraction_items(items=[...])`. Use chunking (per `coverage-protocol.md`) when `visible_element_count > 40`.
+7. **Emit the coverage receipt** only after append succeeds and the receipt lock passes.
+
+#### Coverage receipt lock
+
+Before emitting a coverage receipt for any artifact, re-check the artifact against `coverage-protocol.md`. This lock is mandatory even if the coverage ledger arithmetic balances.
+
+For Primary structured artifacts, the receipt is forbidden when any of the following is true:
+
+- `skipped_count > extracted_count`.
+- `visible_element_count >= 10` and `extracted_count < 80% of visible_element_count`.
+- `semantic_skip_count > 0`.
+- any non-header row, capability entry, RACI responsibility, integration, milestone, activity, deliverable, role, constraint, decision, NFR, or scope-bearing element was counted as skipped.
+- any skip reason is equivalent to: already captured, similar, low priority, context only, informative only, not assigned to the partner, owned by another party, too detailed, implementation-specific, future-facing, or belongs to a group already extracted.
+
+If any condition is true, do NOT emit the receipt, do NOT move to the next artifact, and do NOT ask gap questions. Reprocess the artifact according to `coverage-protocol.md`.
+
+A coverage receipt for a Primary structured artifact with many skipped semantic elements is invalid even when the receipt says all visible elements were "accounted for". "Accounted for" means either extracted or structurally skipped; it does not mean semantically skipped.
 
 **Anchor message protocol — public commitments around each artifact.**
 
@@ -146,7 +180,7 @@ Before processing each artifact, emit a visible start message:
 
 > "Starting [artifact_id] ([artifact name], [tier]). Enumerating visible elements first, then extracting per category."
 
-After `append_extraction_items` returns `status: "ok"` AND the coverage ledger passes, emit the coverage receipt:
+After `append_extraction_items` returns `status: "ok"` AND the coverage ledger and receipt lock pass, emit the coverage receipt:
 
 > "✓ [artifact_id] processed — coverage [accounted]/[visible] visible elements accounted for ([extracted] extracted, [skipped] skipped). Moving to [next_artifact_id]."
 
@@ -162,11 +196,11 @@ The single most common failure mode of artifact discovery is **silent collapse**
 1. Every artifact in the triage order has a passing coverage ledger.
 2. For every artifact, `items_appended_for_artifact == extracted_count`.
 3. Every artifact emitted a start message AND a coverage receipt.
-4. No structured Primary artifact has suspiciously low extraction (per `coverage-protocol.md` "Fail and reprocess when").
-5. No row, bullet, capability, or responsibility was collapsed into umbrella items.
+4. No structured Primary artifact has suspiciously low extraction per `coverage-protocol.md`.
+5. No visible row, bullet, capability entry, responsibility, integration, milestone, role, constraint, decision, or other source-present scope element was collapsed into umbrella items.
 6. The global coverage gate from `coverage-protocol.md` passes.
 
-If any condition fails, reprocess the failing artifact before Phase 2.
+If any condition fails, reprocess the failing artifact before Phase 2. Do not invent capability entries for SOWs whose sources do not contain them; these rules apply only to elements actually present in the source.
 
 ### Phase 1-A — Guided Discovery (Path A only)
 
@@ -223,7 +257,7 @@ Before calling `finalize_extraction_manifest`, run the global coverage gate from
 
 **Self-audit (run in your reasoning before calling the tool):**
 
-```
+```xml
 <self_audit>
 1. (Path B) Does every artifact in the inventory I initialized appear in at least one source list inside the buffer? If an artifact contributed nothing, did I plan to add a justifying note? A screenshot of an unrelated dashboard producing zero items is plausible — but the note must say so. A "Capabilities" appendix producing zero items is implausible and means I missed a pass.
    (Path A) Does the single inventory entry A1 appear as the source of every appended item? If an item is orphaned, the append would have rejected it — so this should hold by construction.
@@ -233,7 +267,7 @@ Before calling `finalize_extraction_manifest`, run the global coverage gate from
 5. Are all contradictions identified in Phase 2 either resolved (the user told you which supersedes) OR captured as ambiguities I am about to file?
 6. Is every Phase 3 user answer recorded with the turn number it came from in the corresponding HardGap or Ambiguity's `interview_turn_asked`?
 7. Are values in items I added during Phase 3 written in English, regardless of the conversation language?
-8. (Path B) Did the global coverage gate from `coverage-protocol.md` pass — every artifact's ledger consistent, no Primary artifact with suspiciously low extraction, no collapsed details?
+8. (Path B) Did the global coverage gate from `coverage-protocol.md` pass — every artifact's ledger consistent, no Primary artifact with suspiciously low extraction, no collapsed details, and no invalid coverage receipts?
 </self_audit>
 ```
 
@@ -241,7 +275,7 @@ If any check fails, fix in your reasoning before calling the tool.
 
 **Call:**
 
-```
+```text
 finalize_extraction_manifest(
   gaps={
     "hard_gaps": [<from Phase 3 answers>],
