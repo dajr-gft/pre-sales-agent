@@ -42,7 +42,9 @@ if not _RSVG_AVAILABLE:
 
 _DIAGRAM_ARTIFACT_KEY = 'architecture_diagram_artifact'
 
-_NEEDS_QUOTING = re.compile(r'[.()/#"\'{}:;\\]')
+_NEEDS_QUOTING = re.compile(r'[\s.()/#"\'{}:;\\]')
+
+_SAFE_ID_RE = re.compile(r'[^a-zA-Z0-9_]')
 
 _ZONE_D2_KEY: dict[ClusterZone, str] = {
     ClusterZone.USER_CONSUMER: 'user_consumer',
@@ -137,6 +139,47 @@ def _normalize_sub(sub: Optional[str]) -> Optional[str]:
     return stripped or None
 
 
+def _build_safe_id_map(
+    nodes: list[ArchitectureNode],
+) -> list[str]:
+    """Compute D2-safe identifiers aligned with ``nodes`` by position.
+
+    D2 keys used in path syntax (``zone.node``, ``a -> b``) cannot contain
+    spaces, dots, or punctuation without breaking the parser. The Pydantic
+    contract documents "no spaces" but does not enforce it, so the LLM
+    occasionally emits ids like ``api.gateway`` or ``Cloud Run 1`` which
+    compile to invalid D2 source and surface as a ``d2_render_failed``
+    error cascade.
+
+    Sanitization rule (deterministic, input-order stable):
+    - Replace any character outside ``[a-zA-Z0-9_]`` with ``_``.
+    - Fall back to ``n_<index>`` when the result has no alphanumeric
+      character (e.g. raw id of ``'...'`` or ``''``).
+    - Prefix with ``n_`` when starting with a digit.
+    - Disambiguate collisions by appending ``_2``, ``_3``, ...
+
+    Returns ``list[str]`` aligned with ``nodes`` by position. Edges still
+    resolve through ``node_d2_path`` keyed on the original ``node.id`` —
+    this layer only fixes how the id appears in emitted D2 source.
+    """
+    safe_ids: list[str] = []
+    used: set[str] = set()
+    for idx, node in enumerate(nodes):
+        candidate = _SAFE_ID_RE.sub('_', node.id)
+        if not any(c.isalnum() for c in candidate):
+            candidate = f'n_{idx}'
+        elif candidate[0].isdigit():
+            candidate = f'n_{candidate}'
+        base = candidate
+        suffix = 2
+        while candidate in used:
+            candidate = f'{base}_{suffix}'
+            suffix += 1
+        used.add(candidate)
+        safe_ids.append(candidate)
+    return safe_ids
+
+
 def _compute_hub_node_ids(
     nodes: list[ArchitectureNode],
     edges: list[ArchitectureEdge],
@@ -171,6 +214,7 @@ def _render_d2_node(
     node: ArchitectureNode,
     indent: str = '',
     is_hub: bool = False,
+    safe_id: Optional[str] = None,
 ) -> list[str]:
     """Generate D2 code lines for a single node.
 
@@ -201,7 +245,8 @@ def _render_d2_node(
     """
     lines = []
     label = _escape_d2(node.label)
-    lines.append(f'{indent}{node.id}: "{label}" {{')
+    key = safe_id if safe_id is not None else node.id
+    lines.append(f'{indent}{key}: "{label}" {{')
 
     icon_path = get_d2_icon_path(node.service)
     shape = get_d2_shape(node.service)
@@ -295,6 +340,11 @@ def _build_d2_code(
 
     hub_node_ids = _compute_hub_node_ids(nodes, edges)
 
+    safe_ids = _build_safe_id_map(nodes)
+    safe_id_by_obj: dict[int, str] = {
+        id(n): s for n, s in zip(nodes, safe_ids)
+    }
+
     zones: dict[
         ClusterZone, dict[Optional[str], list[ArchitectureNode]]
     ] = defaultdict(lambda: defaultdict(list))
@@ -315,15 +365,17 @@ def _build_d2_code(
         sub_groups = zones[zone]
 
         for node in sub_groups.get(None, []):
+            safe = safe_id_by_obj[id(node)]
             lines.extend(
                 _render_d2_node(
                     node,
                     indent='  ',
                     is_hub=node.id in hub_node_ids,
+                    safe_id=safe,
                 )
             )
             lines.append('')
-            node_d2_path[node.id] = f'{zone_key}.{node.id}'
+            node_d2_path[node.id] = f'{zone_key}.{safe}'
 
         for sub_name, sub_nodes in sub_groups.items():
             if sub_name is None:
@@ -331,15 +383,17 @@ def _build_d2_code(
             sub_key = _d2_key(sub_name)
             lines.extend(_render_sub_cluster_header(zone, sub_name))
             for node in sub_nodes:
+                safe = safe_id_by_obj[id(node)]
                 lines.extend(
                     _render_d2_node(
                         node,
                         indent='    ',
                         is_hub=node.id in hub_node_ids,
+                        safe_id=safe,
                     )
                 )
                 lines.append('')
-                node_d2_path[node.id] = f'{zone_key}.{sub_key}.{node.id}'
+                node_d2_path[node.id] = f'{zone_key}.{sub_key}.{safe}'
             lines.append('  }')
             lines.append('')
 

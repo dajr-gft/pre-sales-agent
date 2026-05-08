@@ -15,7 +15,7 @@ Manifest items require: `category`, English `value`, English `value_detail`, com
 ### 1. Identity
 
 - **Purpose:** customer/project/funding/partners/shape.
-- **Primitives:** `customer`, `project_name`, `funding_type` (DAF|PSF|T&M|Fixed Price|Pure SOW|not_stated), `partner`, `secondary_partners`, `engagement_shape`, `engagement_phase`, `sector`, `geography`.
+- **Primitives:** `customer`, `project_name`, `funding_type` (DAF|PSF), `partner`, `secondary_partners`, `engagement_shape`, `engagement_phase`, `sector`, `geography`.
 - **Capture:** legal entity/brand, codename, phase/v1/v2 marker, funding, partner roles, sector/geography, "discovery only / no implementation / enhance / migrate / landing zone".
 - **Ignore:** marketing taglines, generic company descriptions, attendee names without responsibility.
 - **Anchor:** page + section; cover = page 1.

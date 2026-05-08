@@ -66,9 +66,19 @@ class TestD2Key:
         out = gad._d2_key(name)
         assert out.startswith('"') and out.endswith('"')
 
-    def test_ampersand_not_quoted(self):
-        """Ampersand is NOT in the NEEDS_QUOTING set — documents current behavior."""
-        assert gad._d2_key('Data & Storage') == 'Data & Storage'
+    def test_ampersand_alone_not_quoted(self):
+        """Ampersand by itself is NOT in NEEDS_QUOTING — documents current behavior.
+
+        Note: 'Data & Storage' (with spaces) IS quoted because whitespace
+        triggers quoting. This test isolates the ampersand from spaces.
+        """
+        assert gad._d2_key('Data&Storage') == 'Data&Storage'
+
+    def test_space_forces_quoting(self):
+        """Whitespace in keys must be quoted — D2 splits unquoted keys on
+        whitespace, so an unquoted 'foo bar' breaks the parser."""
+        out = gad._d2_key('foo bar')
+        assert out.startswith('"') and out.endswith('"')
 
 
 class TestNormalizeSub:
@@ -83,6 +93,63 @@ class TestNormalizeSub:
 
     def test_non_empty_stripped(self):
         assert gad._normalize_sub('  AI / ML  ') == 'AI / ML'
+
+
+class TestBuildSafeIdMap:
+    """Sanitization layer that protects D2 from LLM-emitted ids that violate
+    the 'no-spaces, no-punctuation' contract documented on ArchitectureNode.id.
+
+    The function returns a list of safe ids aligned with input position.
+    """
+
+    def _node(self, node_id: str) -> ArchitectureNode:
+        return ArchitectureNode(
+            id=node_id, label='X',
+            service=GcpServiceEnum.CLOUD_RUN,
+            parent_cluster=ClusterZone.GOOGLE_CLOUD,
+        )
+
+    @pytest.mark.parametrize(
+        'raw,expected',
+        [
+            ('api.gateway', 'api_gateway'),
+            ('cloud-run', 'cloud_run'),
+            ('Cloud Run 1', 'Cloud_Run_1'),
+            ('node(1)', 'node_1_'),
+            ('weird/path', 'weird_path'),
+            ('plain_id', 'plain_id'),
+        ],
+    )
+    def test_special_chars_replaced_with_underscore(self, raw, expected):
+        result = gad._build_safe_id_map([self._node(raw)])
+        assert result == [expected]
+
+    def test_leading_digit_prefixed(self):
+        result = gad._build_safe_id_map([self._node('42service')])
+        assert result == ['n_42service']
+
+    def test_empty_after_sanitization_falls_back_to_index(self):
+        """Pathological id of only special chars maps to a positional fallback
+        (n_0, n_1, ...). The fallback never collides with itself because the
+        index is unique per node."""
+        result = gad._build_safe_id_map(
+            [self._node('...'), self._node('!!!')]
+        )
+        assert result == ['n_0', 'n_1']
+
+    def test_collision_disambiguated_with_suffix(self):
+        """Two distinct raw ids that sanitize to the same safe form get
+        suffixes _2, _3, ... in input order."""
+        result = gad._build_safe_id_map(
+            [self._node('api.x'), self._node('api-x'), self._node('api/x')]
+        )
+        assert result == ['api_x', 'api_x_2', 'api_x_3']
+
+    def test_already_safe_ids_passthrough(self):
+        result = gad._build_safe_id_map(
+            [self._node('a'), self._node('b_c'), self._node('node1')]
+        )
+        assert result == ['a', 'b_c', 'node1']
 
 
 class TestRenderD2Node:
@@ -310,6 +377,63 @@ class TestBuildD2Code:
         ):
             out = gad._build_d2_code(nodes, edges, 'LR', '')
         assert 'third_party:' not in out
+
+    def test_node_id_with_special_chars_sanitized_in_emitted_d2(self):
+        """Regression: when the LLM emits a node id containing characters D2
+        treats specially (dot, space, paren, hyphen), the renderer must NOT
+        leak the raw id into D2 syntax — it must use the sanitized form
+        consistently in node declarations, container paths, and edges. The
+        original id remains the lookup key for edge resolution.
+
+        Triggered by production ``d2_render_failed`` cascades with
+        'unexpected text after map key' / 'unexpected map termination
+        character }' on every node line.
+        """
+        nodes = [
+            ArchitectureNode(
+                id='entry user', label='User',
+                service=GcpServiceEnum.USERS,
+                parent_cluster=ClusterZone.USER_CONSUMER,
+            ),
+            ArchitectureNode(
+                id='api.gateway', label='Public API',
+                service=GcpServiceEnum.CLOUD_RUN,
+                parent_cluster=ClusterZone.GOOGLE_CLOUD,
+            ),
+            ArchitectureNode(
+                id='warehouse-bq', label='Warehouse',
+                service=GcpServiceEnum.BIGQUERY,
+                parent_cluster=ClusterZone.GOOGLE_CLOUD,
+            ),
+        ]
+        edges = [
+            ArchitectureEdge(
+                source_id='entry user', target_id='api.gateway',
+                label='HTTPS',
+            ),
+            ArchitectureEdge(
+                source_id='api.gateway', target_id='warehouse-bq',
+                label='SQL',
+            ),
+        ]
+        with patch(
+            'app.tools.sow.generate_architecture_diagram.get_d2_icon_path',
+            return_value=None,
+        ):
+            out = gad._build_d2_code(nodes, edges, 'LR', '')
+
+        # Raw ids must NOT appear as D2 keys (they would break the parser).
+        # We check the patterns that would land in path syntax:
+        assert 'api.gateway:' not in out
+        assert 'entry user:' not in out
+        assert '.warehouse-bq' not in out
+        # Sanitized ids appear in declarations and paths
+        assert 'api_gateway:' in out
+        assert 'entry_user:' in out
+        assert 'warehouse_bq:' in out
+        # Edges resolve via the sanitized path
+        assert 'user_consumer.entry_user -> gcp.api_gateway: "HTTPS"' in out
+        assert 'gcp.api_gateway -> gcp.warehouse_bq: "SQL"' in out
 
     def test_special_chars_in_subcluster_name_quoted(self):
         nodes = [
