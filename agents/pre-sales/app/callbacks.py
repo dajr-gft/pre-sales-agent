@@ -4,6 +4,10 @@ before_tool_callback: runs before every tool call — validates inputs,
     blocks unsafe operations, logs invocations.
 after_tool_callback: runs after every tool call — logs results,
     tracks tool usage in session state for downstream decisions.
+empty_response_guard: after_model_callback that detects terminal empty
+    turns (no text and no function call) and re-enters the agent loop
+    via the internal _request_continuation tool, capped at
+    _MAX_EMPTY_RETRIES consecutive attempts.
 """
 
 from __future__ import annotations
@@ -12,8 +16,12 @@ import json
 from typing import Any
 
 import structlog
+from google.adk.agents.callback_context import CallbackContext
+from google.adk.models import LlmResponse
 from google.adk.tools import ToolContext
+from google.genai import types
 
+from ._genai_patches import THOUGHT_SIGNATURE_BYPASS_BYTES
 from .tools.sow.confirm_phase import is_architecture_review_approved
 
 logger = structlog.get_logger()
@@ -178,3 +186,141 @@ def after_tool_callback(
         )
 
     return None
+
+_STATE_EMPTY_RESPONSE_ATTEMPTS = '_empty_response_attempts'
+_MAX_EMPTY_RETRIES = 2
+_RECOVERY_TOOL_NAME = '_request_continuation'
+
+_RECOVERY_EXHAUSTED_MESSAGE = (
+    'Tive dificuldade para gerar a próxima resposta. '
+    'Pode me pedir novamente, por favor? / '
+    "I had trouble generating the next response. "
+    'Could you ask me again, please?'
+)
+
+
+def _is_terminal_empty_response(llm_response: LlmResponse) -> bool:
+    """True when the response would render as nothing in the UI.
+
+    A turn is terminal-empty when the model believes it is finished
+    (``finish_reason`` is ``STOP`` or absent) AND it produced neither
+    non-empty text nor a function call. Function-only turns (``text=None``
+    + ``function_call`` present) are the NORMAL tool-calling shape and
+    must pass through.
+
+    Responses already carrying ``error_code`` / ``error_message`` are
+    handled by the existing error pipeline, not by this guard. Safety
+    refusals (``finish_reason=SAFETY``) are owned by ``scope_guardrail``
+    and the model's safety settings.
+    """
+    if getattr(llm_response, 'error_code', None) or getattr(
+        llm_response, 'error_message', None
+    ):
+        return False
+
+    finish_reason = getattr(llm_response, 'finish_reason', None)
+    stop_reason = getattr(types.FinishReason, 'STOP', None)
+    if finish_reason is not None and stop_reason is not None and finish_reason != stop_reason:
+        return False
+
+    content = getattr(llm_response, 'content', None)
+    if content is None:
+        return True
+
+    parts = getattr(content, 'parts', None) or []
+    if not parts:
+        return True
+
+    for part in parts:
+        text = (getattr(part, 'text', None) or '').strip()
+        if text:
+            return False
+        if getattr(part, 'function_call', None):
+            return False
+
+    return True
+
+
+def _build_recovery_call_response() -> LlmResponse:
+    """Synthesize a model turn that triggers the recovery tool.
+
+    Mirrors the synthetic-response pattern in ``guardrails`` but the
+    ``Part`` carries a ``function_call`` instead of text. The agent
+    loop executes the tool, feeds the result back to the model, and the
+    model gets a fresh turn with explicit instructions to resume.
+
+    The ``thought_signature`` carries the Vertex AI documented bypass
+    sentinel — see :mod:`app._genai_patches`. Gemini 3.x rejects replayed
+    ``functionCall`` parts that lack a signature; client-synthesized calls
+    have none, so we opt into the bypass for this single turn. The patch
+    in ``_genai_patches`` is what makes the sentinel reach the wire as the
+    literal ASCII string the backend expects.
+    """
+    return LlmResponse(
+        content=types.Content(
+            role='model',
+            parts=[
+                types.Part(
+                    function_call=types.FunctionCall(
+                        name=_RECOVERY_TOOL_NAME,
+                        args={},
+                    ),
+                    thought_signature=THOUGHT_SIGNATURE_BYPASS_BYTES,
+                )
+            ],
+        ),
+        custom_metadata={'empty_response_recovery': True},
+    )
+
+
+def _build_exhausted_apology_response() -> LlmResponse:
+    """Final, single user-visible message after recovery is exhausted."""
+    return LlmResponse(
+        content=types.Content(
+            role='model',
+            parts=[types.Part.from_text(text=_RECOVERY_EXHAUSTED_MESSAGE)],
+        ),
+        custom_metadata={'empty_response_recovery_exhausted': True},
+    )
+
+
+def empty_response_guard(
+    callback_context: CallbackContext,
+    llm_response: LlmResponse,
+) -> LlmResponse | None:
+    """after_model_callback that recovers from terminal empty turns.
+
+    Healthy turns pass through unchanged. Terminal empty turns are
+    replaced with a synthetic call to ``_request_continuation`` (up to
+    ``_MAX_EMPTY_RETRIES`` consecutive attempts) so the agent loop
+    re-prompts the model. Once the cap is reached, the user receives
+    a single honest apology and the counter resets.
+    """
+    state = callback_context.state
+
+    if not _is_terminal_empty_response(llm_response):
+        if state.get(_STATE_EMPTY_RESPONSE_ATTEMPTS):
+            state[_STATE_EMPTY_RESPONSE_ATTEMPTS] = 0
+        return None
+
+    attempts = state.get(_STATE_EMPTY_RESPONSE_ATTEMPTS, 0)
+    finish_reason = getattr(llm_response, 'finish_reason', None)
+
+    if attempts < _MAX_EMPTY_RETRIES:
+        state[_STATE_EMPTY_RESPONSE_ATTEMPTS] = attempts + 1
+        logger.warning(
+            'empty_response_recovery_injected',
+            attempts=attempts + 1,
+            max_retries=_MAX_EMPTY_RETRIES,
+            finish_reason=str(finish_reason) if finish_reason else None,
+        )
+        return _build_recovery_call_response()
+
+    state[_STATE_EMPTY_RESPONSE_ATTEMPTS] = 0
+    logger.warning(
+        'empty_response_recovery_exhausted',
+        attempts=attempts,
+        max_retries=_MAX_EMPTY_RETRIES,
+        finish_reason=str(finish_reason) if finish_reason else None,
+    )
+    return _build_exhausted_apology_response()

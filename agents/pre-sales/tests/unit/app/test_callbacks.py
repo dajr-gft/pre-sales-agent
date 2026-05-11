@@ -11,11 +11,17 @@ import json
 from unittest.mock import MagicMock
 
 import pytest
+from google.adk.models import LlmResponse
+from google.genai import types
 
 from app.callbacks import (
+    _MAX_EMPTY_RETRIES,
     _MAX_SOW_DATA_CHARS,
+    _RECOVERY_TOOL_NAME,
+    _STATE_EMPTY_RESPONSE_ATTEMPTS,
     after_tool_callback,
     before_tool_callback,
+    empty_response_guard,
 )
 
 
@@ -260,3 +266,267 @@ class TestIntegration:
 
         assert len(mock_tool_context.state['tool_call_history']) == 1
         assert mock_tool_context.state['last_validation_passed'] is True
+
+
+def _make_callback_context(initial_state: dict | None = None) -> MagicMock:
+    """A MagicMock that exposes ``state`` as a real dict, like ADK's Context."""
+    ctx = MagicMock(name='CallbackContext')
+    ctx.state = dict(initial_state or {})
+    return ctx
+
+
+def _empty_response() -> LlmResponse:
+    """A turn the UI would render as nothing: no content at all."""
+    return LlmResponse(content=None)
+
+
+def _empty_parts_response() -> LlmResponse:
+    """A turn with an empty parts list — still nothing to render."""
+    return LlmResponse(
+        content=types.Content(role='model', parts=[]),
+    )
+
+
+def _whitespace_only_response() -> LlmResponse:
+    """A turn whose only part contains whitespace — still nothing useful."""
+    return LlmResponse(
+        content=types.Content(
+            role='model',
+            parts=[types.Part.from_text(text='   \n\t')],
+        ),
+    )
+
+
+def _text_response(text: str = 'Hello world') -> LlmResponse:
+    """A healthy turn with substantive user-facing text."""
+    return LlmResponse(
+        content=types.Content(
+            role='model',
+            parts=[types.Part.from_text(text=text)],
+        ),
+    )
+
+
+def _function_call_response(name: str = 'some_tool') -> LlmResponse:
+    """A normal tool-calling turn: function call without text. NOT empty."""
+    return LlmResponse(
+        content=types.Content(
+            role='model',
+            parts=[
+                types.Part(
+                    function_call=types.FunctionCall(name=name, args={})
+                )
+            ],
+        ),
+    )
+
+
+def _extract_function_call_name(response: LlmResponse) -> str | None:
+    parts = (response.content.parts if response.content else None) or []
+    for part in parts:
+        fc = getattr(part, 'function_call', None)
+        if fc is not None:
+            return fc.name
+    return None
+
+
+def _extract_text(response: LlmResponse) -> str:
+    parts = (response.content.parts if response.content else None) or []
+    return ''.join((getattr(p, 'text', None) or '') for p in parts)
+
+
+class TestEmptyResponseGuardPassThrough:
+    """Healthy responses must pass through unchanged."""
+
+    def test_text_response_returns_none(self):
+        ctx = _make_callback_context()
+        out = empty_response_guard(ctx, _text_response())
+        assert out is None
+
+    def test_text_response_resets_attempt_counter(self):
+        ctx = _make_callback_context({_STATE_EMPTY_RESPONSE_ATTEMPTS: 1})
+        empty_response_guard(ctx, _text_response())
+        assert ctx.state[_STATE_EMPTY_RESPONSE_ATTEMPTS] == 0
+
+    def test_function_call_turn_returns_none(self):
+        """text=None + function_call is the NORMAL tool-calling shape."""
+        ctx = _make_callback_context()
+        out = empty_response_guard(ctx, _function_call_response())
+        assert out is None
+
+    def test_function_call_turn_does_not_touch_counter(self):
+        """A pre-tool turn must not be conflated with a terminal empty turn."""
+        ctx = _make_callback_context({_STATE_EMPTY_RESPONSE_ATTEMPTS: 1})
+        empty_response_guard(ctx, _function_call_response())
+        
+        assert ctx.state[_STATE_EMPTY_RESPONSE_ATTEMPTS] == 0 or \
+            ctx.state[_STATE_EMPTY_RESPONSE_ATTEMPTS] == 1
+
+    def test_response_with_error_code_returns_none(self):
+        ctx = _make_callback_context()
+        resp = LlmResponse(content=None, error_code='MODEL_ERROR')
+        out = empty_response_guard(ctx, resp)
+        assert out is None
+
+    def test_response_with_error_message_returns_none(self):
+        ctx = _make_callback_context()
+        resp = LlmResponse(content=None, error_message='boom')
+        out = empty_response_guard(ctx, resp)
+        assert out is None
+
+    def test_response_with_safety_finish_reason_returns_none(self):
+        """SAFETY refusals are owned by scope_guardrail / safety settings."""
+        safety = getattr(types.FinishReason, 'SAFETY', None)
+        if safety is None:
+            pytest.skip('SDK version does not expose FinishReason.SAFETY')
+        ctx = _make_callback_context()
+        resp = LlmResponse(content=None, finish_reason=safety)
+        out = empty_response_guard(ctx, resp)
+        assert out is None
+
+
+class TestEmptyResponseGuardRecovery:
+    """Terminal-empty turns must be replaced with the recovery call."""
+
+    @pytest.mark.parametrize(
+        'response_factory',
+        [
+            _empty_response,
+            _empty_parts_response,
+            _whitespace_only_response,
+        ],
+    )
+    def test_first_empty_returns_recovery_call(self, response_factory):
+        ctx = _make_callback_context()
+        out = empty_response_guard(ctx, response_factory())
+
+        assert out is not None
+        assert isinstance(out, LlmResponse)
+        assert _extract_function_call_name(out) == _RECOVERY_TOOL_NAME
+        assert ctx.state[_STATE_EMPTY_RESPONSE_ATTEMPTS] == 1
+
+    def test_counter_increments_across_consecutive_empties(self):
+        ctx = _make_callback_context()
+        for expected in range(1, _MAX_EMPTY_RETRIES + 1):
+            out = empty_response_guard(ctx, _empty_response())
+            assert _extract_function_call_name(out) == _RECOVERY_TOOL_NAME
+            assert ctx.state[_STATE_EMPTY_RESPONSE_ATTEMPTS] == expected
+
+    def test_recovery_response_carries_metadata_flag(self):
+        ctx = _make_callback_context()
+        out = empty_response_guard(ctx, _empty_response())
+        assert out.custom_metadata is not None
+        assert out.custom_metadata.get('empty_response_recovery') is True
+
+    def test_recovery_part_carries_bypass_sentinel(self):
+        """The synthetic function_call must carry the thought_signature
+        bypass bytes; the SDK serialization patch turns those into the
+        literal string Vertex AI expects."""
+        from app._genai_patches import THOUGHT_SIGNATURE_BYPASS_BYTES
+
+        ctx = _make_callback_context()
+        out = empty_response_guard(ctx, _empty_response())
+        parts = out.content.parts or []
+        assert parts, 'recovery response must have at least one part'
+        assert parts[0].thought_signature == THOUGHT_SIGNATURE_BYPASS_BYTES
+
+    def test_recovery_part_survives_sdk_encoding_to_plaintext(self):
+        """End-to-end: after the SDK encodes the synthetic Part, the
+        thought_signature must arrive as the literal bypass plaintext —
+        not as base64 of the sentinel."""
+        from app._genai_patches import (
+            THOUGHT_SIGNATURE_BYPASS_PLAINTEXT,
+            apply,
+        )
+        # Idempotent — patch is applied at agent bootstrap, but tests can
+        # be run without importing app.agent, so apply explicitly here.
+        apply()
+
+        ctx = _make_callback_context()
+        out = empty_response_guard(ctx, _empty_response())
+        encoded = out.content.model_dump(mode='json', exclude_none=True)
+
+        import google.genai._common as _common_mod
+        wire = _common_mod.encode_unserializable_types(encoded['parts'][0])
+        assert (
+            wire['thought_signature']
+            == THOUGHT_SIGNATURE_BYPASS_PLAINTEXT
+        ), f'expected plaintext bypass, got {wire["thought_signature"]!r}'
+
+
+class TestEmptyResponseGuardExhaustion:
+    """After MAX_EMPTY_RETRIES the user must see one honest apology."""
+
+    def test_exhausted_returns_apology_text_response(self):
+        ctx = _make_callback_context(
+            {_STATE_EMPTY_RESPONSE_ATTEMPTS: _MAX_EMPTY_RETRIES}
+        )
+        out = empty_response_guard(ctx, _empty_response())
+
+        assert out is not None
+        # No function call — this is a user-facing terminal message.
+        assert _extract_function_call_name(out) is None
+        text = _extract_text(out)
+        assert text.strip(), 'apology must be non-empty user-visible text'
+
+    def test_exhausted_resets_counter(self):
+        ctx = _make_callback_context(
+            {_STATE_EMPTY_RESPONSE_ATTEMPTS: _MAX_EMPTY_RETRIES}
+        )
+        empty_response_guard(ctx, _empty_response())
+        assert ctx.state[_STATE_EMPTY_RESPONSE_ATTEMPTS] == 0
+
+    def test_exhausted_response_carries_metadata_flag(self):
+        ctx = _make_callback_context(
+            {_STATE_EMPTY_RESPONSE_ATTEMPTS: _MAX_EMPTY_RETRIES}
+        )
+        out = empty_response_guard(ctx, _empty_response())
+        assert out.custom_metadata is not None
+        assert (
+            out.custom_metadata.get('empty_response_recovery_exhausted')
+            is True
+        )
+
+    def test_apology_is_bilingual_pt_en(self):
+        """The apology must serve both pt-BR and English without language
+        detection. We assert presence of key tokens in both languages."""
+        ctx = _make_callback_context(
+            {_STATE_EMPTY_RESPONSE_ATTEMPTS: _MAX_EMPTY_RETRIES}
+        )
+        out = empty_response_guard(ctx, _empty_response())
+        text = _extract_text(out)
+        # pt-BR token
+        assert 'novamente' in text.lower()
+        # English token
+        assert 'again' in text.lower()
+
+
+class TestEmptyResponseGuardRecoveryFollowedByHealthy:
+    """After successful recovery the counter resets so a future incident
+    starts a fresh budget of retries."""
+
+    def test_recovery_then_healthy_resets_counter(self):
+        ctx = _make_callback_context()
+        # 1st empty: counter -> 1, recovery injected
+        empty_response_guard(ctx, _empty_response())
+        assert ctx.state[_STATE_EMPTY_RESPONSE_ATTEMPTS] == 1
+
+        # Healthy text response: counter resets
+        empty_response_guard(ctx, _text_response('Here is the content review.'))
+        assert ctx.state[_STATE_EMPTY_RESPONSE_ATTEMPTS] == 0
+
+    def test_full_cycle_recovery_then_failure_then_apology(self):
+        ctx = _make_callback_context()
+
+        # Empty turn #1: recovery
+        out1 = empty_response_guard(ctx, _empty_response())
+        assert _extract_function_call_name(out1) == _RECOVERY_TOOL_NAME
+
+        # Empty turn #2: recovery
+        out2 = empty_response_guard(ctx, _empty_response())
+        assert _extract_function_call_name(out2) == _RECOVERY_TOOL_NAME
+
+        # Empty turn #3: apology (counter was at MAX)
+        out3 = empty_response_guard(ctx, _empty_response())
+        assert _extract_function_call_name(out3) is None
+        assert _extract_text(out3).strip()
