@@ -12,11 +12,17 @@ from google.adk.tools.agent_tool import AgentTool
 from google.adk.tools.google_search_tool import GoogleSearchTool
 from google.genai import types
 
-from .callbacks import after_tool_callback, before_tool_callback
+from . import _genai_patches
+from .callbacks import (
+    after_tool_callback,
+    before_tool_callback,
+    empty_response_guard,
+)
 from .config import config
 from .guardrails import scope_guardrail
 from .prompts import build_instruction
 from .shared.logging_config import setup_logging
+from .tools.recovery import _request_continuation
 from .tools.sow.confirm_phase import confirm_phase_completion
 from .tools.sow.generate_architecture_diagram import \
     generate_architecture_diagram
@@ -33,6 +39,8 @@ from .tools.sow.validate_sow_content import validate_sow_content
 # --- Bootstrap ---
 setup_logging(level=config.LOG_LEVEL, json_output=config.LOG_JSON)
 logger = structlog.get_logger()
+
+_genai_patches.apply()
 
 _, project_id = google.auth.default()
 os.environ['GOOGLE_CLOUD_PROJECT'] = project_id
@@ -98,6 +106,7 @@ _TOOLS = [
     finalize_extraction_manifest,
     load_extraction_manifest,
     validate_extraction_manifest,
+    _request_continuation,
     AgentTool(agent=google_search_agent),
 ]
 
@@ -115,6 +124,7 @@ root_agent = Agent(
     instruction=build_instruction(company_name=config.COMPANY_NAME),
     tools=_TOOLS,
     before_model_callback=scope_guardrail,
+    after_model_callback=empty_response_guard,
     before_tool_callback=before_tool_callback,
     after_tool_callback=after_tool_callback,
     generate_content_config=types.GenerateContentConfig(
