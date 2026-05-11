@@ -123,6 +123,44 @@ class AgentConfig(BaseSettings):
         description='Timeout (seconds) for the judge model call. Fails open on timeout.',
     )
 
+    # Semantic review — independent reviewer pass inside validate_sow_content
+    SEMANTIC_REVIEW_ENABLED: bool = Field(
+        default=True,
+        description=(
+            'Enable the LLM semantic reviewer that runs inside validate_sow_content '
+            'after the deterministic ContentValidator. Disable to bypass the reviewer '
+            'while keeping mechanical validation intact.'
+        ),
+    )
+    SEMANTIC_REVIEW_MODEL: str = Field(
+        default='gemini-flash-latest',
+        description=(
+            'Model used by the semantic reviewer to surface contradictions and '
+            'qualitative gaps the mechanical validator does not catch.'
+        ),
+    )
+    SEMANTIC_REVIEW_TIMEOUT_S: float = Field(
+        default=30.0,
+        ge=1.0,
+        le=120.0,
+        description=(
+            'Timeout (seconds) for the semantic reviewer call. Fails open: a '
+            'timeout returns no findings and never blocks the SOW pipeline.'
+        ),
+    )
+    SEMANTIC_REVIEW_THINKING_BUDGET: int = Field(
+        default=1024,
+        ge=0,
+        le=24576,
+        description=(
+            'Token budget for Gemini thinking mode in the semantic reviewer. '
+            'Cross-section contradiction checks benefit from multi-step '
+            'reasoning. Set to 0 to disable thinking and run the call without '
+            'a thinking_config (faster and cheaper, lower quality on '
+            'contradictions across many sections).'
+        ),
+    )
+
     def resolve_project_id(self) -> str:
         """Return project_id, falling back to ADC if not explicitly set."""
         if self.PROJECT_ID:

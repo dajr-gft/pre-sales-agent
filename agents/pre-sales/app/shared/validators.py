@@ -1,18 +1,33 @@
 """Deterministic structural validation for SOW content.
 
-Two-layer design:
-- The agent calls ``validate_sow_content`` tool BEFORE presenting to the user
+This module owns the *mechanical* validation layer:
+- The agent calls the ``validate_sow_content`` tool BEFORE presenting to the user
   (self-check — catches issues before the human review gate).
 - ``generate_sow_document`` runs the same validator BEFORE rendering
-  (hard gate — blocks document generation on errors).
+  (hard gate — blocks document generation on mechanical errors).
 
-Why NOT a separate reviewer agent in a loop:
-1. The pipeline already has 2 human review gates. An LLM reviewer would
-   second-guess human-approved content and add latency + token cost.
-2. Structural issues (ID format, row counts, word counts, cross-references)
-   are deterministic. A validator class catches them faster and more reliably.
-3. LLM-reviewer loops risk getting stuck on subjective quality disagreements
-   ("not specific enough" -> adds detail -> "too verbose" -> loop).
+A complementary *semantic* layer lives inside the ``validate_sow_content`` tool
+itself (see ``tools/sow/_semantic_review.py``). It runs an independent LLM call
+on a fresh context to surface contradictions across sections, naming drift,
+and concrete-but-imprecise language that mechanical rules cannot detect.
+
+Why the layers are separate
+---------------------------
+- Mechanical checks (ID format, row counts, word counts, cross-references) are
+  deterministic and idempotent — a class catches them faster and more reliably
+  than any LLM. They authoritatively govern ``passed`` and gate document
+  generation.
+- Semantic checks (contradictions, naming drift, vague language given the
+  upstream context) are non-deterministic and emergent. They run as a single
+  fresh-context LLM pass that returns structured findings; the agent fixes
+  BLOCKER/MAJOR findings using the same incremental-edit loop that handles
+  mechanical errors and lets MINOR findings flow into the Phase 3 Revision
+  Note. The semantic pass is fail-open: it never blocks delivery on its own.
+
+The earlier rejection of a separate reviewer-agent loop still stands — what
+this module pairs with is NOT a reviewer agent in a loop. It is a single
+in-tool LLM call with a strict severity rubric and a hard cap on findings,
+designed to complement (not duplicate) the mechanical checks below.
 """
 
 from __future__ import annotations
