@@ -47,14 +47,13 @@ _validator = ContentValidator()
 # ``tool_context.state`` so 'content' (Phase 2 Step 1.5) and 'full' (Phase 3
 # Step 1) cycles are independent.
 #
-# The cap is 3, which gives the agent exactly 2 actual correction rounds
-# between calls — matching the SKILL.md "max 2 fix attempts per finding"
-# protocol. The arithmetic is: call 1 is the initial read (no fix yet);
-# call 2 is after fix attempt 1; call 3 is after fix attempt 2 and is the
-# cap. Setting cap=2 was tried earlier and turned out to allow only ONE
-# correction round (call 1 → fix → call 2 already at cap), which
-# under-counts SKILL.md's allowance and cut the agent off mid-protocol.
-_MAX_PASSED_ATTEMPTS_PER_STAGE = 3
+# The cap is 5, which gives the agent exactly 4 actual correction rounds
+# between calls — matching the SKILL.md "Maximum 4 correction rounds"
+# protocol. The arithmetic: call 1 is the initial read (no fix yet);
+# calls 2-5 are after fix attempts 1-4; call 5 is the cap. Earlier values
+# (2 and 3) under-counted SKILL.md's allowance and cut the agent off
+# mid-protocol on non-deterministic semantic findings.
+_MAX_PASSED_ATTEMPTS_PER_STAGE = 5
 _PASSED_ATTEMPTS_STATE_KEY = 'validation_passed_attempts'
 
 # Per-stage record of finding fingerprints from the immediately previous call.
@@ -495,7 +494,7 @@ def _build_summary(
                 'these are advisory. Mechanical validation passed. The '
                 'reviewers are non-deterministic, so chasing residual '
                 'MAJOR/MINOR findings can produce different results on each '
-                'call; apply the max-2-fix-attempts rule per finding (per '
+                'call; apply the max-4-fix-attempts rule per finding (per '
                 'SKILL.md), then proceed without re-validating to chase '
                 'residuals.'
             )

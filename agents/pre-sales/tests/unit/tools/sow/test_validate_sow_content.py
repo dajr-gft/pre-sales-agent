@@ -492,7 +492,7 @@ class TestPassedAttemptsCap:
     "Address BLOCKER and MAJOR before re-validating" line as a permanent
     instruction and looped against the non-deterministic semantic
     reviewer. The counter + cap-aware summary block this loop without
-    relying on the agent to remember the SKILL.md max-2-fix-attempts rule
+    relying on the agent to remember the SKILL.md max-4-fix-attempts rule
     over many turns.
     """
 
