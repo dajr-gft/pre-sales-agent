@@ -2,15 +2,21 @@
 
 The agent should call this tool after generating SOW content and BEFORE
 presenting results for human review. It runs deterministic structural
-checks (ID formats, cross-references, word counts, row counts) and an
-independent semantic reviewer pass (contradictions across sections,
-naming drift, semantic gaps), then returns actionable feedback the agent
-can fix autonomously.
+checks (ID formats, cross-references, word counts, row counts) and two
+independent reviewer passes in parallel:
 
-The semantic reviewer fails open: if it times out, errors, or is
-disabled, the tool still returns the mechanical validation results and
-the SOW pipeline proceeds.
+- ``semantic_review`` — contradictions across sections, naming drift,
+  semantic gaps.
+- ``manifest_coverage_review`` — every Extraction Manifest item should
+  have at least one substantive anchor in the SOW; unanchored items
+  surface as ``category="coverage"`` findings.
+
+The reviewers fail open: if either times out, errors, or is disabled,
+the tool still returns the mechanical validation results plus whatever
+findings the surviving pass produced, and the SOW pipeline proceeds.
 """
+import asyncio
+import hashlib
 import json
 from typing import Any
 
@@ -20,6 +26,7 @@ from google.adk.tools import ToolContext
 from ...shared.errors import safe_tool
 from ...shared.types import ToolError, ToolSuccess
 from ...shared.validators import ContentValidator
+from ._manifest_coverage_review import manifest_coverage_review
 from ._semantic_review import semantic_review
 from ._sow_helpers import sow_data_hash
 
@@ -39,8 +46,30 @@ _validator = ContentValidator()
 # because that signals real work happened. Tracked per-stage in
 # ``tool_context.state`` so 'content' (Phase 2 Step 1.5) and 'full' (Phase 3
 # Step 1) cycles are independent.
+#
+# The cap is 3, which gives the agent exactly 2 actual correction rounds
+# between calls — matching the SKILL.md "max 2 fix attempts per finding"
+# protocol. The arithmetic is: call 1 is the initial read (no fix yet);
+# call 2 is after fix attempt 1; call 3 is after fix attempt 2 and is the
+# cap. Setting cap=2 was tried earlier and turned out to allow only ONE
+# correction round (call 1 → fix → call 2 already at cap), which
+# under-counts SKILL.md's allowance and cut the agent off mid-protocol.
 _MAX_PASSED_ATTEMPTS_PER_STAGE = 3
 _PASSED_ATTEMPTS_STATE_KEY = 'validation_passed_attempts'
+
+# Per-stage record of finding fingerprints from the immediately previous call.
+# Used to detect findings the reviewer re-surfaced verbatim — strong signal
+# that the agent already tried to fix them and the issue is residual reviewer
+# noise (or a genuine gap the agent cannot resolve in this stage). Surfacing
+# persistence in the summary lets the agent stop retrying specific findings
+# instead of relying only on the global attempts cap.
+_FINDINGS_SEEN_STATE_KEY = 'validation_findings_seen'
+
+# Cap on the evidence-text window used to compute a finding's fingerprint.
+# Reviewers paraphrase across calls; comparing the first ~200 normalized
+# characters catches deterministic re-emissions without over-matching loosely
+# related findings that share only the leading words.
+_FINGERPRINT_EVIDENCE_WINDOW = 200
 
 
 @safe_tool
@@ -77,10 +106,20 @@ async def validate_sow_content(
         - issues: list of {severity, field, message, suggestion} —
           mechanical issues only.
         - findings: list of {id, severity, category, evidence,
-          recommendation, fields} — semantic reviewer findings.
-          Severity ∈ {BLOCKER, MAJOR, MINOR}. Empty when the reviewer
-          was disabled, the stage is unsupported, or the call failed.
-        - review_metadata: {ran, model, latency_ms, fallback_reason,
+          recommendation, fields, persistent} — semantic reviewer + manifest
+          coverage findings, concatenated. Severity ∈ {BLOCKER, MAJOR, MINOR}.
+          ``persistent`` is True when the finding's fingerprint matched a
+          finding from the immediately previous call against the same stage
+          (signal that the generator already had a chance to fix it).
+          Empty when both passes were disabled / unsupported / failed.
+        - has_blocker_findings: bool — convenience flag derived from
+          ``findings``. True iff any finding has severity ``BLOCKER``. The
+          agent should treat this as a hard gate: do NOT present content,
+          do NOT call other tools, and do NOT re-validate until the BLOCKER
+          findings have been addressed per SKILL.md Phase 2 Step 1.5 /
+          Phase 3 Step 1.
+        - review_metadata: {semantic: {...}, coverage: {...}} — each
+          sub-dict carries {ran, model, latency_ms, fallback_reason,
           severity_counts}.
         - summary: human-readable summary string for the agent to relay.
     """
@@ -105,18 +144,34 @@ async def validate_sow_content(
 
     result = _validator.validate(data, funding_type=ft, stage=stage_normalized)
 
-    review = await semantic_review(
-        sow_data=data,
-        stage=stage_normalized,
-        tool_context=tool_context,
+    semantic_pass, coverage_pass = await asyncio.gather(
+        semantic_review(
+            sow_data=data,
+            stage=stage_normalized,
+            tool_context=tool_context,
+        ),
+        manifest_coverage_review(
+            sow_data=data,
+            stage=stage_normalized,
+            tool_context=tool_context,
+        ),
     )
-    findings = review['findings']
-    review_metadata = review['review_metadata']
+    findings = [*semantic_pass['findings'], *coverage_pass['findings']]
+    review_metadata = {
+        'semantic': semantic_pass['review_metadata'],
+        'coverage': coverage_pass['review_metadata'],
+    }
 
     passed_attempts = _track_passed_attempts(
         tool_context=tool_context,
         stage=stage_normalized,
         passed=result.passed,
+    )
+
+    persistent_count = _annotate_persistent_findings(
+        tool_context=tool_context,
+        stage=stage_normalized,
+        findings=findings,
     )
 
     logger.info(
@@ -130,14 +185,24 @@ async def validate_sow_content(
         error_details=[str(e) for e in result.errors],
         warning_details=[str(w) for w in result.warnings],
         findings_count=len(findings),
-        review_ran=review_metadata.get('ran'),
-        review_fallback=review_metadata.get('fallback_reason'),
+        persistent_findings_count=persistent_count,
+        semantic_ran=review_metadata['semantic'].get('ran'),
+        semantic_fallback=review_metadata['semantic'].get('fallback_reason'),
+        coverage_ran=review_metadata['coverage'].get('ran'),
+        coverage_fallback=review_metadata['coverage'].get('fallback_reason'),
         passed_attempts=passed_attempts,
     )
 
     result_dict = result.to_dict()
     result_dict['findings'] = findings
     result_dict['review_metadata'] = review_metadata
+    # Programmatic flag so the agent does not need to parse the summary text
+    # to detect BLOCKER findings. Production observation: agents misread the
+    # leading mechanical-pass line as a green light and skipped the SKILL.md
+    # fix loop. A structured boolean removes that failure mode.
+    result_dict['has_blocker_findings'] = any(
+        f.get('severity') == 'BLOCKER' for f in findings
+    )
 
     result_dict['summary'] = _build_summary(
         result, findings, review_metadata, passed_attempts=passed_attempts
@@ -147,6 +212,77 @@ async def validate_sow_content(
         status='success',
         data=result_dict,
     )
+
+
+def _finding_fingerprint(finding: dict[str, Any]) -> str:
+    """Return a short stable hash identifying a finding across calls.
+
+    The fingerprint combines the dimensions that should remain stable when a
+    reviewer re-surfaces the same defect: category, severity, the sorted set
+    of fields the recommendation touches, and a normalized window of the
+    evidence text. ID is intentionally excluded — reviewers renumber findings
+    each call (F-001, F-002 ...) and matching by ID would never persist.
+
+    Evidence text is lowercased, whitespace-collapsed, and truncated to a
+    fixed window before hashing so light paraphrase ("Assumption A-03 refers
+    to ... GFT templates" vs. "A-03 references ... GFT templates") still
+    collides on the operative phrase. The window is intentionally short — a
+    longer window would let trailing reviewer commentary defeat the match.
+    """
+    category = str(finding.get('category') or '').strip().lower()
+    severity = str(finding.get('severity') or '').strip().upper()
+    fields_value = finding.get('fields') or []
+    fields_norm = '/'.join(
+        sorted(str(f).strip().lower() for f in fields_value if str(f).strip())
+    )
+    raw_evidence = str(finding.get('evidence') or '').strip().lower()
+    normalized_evidence = ' '.join(raw_evidence.split())[
+        :_FINGERPRINT_EVIDENCE_WINDOW
+    ]
+    payload = f'{category}|{severity}|{fields_norm}|{normalized_evidence}'
+    return hashlib.sha256(payload.encode('utf-8')).hexdigest()[:16]
+
+
+def _annotate_persistent_findings(
+    tool_context: ToolContext | None,
+    stage: str,
+    findings: list[dict[str, Any]],
+) -> int:
+    """Mark findings whose fingerprint matched the previous call's set.
+
+    Mutates each entry of ``findings`` in place to add a boolean
+    ``persistent`` key — ``True`` when this finding's fingerprint appeared in
+    the immediately previous call against the same stage, ``False`` otherwise.
+    Always writes the current call's fingerprints back to state, replacing
+    the previous set so the next call only compares against this run.
+
+    Without a ``tool_context``, persistence cannot be tracked across calls —
+    every finding is annotated ``persistent=False`` and the function returns
+    zero. The returned int is the count of persistent findings, used for
+    logging and for the summary's severity-line tag.
+    """
+    current_fingerprints = [_finding_fingerprint(f) for f in findings]
+
+    if tool_context is None:
+        for f in findings:
+            f['persistent'] = False
+        return 0
+
+    seen_state = tool_context.state.get(_FINDINGS_SEEN_STATE_KEY) or {}
+    if not isinstance(seen_state, dict):
+        seen_state = {}
+    previous = set(seen_state.get(stage) or [])
+
+    persistent_count = 0
+    for f, fp in zip(findings, current_fingerprints):
+        is_persistent = fp in previous
+        f['persistent'] = is_persistent
+        if is_persistent:
+            persistent_count += 1
+
+    seen_state[stage] = sorted(set(current_fingerprints))
+    tool_context.state[_FINDINGS_SEEN_STATE_KEY] = seen_state
+    return persistent_count
 
 
 def _track_passed_attempts(
@@ -184,15 +320,15 @@ def _build_summary(
 ) -> str:
     """Compose the agent-facing summary covering mechanical and semantic layers.
 
-    Mechanical errors come first because they govern ``passed``. Semantic
-    findings follow with severity-aware guidance:
+    Mechanical errors come first because they govern ``passed``. Reviewer
+    findings (semantic + coverage) follow with severity-aware guidance:
 
     - **BLOCKER present** → instruct the agent to address BLOCKERs before
       re-validating. MAJOR/MINOR follow into the revision tracker.
     - **No BLOCKER, attempts under cap** → instruct the agent that
       MAJOR/MINOR findings are advisory because mechanical passed; warn
-      that the semantic reviewer is non-deterministic and chasing
-      residual findings will not converge.
+      that the reviewers are non-deterministic and chasing residual
+      findings will not converge.
     - **No BLOCKER, attempts at or beyond cap** → explicit stop
       instruction. Re-validation has hit the cap defined by
       ``_MAX_PASSED_ATTEMPTS_PER_STAGE``; further calls only burn budget
@@ -202,22 +338,93 @@ def _build_summary(
     "Address BLOCKER and MAJOR before re-validating" line was being read
     by the agent as a permanent instruction and produced 20+ consecutive
     re-validations on a passing payload in production.
+
+    ``review_metadata`` arrives as ``{'semantic': {...}, 'coverage': {...}}``
+    after the parallel-pass refactor. The "did not run" branch reports
+    each pass independently so the agent can see which signal is missing.
     """
     lines: list[str] = []
 
+    blockers = sum(1 for f in findings if f.get('severity') == 'BLOCKER')
+    majors = sum(1 for f in findings if f.get('severity') == 'MAJOR')
+    minors = sum(1 for f in findings if f.get('severity') == 'MINOR')
+    persistent_count = sum(1 for f in findings if f.get('persistent'))
+    persistent_blockers = sum(
+        1
+        for f in findings
+        if f.get('severity') == 'BLOCKER' and f.get('persistent')
+    )
+    all_blockers_persistent_at_cap = (
+        blockers > 0
+        and persistent_blockers == blockers
+        and passed_attempts >= _MAX_PASSED_ATTEMPTS_PER_STAGE
+    )
+
+    # When semantic BLOCKER findings exist, the summary MUST lead with a
+    # STOP directive — otherwise the mechanical pass message ("Mechanical
+    # validation passed...") is read by the agent as a green light and the
+    # SKILL.md fix loop is skipped. Production runs have shown agents parsing
+    # the leading sentence as authoritative and ignoring the BLOCKER section
+    # further down. The directive is split into two variants so the persistent-
+    # at-cap calibration-error case (where retrying is the wrong action) does
+    # NOT tell the agent to fix.
+    if blockers > 0:
+        if all_blockers_persistent_at_cap:
+            lines.append(
+                f'STOP — {blockers} BLOCKER finding(s) re-appeared after the '
+                f'maximum fix attempts '
+                f'({passed_attempts}/{_MAX_PASSED_ATTEMPTS_PER_STAGE}). This '
+                'is almost always reviewer calibration error rather than a '
+                'real defect: BLOCKER severity assigned to a finding whose '
+                'cited anchors actually contain a disambiguation clause '
+                '("except for [in-scope item]" / "exceto" / "salvo") that '
+                'the reviewer ignored. Verify each cited OOS or in-scope '
+                'item LITERALLY in the payload — read every anchor to its '
+                'last word. If a disambiguation clause is present, degrade '
+                'the finding to MAJOR for the Phase 3 revision tracker. Do '
+                'NOT retry the fix loop.'
+            )
+        else:
+            lines.append(
+                f'STOP — {blockers} BLOCKER finding(s) present. Per '
+                'SKILL.md Phase 2 Step 1.5 / Phase 3 Step 1, you MUST apply '
+                'the incremental-edit rule to fix every BLOCKER finding '
+                'before: (a) re-validating, (b) calling any other tool, '
+                '(c) presenting any content to the user. Mechanical '
+                'validation passing does NOT override semantic BLOCKER '
+                'findings. See [BLOCKER] entries below for the specific '
+                'anchors to address.'
+            )
+        lines.append('')
+
     if result.passed and not result.warnings:
-        lines.append(
-            'All structural checks passed — content is ready for user review.'
-        )
+        if blockers > 0:
+            lines.append(
+                'Mechanical validation passed (0 errors, 0 warnings) — '
+                'BLOCKER findings above still require fix.'
+            )
+        else:
+            lines.append(
+                'All structural checks passed — content is ready for user review.'
+            )
     elif result.passed:
-        lines.append(
-            f'No blocking errors. {len(result.warnings)} warning(s) found — '
-            'consider fixing before presenting to the user:'
+        warning_lead = (
+            f'Mechanical validation passed (0 errors, {len(result.warnings)} '
+            'warning(s)) — BLOCKER findings above still require fix. Warning '
+            'details:'
+            if blockers > 0
+            else (
+                f'Mechanical validation passed (0 errors, {len(result.warnings)} '
+                'warning(s)) — consider fixing the warnings before '
+                'presenting to the user:'
+            )
         )
+        lines.append(warning_lead)
         lines.extend(f'  - {w}' for w in result.warnings)
     else:
         lines.append(
-            f'{len(result.errors)} error(s) must be fixed before document generation.'
+            f'{len(result.errors)} mechanical error(s) must be fixed before '
+            'document generation.'
         )
         lines.extend(f'  - {e}' for e in result.errors)
         if result.warnings:
@@ -225,39 +432,68 @@ def _build_summary(
             lines.append(f'Additionally, {len(result.warnings)} warning(s):')
             lines.extend(f'  - {w}' for w in result.warnings)
 
-    blockers = sum(1 for f in findings if f.get('severity') == 'BLOCKER')
-    majors = sum(1 for f in findings if f.get('severity') == 'MAJOR')
-    minors = sum(1 for f in findings if f.get('severity') == 'MINOR')
-
     if findings:
         lines.append('')
         severity_summary = (
-            f'Semantic reviewer surfaced {len(findings)} finding(s) '
+            f'Reviewers surfaced {len(findings)} finding(s) '
             f'(BLOCKER: {blockers}, MAJOR: {majors}, MINOR: {minors}).'
         )
 
-        if blockers > 0:
+        persistent_note = (
+            f' {persistent_count} re-appeared from the previous call '
+            '(marked [persistent] below). For each one the generator '
+            'already had a chance to fix it; treat as residual reviewer '
+            'noise — degrade to MINOR for the Phase 3 revision tracker '
+            'and do NOT attempt to fix again.'
+            if persistent_count > 0
+            else ''
+        )
+
+        # The top-of-summary STOP directive already covered the BLOCKER
+        # routing (standard vs persistent-at-cap calibration error). The
+        # branches below provide the severity counts, persistent-finding
+        # context, and the routing advice for the non-BLOCKER cases.
+        # ``all_blockers_persistent_at_cap`` was computed at the top of the
+        # function and is reused here.
+        if all_blockers_persistent_at_cap:
             lines.append(
-                f'{severity_summary} Address BLOCKER findings before '
-                're-validating; MAJOR and MINOR may flow into the Phase 3 '
-                'revision tracker.'
+                f'{severity_summary} All {blockers} BLOCKER finding(s) '
+                're-appeared after the maximum fix attempts '
+                f'({passed_attempts}/{_MAX_PASSED_ATTEMPTS_PER_STAGE}). The '
+                'generator could not resolve them in repeated tries, which '
+                'most commonly indicates reviewer calibration error — '
+                'BLOCKER severity assigned to findings whose cited anchors '
+                'actually contain a disambiguation clause '
+                '("except for [in-scope item]" / "exceto" / "salvo") the '
+                'reviewer overlooked. Verify the cited OOS items literally '
+                'in the payload; if a disambiguation clause is present, '
+                'degrade the finding to MAJOR for the Phase 3 revision '
+                'tracker and proceed — do NOT retry. MAJOR and MINOR may '
+                'also flow into the revision tracker.'
+            )
+        elif blockers > 0:
+            lines.append(
+                f'{severity_summary}{persistent_note} Address BLOCKER '
+                'findings before re-validating; MAJOR and MINOR may flow '
+                'into the Phase 3 revision tracker.'
             )
         elif passed_attempts >= _MAX_PASSED_ATTEMPTS_PER_STAGE:
             lines.append(
-                f'{severity_summary} Maximum re-validation attempts reached '
+                f'{severity_summary}{persistent_note} Maximum '
+                're-validation attempts reached '
                 f'({passed_attempts}/{_MAX_PASSED_ATTEMPTS_PER_STAGE}). No '
                 'BLOCKER is present; remaining findings are advisory and the '
-                'semantic reviewer is non-deterministic, so re-validation '
-                'will surface different findings each call. Record any '
-                'remaining concerns for the Phase 3 revision tracker and '
-                'proceed — do NOT call this tool again unless you make '
-                'structural changes that warrant fresh mechanical validation.'
+                'reviewers are non-deterministic, so re-validation will '
+                'surface different findings each call. Record any remaining '
+                'concerns for the Phase 3 revision tracker and proceed — do '
+                'NOT call this tool again unless you make structural changes '
+                'that warrant fresh mechanical validation.'
             )
         else:
             lines.append(
-                f'{severity_summary} No BLOCKER findings — these are '
-                'advisory. Mechanical validation passed. The semantic '
-                'reviewer is non-deterministic, so chasing residual '
+                f'{severity_summary}{persistent_note} No BLOCKER findings — '
+                'these are advisory. Mechanical validation passed. The '
+                'reviewers are non-deterministic, so chasing residual '
                 'MAJOR/MINOR findings can produce different results on each '
                 'call; apply the max-2-fix-attempts rule per finding (per '
                 'SKILL.md), then proceed without re-validating to chase '
@@ -268,16 +504,24 @@ def _build_summary(
             evidence = (f.get('evidence') or '').replace('\n', ' ').strip()
             if len(evidence) > 200:
                 evidence = evidence[:200].rstrip() + '…'
+            persistent_tag = ' [persistent]' if f.get('persistent') else ''
             lines.append(
-                f"  - [{f.get('severity')}] {f.get('id')} "
+                f"  - [{f.get('severity')}]{persistent_tag} {f.get('id')} "
                 f"({f.get('category')}): {evidence}"
             )
-    elif review_metadata.get('ran') is False:
-        reason = review_metadata.get('fallback_reason') or 'unknown'
-        lines.append('')
-        lines.append(
-            f'Semantic reviewer did not run (reason: {reason}); mechanical '
-            'validation above is authoritative.'
-        )
+
+    # Always surface a reviewer that didn't run, regardless of findings from
+    # the surviving pass. The agent needs to know which signal is missing so
+    # it can decide whether to retry validation later.
+    for pass_name in ('semantic', 'coverage'):
+        meta = review_metadata.get(pass_name) or {}
+        if meta.get('ran') is False:
+            reason = meta.get('fallback_reason') or 'unknown'
+            lines.append('')
+            lines.append(
+                f'{pass_name.capitalize()} reviewer did not run '
+                f'(reason: {reason}); mechanical validation above is '
+                'authoritative for this pass.'
+            )
 
     return '\n'.join(lines)

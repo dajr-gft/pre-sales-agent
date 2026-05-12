@@ -37,6 +37,11 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Literal
 
+from ._template_hygiene import (
+    find_decorative_characters,
+    find_unfilled_placeholders,
+)
+
 
 class Severity(str, Enum):
     ERROR = 'error'
@@ -93,6 +98,21 @@ class ValidationResult:
 
 _FR_PATTERN = re.compile(r'^FR-\d{2,3}$')
 _NFR_PATTERN = re.compile(r'^NFR-\d{2,3}$')
+
+# Closed set of allowed deliverable format values, per style-guide.md
+# (Deliverables section). The check is case-insensitive on input but the
+# value stored in the SOW should be in title case as listed below.
+# Composite/slash-joined values like "Code/Model" are rejected — each
+# deliverable carries exactly one format. If a deliverable is intrinsically
+# multi-format, it should be split into two deliverables.
+_ALLOWED_DELIVERABLE_FORMATS: frozenset[str] = frozenset({
+    'document',
+    'presentation',
+    'spreadsheet',
+    'code',
+    'demonstration',
+    'video',
+})
 
 # Keywords that indicate a consequence clause in assumptions
 _CONSEQUENCE_KEYWORDS = [
@@ -152,6 +172,8 @@ class ContentValidator:
         self._validate_oos_count(data, result)
         self._validate_timeline_consistency(data, result)
         self._validate_deliverable_coverage(data, result)
+        self._validate_deliverable_format(data, result)
+        self._validate_template_hygiene(data, result)
 
         if stage == 'full':
             self._validate_architecture_description(data, result)
@@ -356,6 +378,75 @@ class ContentValidator:
                 )
             )
 
+    def _validate_deliverable_format(
+        self, data: dict, result: ValidationResult
+    ) -> None:
+        """Each deliverable must declare a `format` from the closed style-guide set.
+
+        Two failure classes:
+
+        - **Missing**: the deliverable has no ``format`` key or an empty value.
+        - **Out of enum**: the value is a non-empty string that does not match
+          one of the allowed values (case-insensitive). Includes composite
+          values like ``"Code/Model"``: the SOW contract requires one format
+          per deliverable, so slash-joined or comma-joined values are rejected
+          — the deliverable should be split into two if it truly produces
+          multiple artifact types.
+
+        Both are warnings, not errors: the document tool renders whatever
+        string is provided, so the defect is contractual rather than
+        rendering-blocking. The mechanical check exists so the semantic
+        reviewer does not have to enforce a closed-set rule.
+        """
+        deliverables = data.get('deliverables', [])
+        if not deliverables:
+            return
+
+        for index, deliverable in enumerate(deliverables):
+            if not isinstance(deliverable, dict):
+                continue
+            name = (
+                deliverable.get('name')
+                or deliverable.get('activity')
+                or f'index {index}'
+            )
+            raw = deliverable.get('format')
+            if not raw or not str(raw).strip():
+                result.issues.append(
+                    ValidationIssue(
+                        severity='warning',
+                        field='deliverables',
+                        message=(
+                            f"Deliverable '{name}' is missing the 'format' field."
+                        ),
+                        suggestion=(
+                            'Declare one format value from: Document, '
+                            'Presentation, Spreadsheet, Code, Demonstration, '
+                            'Video.'
+                        ),
+                    )
+                )
+                continue
+
+            normalized = str(raw).strip().lower()
+            if normalized not in _ALLOWED_DELIVERABLE_FORMATS:
+                result.issues.append(
+                    ValidationIssue(
+                        severity='warning',
+                        field='deliverables',
+                        message=(
+                            f"Deliverable '{name}' has format '{raw}', which "
+                            'is not one of the allowed values.'
+                        ),
+                        suggestion=(
+                            'Use exactly one of: Document, Presentation, '
+                            'Spreadsheet, Code, Demonstration, Video. Split '
+                            'the deliverable if it intrinsically produces '
+                            'multiple artifact types.'
+                        ),
+                    )
+                )
+
     def _validate_oos_count(
         self, data: dict, result: ValidationResult
     ) -> None:
@@ -367,5 +458,49 @@ class ContentValidator:
                     field='out_of_scope',
                     message=f'Only {len(oos)} out-of-scope items (target: 20-30).',
                     suggestion='Cover all 16 OOS categories from the style guide.',
+                )
+            )
+
+    def _validate_template_hygiene(
+        self, data: dict, result: ValidationResult
+    ) -> None:
+        """Catch template scaffolding that escaped to delivery.
+
+        Two failure classes — unfilled bracketed placeholders and decorative
+        non-prose characters — both error-severity because either one would
+        be visible in the rendered contract and embarrass the sender. The
+        contract permits ``[TO BE DEFINED]`` (and pt-BR variants) as
+        intentional disclosure; everything else inside brackets is treated
+        as a slot the generator forgot to fill.
+        """
+        for finding in find_unfilled_placeholders(data):
+            result.issues.append(
+                ValidationIssue(
+                    severity='error',
+                    field=finding.field_path,
+                    message=(
+                        f'Unfilled template placeholder {finding.sample} '
+                        f'in {finding.field_path}.'
+                    ),
+                    suggestion=(
+                        'Replace with the concrete value, or mark as '
+                        '[TO BE DEFINED] when genuinely unknown.'
+                    ),
+                )
+            )
+
+        for finding in find_decorative_characters(data):
+            result.issues.append(
+                ValidationIssue(
+                    severity='error',
+                    field=finding.field_path,
+                    message=(
+                        f'Decorative character in {finding.field_path}: '
+                        f'"{finding.sample}".'
+                    ),
+                    suggestion=(
+                        'Remove emojis, dingbats, box-drawing, and block '
+                        'elements — contract body must be plain prose.'
+                    ),
                 )
             )

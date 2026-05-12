@@ -312,7 +312,9 @@ class TestEmptyResult:
 
 
 class TestCoerceFindings:
-    def test_caps_at_twelve_findings(self):
+    def test_caps_findings_at_module_limit(self):
+        """Cap is enforced regardless of value — read it from the module."""
+        cap = _semantic_review._MAX_FINDINGS
         oversize = [
             Finding(
                 id=f'F-{i:03d}',
@@ -322,11 +324,11 @@ class TestCoerceFindings:
                 recommendation='rec',
                 fields=['out_of_scope'],
             )
-            for i in range(1, 25)
+            for i in range(1, cap + 10)
         ]
         parsed = _semantic_review._ReviewerOutput(findings=oversize)
         coerced = _coerce_findings(parsed)
-        assert len(coerced) == 12
+        assert len(coerced) == cap
 
     def test_drops_malformed_dict_entries(self):
         raw = {
@@ -457,8 +459,14 @@ class TestRubricCache:
         _semantic_review._rubric_cache = None
         rubric = _semantic_review._load_rubric()
         assert isinstance(rubric, str)
-        assert 'Severity' in rubric
-        assert 'Anti-patterns' in rubric
+        # Domain-specific anchors that survive markdown/XML restructuring of
+        # the rubric. Checking for severity-name literals and the mandatory
+        # completeness protocol header rather than human-readable section
+        # titles keeps the test stable across formatting refactors.
+        assert 'BLOCKER' in rubric
+        assert 'MAJOR' in rubric
+        assert 'MINOR' in rubric
+        assert 'mandatory_completeness_protocol' in rubric
 
     def test_load_rubric_is_cached(self, monkeypatch):
         _semantic_review._rubric_cache = 'sentinel-cached'

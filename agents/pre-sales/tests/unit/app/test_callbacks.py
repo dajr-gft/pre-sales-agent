@@ -410,6 +410,82 @@ class TestEmptyResponseGuardPassThrough:
         out = await empty_response_guard(ctx, resp)
         assert out is None
 
+    @pytest.mark.parametrize(
+        'reason_name',
+        [
+            'PROHIBITED_CONTENT',
+            'SPII',
+            'BLOCKLIST',
+            'RECITATION',
+            'MAX_TOKENS',
+        ],
+    )
+    async def test_non_recoverable_finish_reasons_pass_through(
+        self, reason_name
+    ):
+        """Safety-class and partial-content finish reasons are owned by
+        other handlers and must NOT trigger empty-response recovery, even
+        when the content happens to be empty."""
+        reason = getattr(types.FinishReason, reason_name, None)
+        if reason is None:
+            pytest.skip(f'SDK does not expose FinishReason.{reason_name}')
+        ctx = _make_callback_context()
+        resp = LlmResponse(content=None, finish_reason=reason)
+        out = await empty_response_guard(ctx, resp)
+        assert out is None
+
+
+class TestEmptyResponseGuardRecoverableFinishReasons:
+    """Finish reasons whose UX is identical to STOP+empty (a blank bubble)
+    must trigger the same recovery path. Production observation
+    (2026-05-12): ``finish_reason=malformed_function_call`` returned 0
+    input and 0 output tokens after a long fix-loop on validate_sow_content;
+    the user saw an empty bubble because the legacy guard only matched
+    ``STOP``."""
+
+    @pytest.mark.parametrize(
+        'reason_name',
+        [
+            'MALFORMED_FUNCTION_CALL',
+            'UNEXPECTED_TOOL_CALL',
+            'OTHER',
+            'FINISH_REASON_UNSPECIFIED',
+        ],
+    )
+    async def test_recoverable_finish_reasons_trigger_recovery(
+        self, reason_name
+    ):
+        reason = getattr(types.FinishReason, reason_name, None)
+        if reason is None:
+            pytest.skip(f'SDK does not expose FinishReason.{reason_name}')
+        ctx = _make_callback_context()
+        resp = LlmResponse(content=None, finish_reason=reason)
+        out = await empty_response_guard(ctx, resp)
+
+        assert out is not None
+        assert _extract_function_call_name(out) == _RECOVERY_TOOL_NAME
+        assert ctx.state[_STATE_EMPTY_RESPONSE_ATTEMPTS] == 1
+
+    async def test_malformed_function_call_with_content_passes_through(
+        self,
+    ):
+        """If somehow the model attached partial content alongside the
+        malformed-function-call reason, the part is rendered and recovery
+        must NOT fire. The guard only intervenes on TRULY empty turns."""
+        reason = getattr(types.FinishReason, 'MALFORMED_FUNCTION_CALL', None)
+        if reason is None:
+            pytest.skip('SDK does not expose MALFORMED_FUNCTION_CALL')
+        ctx = _make_callback_context()
+        resp = LlmResponse(
+            content=types.Content(
+                role='model',
+                parts=[types.Part.from_text(text='partial output')],
+            ),
+            finish_reason=reason,
+        )
+        out = await empty_response_guard(ctx, resp)
+        assert out is None
+
 
 class TestEmptyResponseGuardRecovery:
     """Terminal-empty turns must be replaced with the recovery call."""

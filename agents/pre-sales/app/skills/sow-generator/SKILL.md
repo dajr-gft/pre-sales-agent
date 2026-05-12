@@ -287,7 +287,7 @@ Call `validate_sow_content` with the assembled JSON and `stage="content"` (archi
 
 1. **Mechanical errors** (`issues` with `severity="error"`) — fix silently and re-validate. They govern `passed`.
 2. **Semantic findings** (`findings` array, returned by the independent reviewer pass embedded in the tool) — group by severity:
-   - `BLOCKER` and `MAJOR`: fix using the same incremental-edit rule as mechanical errors (modify only the named `fields`, preserve everything else byte-for-byte) and re-validate. Maximum 2 correction rounds; if a finding still persists after the second round, treat it as MINOR and let it flow into Phase 3 (the revision tracker will record it as `source: "semantic_review"`).
+   - `BLOCKER` and `MAJOR`: fix using the same incremental-edit rule as mechanical errors (modify only the named `fields`, preserve everything else byte-for-byte) and re-validate. Maximum 4 correction rounds; if a finding still persists after the second round, treat it as MINOR and let it flow into Phase 3 (the revision tracker will record it as `source: "semantic_review"`).
    - `MINOR`: do NOT fix here. The user will see the affected sections in the Content Review and may choose to address them. Log nothing.
 3. **Mechanical warnings** — note but proceed.
 

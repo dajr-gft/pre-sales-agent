@@ -49,7 +49,7 @@ os.environ.setdefault('GOOGLE_GENAI_USE_VERTEXAI', 'True')
 
 _RUBRIC_PATH = Path(__file__).parent / '_review_rubric.md'
 
-_MAX_FINDINGS = 12
+_MAX_FINDINGS = 20
 _MAX_MANIFEST_ITEMS_PER_CATEGORY = 8
 _MANIFEST_STATE_KEY = 'extraction_manifest'
 
@@ -288,7 +288,7 @@ async def semantic_review(
     manifest_summary = _build_manifest_summary(manifest)
     user_prompt = _build_user_prompt(sow_data, stage, manifest_summary)
 
-    timeout_s = getattr(config, 'SEMANTIC_REVIEW_TIMEOUT_S', 30.0)
+    timeout_s = getattr(config, 'SEMANTIC_REVIEW_TIMEOUT_S', 90.0)
     model = getattr(config, 'SEMANTIC_REVIEW_MODEL', 'gemini-flash-latest')
     thinking_budget = getattr(config, 'SEMANTIC_REVIEW_THINKING_BUDGET', 0)
 

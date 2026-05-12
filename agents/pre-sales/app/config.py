@@ -133,31 +133,70 @@ class AgentConfig(BaseSettings):
         ),
     )
     SEMANTIC_REVIEW_MODEL: str = Field(
-        default='gemini-flash-latest',
+        default='gemini-3-flash-preview',
         description=(
             'Model used by the semantic reviewer to surface contradictions and '
-            'qualitative gaps the mechanical validator does not catch.'
+            'qualitative gaps the mechanical validator does not catch. Default '
+            'is gemini-3-flash-preview because flash-latest with zero thinking '
+            'budget under-recalled cross-section contradictions in production.'
         ),
     )
     SEMANTIC_REVIEW_TIMEOUT_S: float = Field(
-        default=30.0,
+        default=90.0,
         ge=1.0,
-        le=120.0,
+        le=180.0,
         description=(
-            'Timeout (seconds) for the semantic reviewer call. Fails open: a '
-            'timeout returns no findings and never blocks the SOW pipeline.'
+            'Timeout (seconds) for the semantic reviewer call. Default 90s: '
+            'gemini-3-flash-preview with thinking_budget=2048 plus the full '
+            'rubric and SOW JSON consistently exceeded a 30s ceiling in '
+            'production, draining the signal entirely. Fails open: a timeout '
+            'returns no findings and never blocks the SOW pipeline.'
         ),
     )
     SEMANTIC_REVIEW_THINKING_BUDGET: int = Field(
-        default=1024,
+        default=2048,
         ge=0,
         le=24576,
         description=(
             'Token budget for Gemini thinking mode in the semantic reviewer. '
             'Cross-section contradiction checks benefit from multi-step '
-            'reasoning. Set to 0 to disable thinking and run the call without '
-            'a thinking_config (faster and cheaper, lower quality on '
-            'contradictions across many sections).'
+            'reasoning. Default 2048 — higher recall on contradictions that '
+            'span distant sections (role descriptions vs OOS, SLA vs '
+            'disclaimer, etc.). Set to 0 to disable thinking entirely.'
+        ),
+    )
+    COVERAGE_REVIEW_ENABLED: bool = Field(
+        default=True,
+        description=(
+            'Enable the LLM coverage reviewer that checks Manifest items '
+            'against SOW anchors. Disable to bypass the pass while keeping '
+            'mechanical and semantic validation intact.'
+        ),
+    )
+    COVERAGE_REVIEW_MODEL: str = Field(
+        default='gemini-3-flash-preview',
+        description=(
+            'Model used by the coverage reviewer. Reads the full Manifest '
+            'plus the SOW; benefits from a model with strong long-context '
+            'recall.'
+        ),
+    )
+    COVERAGE_REVIEW_TIMEOUT_S: float = Field(
+        default=30.0,
+        ge=1.0,
+        le=120.0,
+        description=(
+            'Timeout (seconds) for the coverage reviewer call. Fails open: '
+            'a timeout returns no findings and never blocks the SOW pipeline.'
+        ),
+    )
+    COVERAGE_REVIEW_THINKING_BUDGET: int = Field(
+        default=1024,
+        ge=0,
+        le=24576,
+        description=(
+            'Token budget for Gemini thinking mode in the coverage reviewer. '
+            'Set to 0 to disable thinking.'
         ),
     )
 
