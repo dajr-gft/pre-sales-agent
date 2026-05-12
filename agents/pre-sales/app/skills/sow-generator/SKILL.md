@@ -100,7 +100,7 @@ This skill does NOT discover project context. Discovery is the responsibility of
 
 **Tool usage in Phase 1:** `load_extraction_manifest` is the only mandatory call. File-reading tools are permitted ONLY if the user attached files alongside the SOW request and you need to verify a hard gap; otherwise do NOT re-read raw artifacts at this stage — the Manifest is the canonical project context. Web searches and content generation tools belong to Phase 2.
 
-### Step 1 — Load and verify (silent)
+### Step 1 — Load and verify (silent and always mandatory)
 
 Call `load_extraction_manifest()`. Handle the return:
 
@@ -281,9 +281,19 @@ If any answer is no, return to the corresponding procedure step before proceedin
 
 **Exit gate:** Step 2 sees only the resulting (now-complete) content. The enumeration, mapping, gap resolution, anchor reopening, and self-review remain internal — never echoed in user-facing output.
 
-### Step 1.5 — Validate Content (silent)
+### Step 1.5 — Validate Content (silent and always mandatory)
 
-Call `validate_sow_content` with the assembled JSON and `stage="content"` (architecture is intentionally absent — checks for that section are skipped). If errors are returned, fix them silently and re-validate with the same `stage`. Note warnings but proceed. Never mention validation results unless errors persist after 2 fix attempts. Compliance with the loaded references (style-guide, scope-examples) is also required before exiting this step — rewrite any non-compliant section in place.
+Call `validate_sow_content` with the assembled JSON and `stage="content"` (architecture is intentionally absent — checks for that section are skipped). The tool returns three signals on the same payload — process them in this order:
+
+1. **Mechanical errors** (`issues` with `severity="error"`) — fix silently and re-validate. They govern `passed`.
+2. **Semantic findings** (`findings` array, returned by the independent reviewer pass embedded in the tool) — group by severity:
+   - `BLOCKER` and `MAJOR`: fix using the same incremental-edit rule as mechanical errors (modify only the named `fields`, preserve everything else byte-for-byte) and re-validate. Maximum 4 correction rounds; if a finding still persists after the fourth round, treat it as MINOR and let it flow into Phase 3 (the revision tracker will record it as `source: "semantic_review"`).
+   - `MINOR`: do NOT fix here. The user will see the affected sections in the Content Review and may choose to address them. Log nothing.
+3. **Mechanical warnings** — note but proceed.
+
+Never mention validation results in user-facing messages unless errors persist after 2 fix attempts. If the semantic reviewer did not run (`review_metadata.ran == False`), proceed with mechanical results alone — the reviewer is fail-open by design and absence is not a blocker.
+
+Compliance with the loaded references (style-guide, scope-examples) is also required before exiting this step — rewrite any non-compliant section in place.
 
 ### Step 2 — Present Content Review
 
@@ -421,7 +431,11 @@ Allow section-specific changes. If the user requests changes, re-run sub-steps (
 **Step 1** — Validate and generate the document.
 1. Re-run reference compliance against the exact content that will be sent in `sow_data`. Rewrite any non-compliant section before validation.
 2. Call `validate_sow_content` with the assembled `sow_data` JSON containing ALL Phase 2 content (from both Step 2 and Step 4 reviews) and `stage="full"` (or omit the argument — "full" is the default). The architecture diagram and Partner/Customer Overviews were already generated in Phase 2 Step 3.
-3. If errors are returned, fix them, re-validate, and record each fix in an internal revision tracker (see "Revision tracking" below). Max 2 fix attempts — if errors persist, STOP and present the remaining issues to the user for guidance in the conversation language, instead of continuing to retry.
+3. The tool returns mechanical issues plus semantic `findings` from the independent reviewer pass. Process both:
+   - **Mechanical errors:** fix, re-validate, and record each fix in the revision tracker (see "Revision tracking" below) with `source: "validator"`. Max 2 fix attempts — if errors persist, STOP and present the remaining issues to the user for guidance in the conversation language.
+   - **Semantic findings (`findings`):** for each `BLOCKER` or `MAJOR` finding, fix using the incremental-edit rule (modify only the named `fields`, preserve everything else byte-for-byte) and record the change in the revision tracker with `source: "semantic_review"`. Re-validate after each round. Max 4 fix attempts per finding — if a `MAJOR` finding cannot be resolved within 4 attempts, degrade it to `MINOR`, record the remaining issue in the tracker as `source: "semantic_review"` with the unresolved evidence captured, and proceed. `BLOCKER` findings that persist after 4 attempts STOP the flow and surface to the user in the conversation language for guidance — same protocol as unresolvable mechanical errors.
+   - **Semantic findings of severity `MINOR`:** record in the revision tracker with `source: "semantic_review"` and continue without re-validation. They will be disclosed in the Phase 3 Step 2 Revision Note alongside mechanical fixes.
+   - If `review_metadata.ran == False`, proceed with mechanical results alone — the reviewer is fail-open by design and an unavailable reviewer is never a blocker.
 4. Warnings do not block — note them and proceed.
 5. Call `generate_sow_document` with the validated `sow_data` JSON. If the tool itself returns errors (quality gates, structural validation), apply the same tracker + 2-attempt rule.
 
@@ -439,16 +453,19 @@ If the tool returns a meta-error stating that you submitted an identical payload
 
 **Revision tracking (internal, during Step 1):**
 
-Every time a validator (`validate_sow_content` or `generate_sow_document`) returns an error and you apply a fix, add an entry to an internal revision tracker BEFORE calling the tool again. Each entry MUST capture the **full content** of the items you add, remove, or rewrite — not just IDs, not just names, not just counts. You need this content verbatim in Step 2.
+Every time a validator (`validate_sow_content` mechanical issues, `validate_sow_content` semantic findings, or `generate_sow_document`) returns something you fix, add an entry to an internal revision tracker BEFORE calling the tool again. Each entry MUST capture the **full content** of the items you add, remove, or rewrite — not just IDs, not just names, not just counts. You need this content verbatim in Step 2.
 
 For each entry, record:
+- **source**: `validator` (mechanical errors from `ContentValidator` or `generate_sow_document` quality gates) or `semantic_review` (semantic findings returned by the independent reviewer pass embedded in `validate_sow_content`).
 - **section**: the `sow_data` field affected (e.g., `deliverables`, `out_of_scope`, `assumptions`, `functional_requirements`, `non_functional_requirements`, `success_criteria`, `risks`, `partner_roles`).
 - **action**: `added` | `removed` | `rewrote`.
 - **items**: a list where each item carries its FULL content as it will appear in `sow_data`:
   - *For `added`*: the complete object/string that will be inserted. For structured items (deliverables, FRs, NFRs, assumptions with consequence clause, roles), include every field. For simple list items (out-of-scope, success criteria), include the full literal string.
   - *For `removed`*: the ID (if any) and the full text of the item being removed, plus a one-sentence reason.
   - *For `rewrote`*: the ID, a short `before` excerpt (the specific phrase/clause being changed), and the full `after` text of the change.
-- **rule**: the exact rule or quality target from the validator's error message that triggered the fix (e.g., "minimum 10 deliverables required by style-guide", "assumptions must include consequence clause").
+- **rule**: the exact rule or quality target that triggered the fix.
+  - For `source: "validator"`, cite the validator error message verbatim (e.g., "minimum 10 deliverables required by style-guide", "assumptions must include consequence clause").
+  - For `source: "semantic_review"`, cite the finding's `category` and `recommendation` (e.g., "contradiction — FR-04 vs NFR-02 latency commitment incompatible", "self_sufficiency — A-07 references undefined 'existing platform standards'"). For `MAJOR` findings degraded to `MINOR` after 2 unresolved attempts, prepend "unresolved after 2 attempts: " to the rule string so Step 2 can surface them honestly in the Revision Note.
 
 Do NOT mention this tracker or its contents to the user during Step 1. It is consumed only by Step 2.
 

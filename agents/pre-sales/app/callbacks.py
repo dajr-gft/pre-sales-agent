@@ -194,6 +194,58 @@ _STATE_EMPTY_RESPONSE_ATTEMPTS = '_empty_response_attempts'
 _MAX_EMPTY_RETRIES = 2
 _RECOVERY_TOOL_NAME = '_request_continuation'
 
+# Finish reasons whose "model gave up without rendering anything" failure mode
+# maps to the same UX as a plain STOP+empty turn: a blank bubble in the chat.
+# When an LLM response carries one of these AND has no renderable content,
+# the empty-response guard injects a synthetic call to ``_request_continuation``
+# so the agent loop re-prompts the model.
+#
+# Why each entry is in the set:
+# - ``STOP`` / ``None`` / ``FINISH_REASON_UNSPECIFIED``: the model believes
+#   it is done. Empty content here is the original failure mode the guard was
+#   built for.
+# - ``MALFORMED_FUNCTION_CALL``: the model intended to call a tool but emitted
+#   invalid JSON; the response is empty (zero tokens). Observed in production
+#   logs with ``output_tokens=0`` after a long fix-loop on validate_sow_content.
+# - ``UNEXPECTED_TOOL_CALL``: the model attempted a tool the runtime rejected
+#   before any user-visible output was produced. Same UX as malformed call.
+# - ``OTHER``: Gemini's catch-all for unspecified internal failures.
+#
+# Why deliberately NOT in the set:
+# - ``SAFETY`` / ``PROHIBITED_CONTENT`` / ``SPII`` / ``BLOCKLIST`` /
+#   ``IMAGE_SAFETY`` / ``IMAGE_PROHIBITED_CONTENT`` — owned by
+#   ``app.guardrails`` and the model's safety settings; recovering here would
+#   re-prompt a refusal the safety layer must own.
+# - ``RECITATION`` / ``IMAGE_RECITATION`` — typically partial-but-real output,
+#   not empty terminal.
+# - ``MAX_TOKENS`` — would carry partial content; user sees something.
+# - ``LANGUAGE`` / ``NO_IMAGE`` / ``IMAGE_OTHER`` — image-specific or rare
+#   edge cases; defaulting to non-recovery preserves their original behavior.
+def _build_recoverable_finish_reasons() -> frozenset:
+    """Resolve recoverable finish-reason values against the installed SDK.
+
+    Each name is looked up dynamically because the ``FinishReason`` enum has
+    grown over SDK versions (e.g. ``UNEXPECTED_TOOL_CALL`` is recent). Names
+    absent from this SDK are silently skipped — the guard still works for
+    the reasons the SDK does expose.
+    """
+    names = (
+        'STOP',
+        'MALFORMED_FUNCTION_CALL',
+        'UNEXPECTED_TOOL_CALL',
+        'OTHER',
+        'FINISH_REASON_UNSPECIFIED',
+    )
+    out: set = {None}
+    for name in names:
+        value = getattr(types.FinishReason, name, None)
+        if value is not None:
+            out.add(value)
+    return frozenset(out)
+
+
+_RECOVERABLE_FINISH_REASONS = _build_recoverable_finish_reasons()
+
 # Hard limit on the apology call: 5 s is generous for a one-sentence Flash
 # Lite generation. Beyond this we give up and use the static fallback so the
 # user never waits long on a failing path.
@@ -308,16 +360,25 @@ async def _generate_localized_apology(
 def _is_terminal_empty_response(llm_response: LlmResponse) -> bool:
     """True when the response would render as nothing in the UI.
 
-    A turn is terminal-empty when the model believes it is finished
-    (``finish_reason`` is ``STOP`` or absent) AND it produced neither
-    non-empty text nor a function call. Function-only turns (``text=None``
-    + ``function_call`` present) are the NORMAL tool-calling shape and
-    must pass through.
+    A turn is terminal-empty when the model's ``finish_reason`` is in
+    :data:`_RECOVERABLE_FINISH_REASONS` (``STOP``, ``None``,
+    ``MALFORMED_FUNCTION_CALL``, ``UNEXPECTED_TOOL_CALL``, ``OTHER``,
+    ``FINISH_REASON_UNSPECIFIED``) AND it produced neither non-empty text
+    nor a function call. Function-only turns (``text=None`` + ``function_call``
+    present) are the NORMAL tool-calling shape and must pass through.
 
     Responses already carrying ``error_code`` / ``error_message`` are
-    handled by the existing error pipeline, not by this guard. Safety
-    refusals (``finish_reason=SAFETY``) are owned by ``scope_guardrail``
-    and the model's safety settings.
+    handled by the existing error pipeline, not by this guard. Safety-class
+    finish reasons (``SAFETY``, ``PROHIBITED_CONTENT``, ``SPII``, ...) are
+    owned by ``app.guardrails`` and the model's safety settings and are
+    NOT in :data:`_RECOVERABLE_FINISH_REASONS` — they pass through this
+    guard untouched.
+
+    Why the allowlist of finish reasons (instead of "not SAFETY"): only the
+    failure modes whose user-visible symptom is a blank chat bubble belong
+    here. Reasons like ``MAX_TOKENS`` or ``RECITATION`` carry partial
+    content the user can still read; recovering on those would re-prompt
+    a turn that already produced something.
     """
     if getattr(llm_response, 'error_code', None) or getattr(
         llm_response, 'error_message', None
@@ -325,8 +386,7 @@ def _is_terminal_empty_response(llm_response: LlmResponse) -> bool:
         return False
 
     finish_reason = getattr(llm_response, 'finish_reason', None)
-    stop_reason = getattr(types.FinishReason, 'STOP', None)
-    if finish_reason is not None and stop_reason is not None and finish_reason != stop_reason:
+    if finish_reason not in _RECOVERABLE_FINISH_REASONS:
         return False
 
     content = getattr(llm_response, 'content', None)

@@ -372,6 +372,94 @@ class TestDeliverableCoverage:
         )
 
 
+class TestDeliverableFormat:
+    """Closed-set check on the per-deliverable ``format`` field.
+
+    The mechanical check replaces the semantic reviewer's open-coded enforcement
+    so the reviewer can stop generating MINOR findings for a deterministic
+    constraint. Allowed values come from the style-guide Deliverables section.
+    """
+
+    @pytest.mark.parametrize(
+        'value',
+        [
+            'Document',
+            'Presentation',
+            'Spreadsheet',
+            'Code',
+            'Demonstration',
+            'Video',
+        ],
+    )
+    def test_allowed_values_emit_no_warning(self, sow_data, value):
+        for d in sow_data['deliverables']:
+            d['format'] = value
+        result = ContentValidator().validate(sow_data)
+        assert not any(
+            w.field == 'deliverables' and 'format' in w.message.lower()
+            for w in result.warnings
+        )
+
+    def test_case_insensitive_match(self, sow_data):
+        for d in sow_data['deliverables']:
+            d['format'] = 'document'
+        result = ContentValidator().validate(sow_data)
+        assert not any(
+            w.field == 'deliverables' and 'format' in w.message.lower()
+            for w in result.warnings
+        )
+
+    def test_missing_format_emits_warning(self, sow_data):
+        sow_data['deliverables'][0].pop('format', None)
+        result = ContentValidator().validate(sow_data)
+        assert any(
+            w.field == 'deliverables' and "missing the 'format'" in w.message
+            for w in result.warnings
+        )
+
+    def test_empty_format_emits_warning(self, sow_data):
+        sow_data['deliverables'][0]['format'] = ''
+        result = ContentValidator().validate(sow_data)
+        assert any(
+            w.field == 'deliverables' and "missing the 'format'" in w.message
+            for w in result.warnings
+        )
+
+    def test_composite_value_rejected(self, sow_data):
+        """'Code/Model' is the production-observed offender — slash-joined
+        values are not in the allowed set and must surface as a warning."""
+        sow_data['deliverables'][0]['format'] = 'Code/Model'
+        result = ContentValidator().validate(sow_data)
+        assert any(
+            w.field == 'deliverables'
+            and 'not one of the allowed values' in w.message
+            for w in result.warnings
+        )
+
+    def test_unknown_value_emits_warning(self, sow_data):
+        sow_data['deliverables'][0]['format'] = 'Slide Deck'
+        result = ContentValidator().validate(sow_data)
+        assert any(
+            w.field == 'deliverables'
+            and 'not one of the allowed values' in w.message
+            for w in result.warnings
+        )
+
+    def test_warning_never_blocks_passed(self, sow_data):
+        """Mechanical errors gate ``passed``; format defect is a warning only."""
+        sow_data['deliverables'][0]['format'] = 'Code/Model'
+        result = ContentValidator().validate(sow_data)
+        assert result.passed is True
+
+    def test_empty_deliverables_list_no_warning(self, sow_data):
+        sow_data['deliverables'] = []
+        result = ContentValidator().validate(sow_data)
+        assert not any(
+            w.field == 'deliverables' and 'format' in w.message.lower()
+            for w in result.warnings
+        )
+
+
 class TestOosCount:
     def test_valid_count_no_warning(self, sow_data):
         result = ContentValidator().validate(sow_data)
