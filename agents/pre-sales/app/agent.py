@@ -81,6 +81,12 @@ pre_sales_skill_toolset = skill_toolset.SkillToolset(
         # the snapshots from every previous section + 4 web search queries.
         # Loaded LAST by the orchestrator during Phase 2 Step E.
         load_skill_from_dir(_SKILLS_DIR / 'sow-narrative'),
+        # Surgical patching skill — loaded by the root (not the orchestrator)
+        # when validation_critic returns blocked. No own references; loads
+        # section refs dynamically via the finding-to-reference mapping table.
+        # The central skill of the decomposition: breaks the loop problem
+        # observed when sow-generator was reused for post-validation correction.
+        load_skill_from_dir(_SKILLS_DIR / 'sow-revision'),
     ]
 )
 
