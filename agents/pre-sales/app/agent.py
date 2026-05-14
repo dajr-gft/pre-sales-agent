@@ -67,6 +67,11 @@ pre_sales_skill_toolset = skill_toolset.SkillToolset(
         # non_functional_requirements together with internal fr_vs_nfr
         # cross-validation. Loaded by the orchestrator during Phase 2 Step A.
         load_skill_from_dir(_SKILLS_DIR / 'sow-requirements'),
+        # Section skill — produces the delivery-plan cluster (activities,
+        # deliverables, success criteria, timeline, roles, objectives) in
+        # one turn so cross-validation between the five sections is grounded
+        # in all of them. Loaded by the orchestrator during Phase 2 Step B.
+        load_skill_from_dir(_SKILLS_DIR / 'sow-delivery-plan'),
     ]
 )
 
