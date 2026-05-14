@@ -63,6 +63,10 @@ pre_sales_skill_toolset = skill_toolset.SkillToolset(
         # stack, components, integrations, diagram PNG). Loaded by the
         # orchestrator during Phase 2 Step D.
         load_skill_from_dir(_SKILLS_DIR / 'sow-architecture'),
+        # Section skill — produces functional_requirements and
+        # non_functional_requirements together with internal fr_vs_nfr
+        # cross-validation. Loaded by the orchestrator during Phase 2 Step A.
+        load_skill_from_dir(_SKILLS_DIR / 'sow-requirements'),
     ]
 )
 
