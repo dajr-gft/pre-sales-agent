@@ -76,6 +76,11 @@ pre_sales_skill_toolset = skill_toolset.SkillToolset(
         # (assumptions, OOS, CR policy, handover disclaimers, risks).
         # Loaded by the orchestrator during Phase 2 Step C.
         load_skill_from_dir(_SKILLS_DIR / 'sow-scope-boundaries'),
+        # Section skill — produces the narrative fields (executive summary,
+        # partner/customer overview, customer_primary_domain) by synthesizing
+        # the snapshots from every previous section + 4 web search queries.
+        # Loaded LAST by the orchestrator during Phase 2 Step E.
+        load_skill_from_dir(_SKILLS_DIR / 'sow-narrative'),
     ]
 )
 
