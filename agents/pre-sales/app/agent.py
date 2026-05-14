@@ -72,6 +72,10 @@ pre_sales_skill_toolset = skill_toolset.SkillToolset(
         # one turn so cross-validation between the five sections is grounded
         # in all of them. Loaded by the orchestrator during Phase 2 Step B.
         load_skill_from_dir(_SKILLS_DIR / 'sow-delivery-plan'),
+        # Section skill — produces the contractual-surface cluster
+        # (assumptions, OOS, CR policy, handover disclaimers, risks).
+        # Loaded by the orchestrator during Phase 2 Step C.
+        load_skill_from_dir(_SKILLS_DIR / 'sow-scope-boundaries'),
     ]
 )
 
