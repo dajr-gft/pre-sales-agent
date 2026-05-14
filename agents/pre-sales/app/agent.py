@@ -54,7 +54,11 @@ _SKILLS_DIR = Path(__file__).parent / 'skills'
 pre_sales_skill_toolset = skill_toolset.SkillToolset(
     skills=[
         load_skill_from_dir(_SKILLS_DIR / 'sow-generator'),
-        load_skill_from_dir(_SKILLS_DIR / 'sow-discovery')
+        load_skill_from_dir(_SKILLS_DIR / 'sow-discovery'),
+        # Library skill — hosts cross-cutting references consumed by every
+        # SOW workflow skill via load_skill_resource. NOT a workflow skill;
+        # its frontmatter description warns the LLM against load_skill activation.
+        load_skill_from_dir(_SKILLS_DIR / 'sow-shared'),
     ]
 )
 
