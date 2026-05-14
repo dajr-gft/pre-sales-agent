@@ -94,12 +94,6 @@ google_search_agent = Agent(
     ),
 )
 
-# --- Tools ---
-# Note: `validate_sow_content` was removed when validation moved to the
-# `validation_critic` sub-agent. To validate the SOW, the root agent now
-# calls `stage_sow` (staging-only, Python-pure) and then transfers to
-# `validation_critic`. The legacy tool survives as a CI-only helper that
-# wraps `ContentValidator` without invoking the critic.
 _TOOLS = [
     pre_sales_skill_toolset,
     load_artifacts,
@@ -114,6 +108,16 @@ _TOOLS = [
     validate_extraction_manifest,
     _request_continuation,
     AgentTool(agent=google_search_agent),
+    # NOTE: do NOT set skip_summarization=True here. AgentTool propagates
+    # that flag onto the function_response event, which then satisfies
+    # `Event.is_final_response()` (see event.py: `if self.actions.
+    # skip_summarization or self.long_running_tool_ids: return True`).
+    # The root LLM flow's outer while-loop checks is_final_response on the
+    # last event and breaks (base_llm_flow.py: `if last_event.is_final_
+    # response(): break`), ending the root's turn BEFORE it can produce
+    # the user-facing summary. Leaving the default (False) makes the root
+    # take another LLM turn on the tool result and reply normally.
+    AgentTool(agent=validation_critic),
 ]
 
 # --- Root Agent ---
@@ -129,7 +133,6 @@ root_agent = Agent(
     ),
     instruction=build_instruction(company_name=config.COMPANY_NAME),
     tools=_TOOLS,
-    sub_agents=[validation_critic],
     before_model_callback=scope_guardrail,
     after_model_callback=empty_response_guard,
     before_tool_callback=before_tool_callback,

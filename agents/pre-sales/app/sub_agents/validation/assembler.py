@@ -10,6 +10,7 @@ the root agent.
 
 from __future__ import annotations
 
+import json
 from typing import AsyncGenerator, ClassVar
 
 import structlog
@@ -17,6 +18,7 @@ from google.adk.agents import BaseAgent
 from google.adk.agents.base_agent_config import BaseAgentConfig
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event, EventActions
+from google.genai import types
 
 from .schema import (
     STATE_REPORT_PARTIAL,
@@ -88,19 +90,17 @@ class ValidationAssemblerAgent(BaseAgent):
             findings=len(final.findings),
         )
 
-        # State-only event with `escalate=True` so control returns to the
-        # root agent (pre_sales_assistant). Without escalate, the parent
-        # SequentialAgent finishes but the runtime does not invoke the
-        # root for the next turn — the conversation hangs until the user
-        # types something. The root reads `state[STATE_VALIDATION_RESULT]`
-        # and produces the user-facing reply on its next model call.
+        report_json = json.dumps(final_dump, ensure_ascii=False)
         yield Event(
             invocation_id=ctx.invocation_id,
             author=self.name,
             branch=ctx.branch,
+            content=types.Content(
+                role='model',
+                parts=[types.Part.from_text(text=report_json)],
+            ),
             actions=EventActions(
                 state_delta={STATE_VALIDATION_RESULT: final_dump},
-                escalate=True,
             ),
         )
 

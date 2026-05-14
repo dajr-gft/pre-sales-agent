@@ -18,11 +18,18 @@ Invariants enforced by the topology:
 - `validation_assembler_agent` is the single writer of
   ``state[STATE_VALIDATION_RESULT]`` and escalates control back to root.
 
+Invocation pattern: the root calls ``validation_critic`` via ``AgentTool``
+(see ``app/agent.py``). AgentTool runs this SequentialAgent inside an
+isolated runner — every event yielded by the sub-agents below stays in
+that runner and never reaches the user-facing chat stream. Only
+``state_delta`` from each event (notably ``state[STATE_VALIDATION_RESULT]``
+written by the assembler) is forwarded back to the root session.
+
 Correction loop: the root agent owns the 4-round correction loop via
 its prompt — when the critic returns ``blocked``, the root applies
 edits using the ``sow-generator`` SkillToolset (already loaded at the
-root) and re-transfers to ``validation_critic``. We intentionally do
-not wrap the critic in a ``LoopAgent`` with a separate reviser sub-
+root) and re-invokes the ``validation_critic`` tool. We intentionally
+do not wrap the critic in a ``LoopAgent`` with a separate reviser sub-
 agent: that would duplicate the SOW generation knowledge already
 encoded in the ``sow-generator`` skill and inflate the per-call
 context for no architectural gain.
