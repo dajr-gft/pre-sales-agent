@@ -36,9 +36,12 @@ from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event, EventActions
 
 from .schema import (
+    PRIOR_FINGERPRINTS_CAP,
     SKILL_NAMES,
     STATE_DET_RESULT,
+    STATE_PRIOR_BLOCKING_FINGERPRINTS,
     STATE_REPORT_PARTIAL,
+    STATE_ROUND_COUNT,
     STATE_STAGE,
     DeterministicResult,
     Finding,
@@ -118,6 +121,23 @@ def _dedupe(findings: list[Finding]) -> list[Finding]:
         seen.values(),
         key=lambda x: (_SEVERITY_ORDER.get(x.severity, 9), -x.confidence),
     )
+
+
+def _is_blocking_finding(f: Finding, det: DeterministicResult) -> bool:
+    """Return True if this finding (post-calibration) contributes to ``blocked``.
+
+    Single source of truth for "blocking" semantics consumed by round tracking.
+    Today this mirrors the gate policy in :func:`_decide_status`: any
+    ``BLOCKER`` or ``MAJOR`` finding makes the gate ``blocked``. If the gate
+    policy changes (e.g. additional criteria), update this helper in one
+    place and round tracking stays consistent.
+
+    Note: ``det`` is accepted for forward-compatibility (e.g. if a future
+    policy makes some severities blocking only when there are no
+    deterministic errors). It is unused today.
+    """
+    del det  # reserved for future policy revisions
+    return f.severity in {'BLOCKER', 'MAJOR'}
 
 
 def _decide_status(
@@ -207,6 +227,37 @@ class ValidationAggregatorAgent(BaseAgent):
             det, findings, skills_failed_critical
         )
 
+        # --- Round tracking --------------------------------------------------
+        # The aggregator is the only writer of round_count and the prior
+        # blocking fingerprint set. Reset on stage transition is the root's
+        # responsibility (see root_prompt). We only ever increment here.
+        prior_blocking_fps_raw = state.get(STATE_PRIOR_BLOCKING_FINGERPRINTS) or []
+        prior_blocking_fps: set[str] = set(prior_blocking_fps_raw)
+
+        current_blocking_pairs = [
+            (f, _fingerprint(f)) for f in findings if _is_blocking_finding(f, det)
+        ]
+        current_blocking_fps: set[str] = {fp for _, fp in current_blocking_pairs}
+
+        # Mark each finding that is blocking AND was already blocking last
+        # round as persistent. We mutate the calibrated copies in place so the
+        # report carries the flag through to the root.
+        for f, fp in current_blocking_pairs:
+            if fp in prior_blocking_fps:
+                f.persistent = True
+
+        persistent_count = len(current_blocking_fps & prior_blocking_fps)
+        new_count = len(current_blocking_fps - prior_blocking_fps)
+        resolved_count = len(prior_blocking_fps - current_blocking_fps)
+
+        round_count = int(state.get(STATE_ROUND_COUNT) or 0) + 1
+
+        # Cap fingerprints to avoid unbounded state growth. We only ever store
+        # the current round's set (not an accumulation) so the cap is a guard
+        # against pathological SOWs, not a FIFO across rounds.
+        capped_fps = list(current_blocking_fps)[:PRIOR_FINGERPRINTS_CAP]
+        # ---------------------------------------------------------------------
+
         sev_counts = Counter(f.severity for f in findings)
         skill_counts = Counter(f.skill for f in findings)
 
@@ -223,10 +274,16 @@ class ValidationAggregatorAgent(BaseAgent):
             major_count=sev_counts.get('MAJOR', 0),
             minor_count=sev_counts.get('MINOR', 0),
             findings_by_skill=dict(skill_counts),
+            round_count=round_count,
+            persistent_blocking_finding_count=persistent_count,
+            new_blocking_finding_count=new_count,
+            resolved_blocking_finding_count=resolved_count,
         )
 
         partial = report.model_dump()
         state[STATE_REPORT_PARTIAL] = partial
+        state[STATE_ROUND_COUNT] = round_count
+        state[STATE_PRIOR_BLOCKING_FINGERPRINTS] = capped_fps
 
         logger.info(
             'validation_aggregated',
@@ -237,6 +294,10 @@ class ValidationAggregatorAgent(BaseAgent):
             minor=report.minor_count,
             findings_by_skill=report.findings_by_skill,
             skills_not_run=skills_not_run,
+            round_count=round_count,
+            persistent_blocking_finding_count=persistent_count,
+            new_blocking_finding_count=new_count,
+            resolved_blocking_finding_count=resolved_count,
         )
 
         # State-only event. Telemetry already in Cloud Logging via logger.info.
@@ -247,7 +308,13 @@ class ValidationAggregatorAgent(BaseAgent):
             invocation_id=ctx.invocation_id,
             author=self.name,
             branch=ctx.branch,
-            actions=EventActions(state_delta={STATE_REPORT_PARTIAL: partial}),
+            actions=EventActions(
+                state_delta={
+                    STATE_REPORT_PARTIAL: partial,
+                    STATE_ROUND_COUNT: round_count,
+                    STATE_PRIOR_BLOCKING_FINGERPRINTS: capped_fps,
+                },
+            ),
         )
 
 

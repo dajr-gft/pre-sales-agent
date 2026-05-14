@@ -44,6 +44,23 @@ STATE_REPORT_PARTIAL = 'app:validation_report:partial'
 STATE_SUMMARY_DRAFT = 'app:validation_summary:draft'
 STATE_VALIDATION_RESULT = 'app:validation_result'
 
+# Round tracking — populated by the aggregator and consumed by the root prompt
+# to decide loop convergence (downgrade / stop / continue).
+# - STATE_ROUND_COUNT: monotonic counter, incremented by the aggregator each
+#   time it runs. Reset to 0 by the root when starting a new validation for a
+#   different ``stage`` (e.g. ``content`` -> ``full``).
+# - STATE_PRIOR_BLOCKING_FINGERPRINTS: list of fingerprints (str) for the
+#   findings that contributed to ``overall_status == blocked`` in the previous
+#   round. Used to mark ``Finding.persistent`` on the next round. Capped to
+#   avoid unbounded state growth.
+STATE_ROUND_COUNT = 'app:validation:round_count'
+STATE_PRIOR_BLOCKING_FINGERPRINTS = 'app:validation:prior_blocking_fingerprints'
+
+# Upper bound on how many fingerprints we keep in state between rounds.
+# A SOW with more than this number of blocking findings in a single round
+# almost certainly has bigger problems than persistence tracking can solve.
+PRIOR_FINGERPRINTS_CAP = 30
+
 
 def skill_findings_state_key(name: str) -> str:
     """Resolve the per-skill state key.
@@ -172,5 +189,34 @@ class ValidationReport(BaseModel):
     major_count: int = 0
     minor_count: int = 0
     findings_by_skill: dict[str, int] = Field(default_factory=dict)
+    round_count: int = Field(
+        default=0,
+        description=(
+            'Monotonic counter incremented by the aggregator each run. '
+            'Used by the root prompt to gate downgrade/stop decisions.'
+        ),
+    )
+    persistent_blocking_finding_count: int = Field(
+        default=0,
+        description=(
+            'Number of blocking findings (post-calibration) whose '
+            'fingerprint matches one that contributed to `blocked` in the '
+            'previous round.'
+        ),
+    )
+    new_blocking_finding_count: int = Field(
+        default=0,
+        description=(
+            'Blocking findings present in this round but absent from the '
+            'previous round. 0 on round 1.'
+        ),
+    )
+    resolved_blocking_finding_count: int = Field(
+        default=0,
+        description=(
+            'Blocking findings present in the previous round but absent '
+            'from this round. 0 on round 1.'
+        ),
+    )
     summary: str = ''
     next_action: str = ''
