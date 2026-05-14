@@ -1,119 +1,90 @@
-"""ADK tool: validate SOW content before presenting to the user.
+"""Legacy `validate_sow_content` — degraded to a CI-only helper.
 
-The agent should call this tool after generating SOW content and BEFORE
-presenting results for human review. It runs deterministic structural
-checks (ID formats, cross-references, word counts, row counts) and
-returns actionable feedback the agent can fix autonomously.
+Validation moved to the `validation_critic` sub-agent. The agent flow no
+longer registers this function as an ADK tool, so the LLM cannot call it.
+
+The helper survives only for callers outside the agent flow (CI, ad-hoc
+scripts) that need to run the deterministic ``ContentValidator`` without
+involving the critic. The payload shape mirrors the legacy tool output:
+
+    {
+        "passed": bool,
+        "error_count": int,
+        "warning_count": int,
+        "issues": list[{severity, field, message, suggestion}],
+        "summary": str,
+    }
+
+Scheduled for removal alongside MVP 2 (when ``validation_loop`` replaces
+``validation_critic`` as the root sub_agent). Do not re-add this as a
+tool — the architecture explicitly forbids tools that orchestrate the
+validation agent.
 """
+
+from __future__ import annotations
+
 import json
-from typing import Any
+from typing import Any, Literal
 
-import structlog
-from google.adk.tools import ToolContext
-
-from ...shared.errors import safe_tool
-from ...shared.types import ToolError, ToolSuccess
-from ...shared.validators import ContentValidator
-from ._sow_helpers import sow_data_hash
-
-logger = structlog.get_logger()
+from ...shared.validators import ContentValidator, ValidationResult
 
 _validator = ContentValidator()
 
 
-@safe_tool
-async def validate_sow_content(
+def _build_summary(result: ValidationResult) -> str:
+    """Mirror the human-readable summary the legacy tool produced."""
+    if result.passed and not result.warnings:
+        return 'All structural checks passed — content is ready for user review.'
+    if result.passed:
+        body = '\n'.join(f'  - {w}' for w in result.warnings)
+        return (
+            f'No blocking errors. {len(result.warnings)} warning(s) found — '
+            f'consider fixing before presenting to the user:\n{body}'
+        )
+    errors_body = '\n'.join(f'  - {e}' for e in result.errors)
+    summary = (
+        f'{len(result.errors)} error(s) must be fixed before document '
+        f'generation.\n{errors_body}'
+    )
+    if result.warnings:
+        warn_body = '\n'.join(f'  - {w}' for w in result.warnings)
+        summary += (
+            f'\n\nAdditionally, {len(result.warnings)} warning(s):\n{warn_body}'
+        )
+    return summary
+
+
+def validate_sow_content(
     sow_data: str,
     funding_type: str = '',
-    stage: str = 'full',
-    tool_context: ToolContext = None,
+    stage: Literal['content', 'full'] = 'full',
 ) -> dict[str, Any]:
-    """
-    Validates the structural quality of SOW content before presenting
-    to the user or generating the final document.
+    """Run the deterministic structural validator on a SOW payload.
 
-    Call this tool AFTER assembling the SOW JSON and BEFORE asking the
-    user to review. It catches formatting errors, missing cross-references,
-    and content gaps that can be fixed automatically.
+    This is a Python-only helper. It does NOT invoke any LLM, does NOT
+    write session state, and is NOT registered as an ADK tool. Use the
+    `validation_critic` sub-agent for the full pipeline.
 
     Args:
-        sow_data: A JSON string containing the SOW sections to validate.
-            Accepts the same schema as generate_sow_document.
-        funding_type: "PSF" or "DAF". If empty, auto-detected from
-            sow_data fields (funding_type_short or funding_type).
-        stage: "content" for Phase 2 Step 1.5 validation (payload has
-            content but no architecture yet).
-            "full" for Phase 4 validation (complete payload before
-            document generation). Default: "full".
+        sow_data: SOW JSON string.
+        funding_type: "PSF" or "DAF". Auto-detected when empty.
+        stage: "content" or "full".
 
     Returns:
-        A dictionary with:
-        - passed: bool — True if no errors (warnings are OK).
-        - error_count: int
-        - warning_count: int
-        - issues: list of {severity, field, message, suggestion}
-        - summary: human-readable summary string for the agent to relay.
+        Dict with keys: ``passed``, ``error_count``, ``warning_count``,
+        ``issues``, ``summary``. Raises ``ValueError`` on invalid JSON.
     """
-    raw_hash = sow_data_hash(sow_data)
-    logger.info('validate_sow_content_invoked', sow_data_hash=raw_hash)
-
     try:
         data = json.loads(sow_data)
-    except json.JSONDecodeError as e:
-        return ToolError(
-            status='error',
-            error=f'Invalid JSON: {e}',
-            retryable=False,
-            tool='validate_sow_content',
-            suggestion='Fix the JSON syntax and call this tool again.',
-        )
+    except json.JSONDecodeError as exc:
+        raise ValueError(f'Invalid SOW JSON: {exc}') from exc
 
     ft = funding_type.strip().upper() if funding_type else None
-    stage_normalized = stage.strip().lower() if stage else 'full'
-    if stage_normalized not in ('content', 'full'):
-        stage_normalized = 'full'
+    stage_normalized: Literal['content', 'full'] = (
+        'content' if (stage or '').strip().lower() == 'content' else 'full'
+    )
 
     result = _validator.validate(data, funding_type=ft, stage=stage_normalized)
-
-    logger.info(
-        'sow_validation_completed',
-        sow_data_hash=raw_hash,
-        stage=stage_normalized,
-        funding_type=ft,
-        passed=result.passed,
-        errors=len(result.errors),
-        warnings=len(result.warnings),
-        error_details=[str(e) for e in result.errors],
-        warning_details=[str(w) for w in result.warnings],
-    )
-
-    result_dict = result.to_dict()
-
-    # Build a concise summary the agent can include in its response.
-    if result.passed and not result.warnings:
-        summary = (
-            'All structural checks passed — content is ready for user review.'
-        )
-    elif result.passed:
-        summary = (
-            f'No blocking errors. {len(result.warnings)} warning(s) found — '
-            'consider fixing before presenting to the user:\n'
-            + '\n'.join(f'  - {w}' for w in result.warnings)
-        )
-    else:
-        summary = (
-            f'{len(result.errors)} error(s) must be fixed before document generation.\n'
-            + '\n'.join(f'  - {e}' for e in result.errors)
-        )
-        if result.warnings:
-            summary += (
-                f'\n\nAdditionally, {len(result.warnings)} warning(s):\n'
-                + '\n'.join(f'  - {w}' for w in result.warnings)
-            )
-
-    result_dict['summary'] = summary
-
-    return ToolSuccess(
-        status='success',
-        data=result_dict,
-    )
+    payload = result.to_dict()
+    payload['summary'] = _build_summary(result)
+    return payload

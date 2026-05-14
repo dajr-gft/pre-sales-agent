@@ -374,26 +374,29 @@ class TestNoStateOverridesInPhase3:
         for name in forbidden:
             assert not hasattr(arch_review, name), name
 
-    async def test_validate_sow_content_does_not_consume_state(
+    def test_validate_sow_content_does_not_consume_state(
         self, mock_tool_context, sow_data
     ):
-        """Approve the gate, drift the architecture text, and check
-        that no override silently rewrites it before the validator
-        runs. The validator either passes or fails on the literal model
-        payload — no state-side rewrite is permitted.
+        """Drift the architecture text and check that no override silently
+        rewrites it before the validator runs. The validator either passes
+        or fails on the literal payload — no state-side rewrite is
+        permitted.
+
+        Note: ``validate_sow_content`` is no longer an ADK tool — it was
+        degraded to a synchronous CI helper after validation moved to the
+        ``validation_critic`` sub-agent. It does not accept ``tool_context``
+        and cannot read session state by design.
         """
         import json
 
         from app.tools.sow.validate_sow_content import validate_sow_content
 
-        # Approve the architecture phase so the gate lets us through.
+        # State below is irrelevant to the helper; we keep it as a smoke
+        # check that nothing else in the system leaks state into the
+        # validator's output.
         mock_tool_context.state[
             _state_key('architecture_review_approved')
         ] = True
-
-        # Stash a fake "approved" architecture in state. If overrides
-        # were still wired in, this string would replace the model's
-        # payload before validation.
         state_only_marker = 'STATE_ONLY_MARKER_THAT_MUST_NOT_LEAK'
         mock_tool_context.state['arch_review.architecture_description'] = (
             state_only_marker
@@ -403,13 +406,12 @@ class TestNoStateOverridesInPhase3:
             sow_data['architecture_description'] + ' (model payload)'
         )
 
-        result = await validate_sow_content(
+        result = validate_sow_content(
             sow_data=json.dumps(sow_data),
             funding_type='DAF',
             stage='full',
-            tool_context=mock_tool_context,
         )
 
-        # The marker must not appear in the validator's output — it lives
-        # only in state, which the tool no longer consults.
+        # The marker must not appear in the validator's output — the
+        # helper has no access to state by design.
         assert state_only_marker not in str(result)
