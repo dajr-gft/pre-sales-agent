@@ -98,101 +98,117 @@ def _frontmatter(content: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Mechanism 1 — Priority block
+# Mechanism 1 — Normative binding of references + brevity scope
 # ---------------------------------------------------------------------------
 
-
-_AUTHORITY_HEADING_RE = re.compile(
-    r'^##\s+Reference authority and depth rules\s*$', re.MULTILINE
+# Match the "References ... are binding" clause OR the orchestrator's
+# "section skill controls the content" framing. Either phrase establishes
+# that the loaded references / section skills are normative — not optional
+# inspiration. The clause may live anywhere in the document; the SKILL.md
+# style is now too compact to anchor it to a dedicated heading.
+_BINDING_CLAUSE_RE = re.compile(
+    r'(?is)\b(?:are\s+binding|controls?\s+the\s+content)\b',
 )
-_BINDING_PHRASE_RE = re.compile(r'binding quality contract', re.IGNORECASE)
-_BREVITY_RULE_RE = re.compile(r'\*\*Brevity scope rule:\*\*')
 
-
-@pytest.mark.parametrize(
-    'skill_path', _WORKFLOW_SKILLS, ids=_skill_ids(_WORKFLOW_SKILLS)
-)
-def test_has_reference_authority_section(skill_path: Path) -> None:
-    """Mechanism 1.a — priority block heading must exist."""
-    content = _read(skill_path)
-    assert _AUTHORITY_HEADING_RE.search(content), (
-        f'{skill_path.name}/SKILL.md is missing the '
-        '"## Reference authority and depth rules" section required by '
-        'Mechanism 1 of Section 5.9. Without it, LLMs treat the loaded '
-        'references as optional inspiration instead of a binding contract.'
-    )
-
-
-@pytest.mark.parametrize(
-    'skill_path', _WORKFLOW_SKILLS, ids=_skill_ids(_WORKFLOW_SKILLS)
-)
-def test_authority_section_uses_binding_contract_phrase(
-    skill_path: Path,
-) -> None:
-    """Mechanism 1.b — phrase 'binding quality contract' anchors the block."""
-    content = _read(skill_path)
-    assert _BINDING_PHRASE_RE.search(content), (
-        f'{skill_path.name}/SKILL.md must contain the exact phrase '
-        '"binding quality contract" in its reference-authority section. '
-        'Soft synonyms ("important", "preferred") consistently fail to '
-        'override the LLM brevity bias.'
-    )
-
-
-@pytest.mark.parametrize(
-    'skill_path', _WORKFLOW_SKILLS, ids=_skill_ids(_WORKFLOW_SKILLS)
-)
-def test_authority_section_has_brevity_scope_rule(skill_path: Path) -> None:
-    """Mechanism 1.c — brevity carve-out so terse style does not bleed into SOW content."""
-    content = _read(skill_path)
-    assert _BREVITY_RULE_RE.search(content), (
-        f'{skill_path.name}/SKILL.md must include the literal '
-        '"**Brevity scope rule:**" block so the LLM does not interpret '
-        '"concise" instructions for conversational orchestration as '
-        'permission to shorten SOW content.'
-    )
-
-
-# ---------------------------------------------------------------------------
-# Mechanism 2 — Pre-step gate
-# ---------------------------------------------------------------------------
-
-
-_PRE_STEP_RE = re.compile(
-    r'\*\*Pre-step\s+—\s+Load and apply references', re.IGNORECASE
-)
-# Em dash variants — em dash (—), hyphen, en dash — are all tolerated to
-# avoid breaking the lint over copy-paste artifacts that the IDE silently
-# normalizes.
-_PRE_STEP_RE_FALLBACK = re.compile(
-    r'\*\*Pre-step\s*[-–—]\s*Load and apply references',
-    re.IGNORECASE,
+# Match either the explicit "Brevity scope" marker (orchestrator pattern)
+# or the inline "'brief' and 'concise' apply ... to orchestration" phrasing
+# that every section / revision skill uses. The intent is identical: prevent
+# the LLM from reading "concise" as permission to shorten SOW content.
+_BREVITY_SCOPE_RE = re.compile(
+    r'(?is)'
+    r'(?:'
+    r'\*\*Brevity scope[.:]'                                  # ** Brevity scope. ** / ** Brevity scope: **
+    r'|["“”‘’\']brief["“”‘’\']\s+and\s+["“”‘’\']concise["“”‘’\']\s+apply'  # "brief" and "concise" apply ...
+    r')',
 )
 
 
 @pytest.mark.parametrize(
     'skill_path', _WORKFLOW_SKILLS, ids=_skill_ids(_WORKFLOW_SKILLS)
 )
-def test_has_pre_step_load_block(skill_path: Path) -> None:
-    """Mechanism 2 — at least one Pre-step load block in every workflow skill."""
+def test_has_binding_reference_clause(skill_path: Path) -> None:
+    """Mechanism 1.a — references / section skills are declared normative.
+
+    Without this clause, the LLM reads loaded references as optional
+    inspiration. The clause shape evolved during the decomposition from a
+    verbose ``## Reference authority and depth rules`` section to a compact
+    "References ... are binding — they override any paraphrase here." line
+    (or, for the orchestrator, "the section skill controls the content").
+    Either form satisfies this lint.
+    """
     content = _read(skill_path)
-    assert _PRE_STEP_RE.search(content) or _PRE_STEP_RE_FALLBACK.search(
-        content
-    ), (
-        f'{skill_path.name}/SKILL.md must contain at least one '
-        '"**Pre-step — Load and apply references" block. Without it, '
-        'the model proceeds to drafting/patching without re-reading the '
-        'binding references and Mechanism 1 becomes decorative.'
+    assert _BINDING_CLAUSE_RE.search(content), (
+        f'{skill_path.name}/SKILL.md must contain either "are binding" or '
+        '"controls the content" so the LLM treats the loaded references / '
+        'section skills as normative instead of optional inspiration.'
+    )
+
+
+@pytest.mark.parametrize(
+    'skill_path', _WORKFLOW_SKILLS, ids=_skill_ids(_WORKFLOW_SKILLS)
+)
+def test_has_brevity_scope_clause(skill_path: Path) -> None:
+    """Mechanism 1.b — brevity carve-out so terse style does not bleed into SOW content.
+
+    Accepts either the explicit ``**Brevity scope.**`` marker (orchestrator)
+    or the inline ``"brief" and "concise" apply ... orchestration messages``
+    phrasing every other skill uses.
+    """
+    content = _read(skill_path)
+    assert _BREVITY_SCOPE_RE.search(content), (
+        f'{skill_path.name}/SKILL.md must include a brevity-scope clause '
+        '(either "**Brevity scope.**" or the inline "\'brief\' and \'concise\' '
+        'apply ... orchestration messages only" phrasing) so the LLM does '
+        'not interpret "concise" instructions for conversational orchestration '
+        'as permission to shorten SOW content.'
     )
 
 
 # ---------------------------------------------------------------------------
-# Mechanism 3 — Reference Compliance gate
+# Mechanism 2 — Load gate (formerly Pre-step)
 # ---------------------------------------------------------------------------
 
 
-_COMPLIANCE_GATE_RE = re.compile(
-    r'(Reference Compliance|Self-test checklist)', re.IGNORECASE
+# Match the canonical ``## Load before <verb> (mandatory)`` heading every
+# revised workflow skill uses. The verb varies per skill: "drafting" for
+# section skills, "patching" for sow-revision, "any phase" for sow-orchestrator.
+_LOAD_GATE_HEADING_RE = re.compile(
+    r'(?im)^##\s+Load\s+before\s+\w+(?:\s+\w+)?\s+\(mandatory\)\s*$',
+)
+
+
+@pytest.mark.parametrize(
+    'skill_path', _WORKFLOW_SKILLS, ids=_skill_ids(_WORKFLOW_SKILLS)
+)
+def test_has_load_gate_heading(skill_path: Path) -> None:
+    """Mechanism 2 — a ``## Load before X (mandatory)`` heading exists.
+
+    Without an explicit load gate at the top of the workflow, the model
+    proceeds to drafting/patching without re-reading the binding references
+    and Mechanism 1 becomes decorative.
+    """
+    content = _read(skill_path)
+    assert _LOAD_GATE_HEADING_RE.search(content), (
+        f'{skill_path.name}/SKILL.md must contain a "## Load before <verb> '
+        '(mandatory)" heading (e.g. "## Load before drafting (mandatory)" '
+        'for section skills, "## Load before patching (mandatory)" for '
+        'sow-revision, "## Load before any phase (mandatory)" for the '
+        'orchestrator). Without it, the binding-reference clause has no '
+        'enforcement surface.'
+    )
+
+
+# ---------------------------------------------------------------------------
+# Mechanism 3 — Compliance gate (formerly Reference Compliance / Self-test)
+# ---------------------------------------------------------------------------
+
+
+# Accepts the canonical ``## Before <verb> (workflow gate)`` heading every
+# section / revision skill uses, OR the orchestrator's ``## Phase boundary
+# gates`` heading. Both serve the same purpose: a named gate before exit
+# where compliance with the loaded references is verified.
+_COMPLIANCE_GATE_HEADING_RE = re.compile(
+    r'(?im)^##\s+(?:Before\s+\w+\s+\(workflow gate\)|Phase boundary gates\b)',
 )
 
 
@@ -200,12 +216,20 @@ _COMPLIANCE_GATE_RE = re.compile(
     'skill_path', _WORKFLOW_SKILLS, ids=_skill_ids(_WORKFLOW_SKILLS)
 )
 def test_has_reference_compliance_gate(skill_path: Path) -> None:
-    """Mechanism 3 — a compliance gate exists before exiting content steps."""
+    """Mechanism 3 — a named compliance gate exists before exit.
+
+    Section skills use ``## Before returning (workflow gate)``; sow-revision
+    uses ``## Before staging (workflow gate)``; sow-orchestrator uses
+    ``## Phase boundary gates`` for the same purpose. The lint accepts any
+    of these forms.
+    """
     content = _read(skill_path)
-    assert _COMPLIANCE_GATE_RE.search(content), (
-        f'{skill_path.name}/SKILL.md must include a "Reference Compliance" '
-        'sub-step or a "Self-test checklist" before the step exits. Without '
-        'it the LLM may "forget" the references mid-generation.'
+    assert _COMPLIANCE_GATE_HEADING_RE.search(content), (
+        f'{skill_path.name}/SKILL.md must include either a "## Before '
+        '<verb> (workflow gate)" heading (e.g. "Before returning", '
+        '"Before staging") or, for the orchestrator, a "## Phase boundary '
+        'gates" heading. Without a named gate before exit, the LLM may '
+        '"forget" the references mid-generation.'
     )
 
 
@@ -301,20 +325,38 @@ def test_orchestrator_forbids_batch_loading_section_skills(
     )
 
 
+# Match the order arrow form "A → B → C → D → E" (with em-dash, hyphen, or
+# ASCII arrow variants). The arrow form is the new compact convention; the
+# legacy verbose form (literal "Phase Step A" through "Phase Step E") is
+# still accepted as a fallback.
+_PHASE_STEP_ARROW_RE = re.compile(
+    r'A\s*(?:→|->|→)\s*B\s*(?:→|->|→)\s*C\s*(?:→|->|→)\s*D\s*(?:→|->|→)\s*E',
+)
+
+
 @pytest.mark.parametrize(
     'skill_path',
     _ORCHESTRATOR_PATHS,
     ids=_skill_ids(_ORCHESTRATOR_PATHS),
 )
 def test_orchestrator_documents_phase_step_ordering(skill_path: Path) -> None:
-    """Orchestrator must list Phase Steps A through E explicitly."""
+    """Orchestrator must declare the Phase Step ordering A through E.
+
+    Accepts either the arrow form "A → B → C → D → E" (compact convention)
+    or the legacy form with literal "Phase Step A" through "Phase Step E"
+    tokens.
+    """
     content = _read(skill_path)
-    expected = ('Phase Step A', 'Phase Step B', 'Phase Step C', 'Phase Step D', 'Phase Step E')
-    missing = [label for label in expected if label not in content]
-    assert not missing, (
-        f'{skill_path.name}/SKILL.md is missing Phase Step labels: '
-        f'{missing}. Section 5.9 item 7 requires the ordering A through E '
-        'to be explicit in the orchestrator workflow.'
+    has_arrow = bool(_PHASE_STEP_ARROW_RE.search(content))
+    legacy_labels = ('Phase Step A', 'Phase Step B', 'Phase Step C', 'Phase Step D', 'Phase Step E')
+    has_legacy = all(label in content for label in legacy_labels)
+
+    assert has_arrow or has_legacy, (
+        f'{skill_path.name}/SKILL.md must declare the Phase Step ordering '
+        'A through E — either as the arrow form "A → B → C → D → E" or as '
+        'the legacy labels "Phase Step A" through "Phase Step E". Without '
+        'an explicit ordering, the sequential-load discipline has no '
+        'reference point.'
     )
 
 

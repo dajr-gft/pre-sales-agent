@@ -55,37 +55,13 @@ pre_sales_skill_toolset = skill_toolset.SkillToolset(
     skills=[
         load_skill_from_dir(_SKILLS_DIR / 'sow-generator'),
         load_skill_from_dir(_SKILLS_DIR / 'sow-discovery'),
-        # Library skill — hosts cross-cutting references consumed by every
-        # SOW workflow skill via load_skill_resource. NOT a workflow skill;
-        # its frontmatter description warns the LLM against load_skill activation.
+        load_skill_from_dir(_SKILLS_DIR / 'sow-orchestrator'),
         load_skill_from_dir(_SKILLS_DIR / 'sow-shared'),
-        # Section skill — produces architecture artifacts (description, tech
-        # stack, components, integrations, diagram PNG). Loaded by the
-        # orchestrator during Phase 2 Step D.
         load_skill_from_dir(_SKILLS_DIR / 'sow-architecture'),
-        # Section skill — produces functional_requirements and
-        # non_functional_requirements together with internal fr_vs_nfr
-        # cross-validation. Loaded by the orchestrator during Phase 2 Step A.
         load_skill_from_dir(_SKILLS_DIR / 'sow-requirements'),
-        # Section skill — produces the delivery-plan cluster (activities,
-        # deliverables, success criteria, timeline, roles, objectives) in
-        # one turn so cross-validation between the five sections is grounded
-        # in all of them. Loaded by the orchestrator during Phase 2 Step B.
         load_skill_from_dir(_SKILLS_DIR / 'sow-delivery-plan'),
-        # Section skill — produces the contractual-surface cluster
-        # (assumptions, OOS, CR policy, handover disclaimers, risks).
-        # Loaded by the orchestrator during Phase 2 Step C.
         load_skill_from_dir(_SKILLS_DIR / 'sow-scope-boundaries'),
-        # Section skill — produces the narrative fields (executive summary,
-        # partner/customer overview, customer_primary_domain) by synthesizing
-        # the snapshots from every previous section + 4 web search queries.
-        # Loaded LAST by the orchestrator during Phase 2 Step E.
         load_skill_from_dir(_SKILLS_DIR / 'sow-narrative'),
-        # Surgical patching skill — loaded by the root (not the orchestrator)
-        # when validation_critic returns blocked. No own references; loads
-        # section refs dynamically via the finding-to-reference mapping table.
-        # The central skill of the decomposition: breaks the loop problem
-        # observed when sow-generator was reused for post-validation correction.
         load_skill_from_dir(_SKILLS_DIR / 'sow-revision'),
     ]
 )

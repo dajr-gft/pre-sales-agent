@@ -16,14 +16,8 @@ metadata:
 
 # SOW Shared References
 
-This skill hosts the cross-cutting reference files used by every SOW workflow
-skill. It deliberately has **no workflow of its own** — if `load_skill` ever
-routes here, that is a misuse.
-
-## How other skills consume this
-
-Each workflow skill loads only the references it needs, in the Pre-step of
-the relevant step. The call shape is always:
+Cross-cutting reference library. **No workflow.** If `load_skill` ever
+routes here, that is a misuse — load the specific reference instead via:
 
 ```
 load_skill_resource(skill_name="sow-shared", file_path="references/<file>.md")
@@ -31,25 +25,21 @@ load_skill_resource(skill_name="sow-shared", file_path="references/<file>.md")
 
 ## Inventory
 
-- `references/style-guide.md` — cross-cutting writing rules and the
-  Self-sufficiency contract. Binding quality contract for every SOW section
-  generated or patched by any workflow skill.
-- `references/language-rules.md` — conversation language vs. final English
-  document; what to localize, what to keep verbatim in English.
-- `references/id-stability-rules.md` — ID preservation rules that survive
-  every revision; never renumber, never reorder, never swap.
-- `references/scope-examples.md` — quality floor and calibration examples
-  for the heavyweight sections (FRs, NFRs, OOS, Assumptions, narrative).
+- `references/style-guide.md` — cross-cutting writing rules + Self-sufficiency contract. Binding for every SOW section.
+- `references/language-rules.md` — conversation language vs. final English document; what to localize, what to keep verbatim in English.
+- `references/id-stability-rules.md` — ID preservation rules; never renumber, never reorder, never swap; binding Patch contract for `sow-revision`.
+- `references/scope-examples/` — quality floor and calibration examples, split per section:
+  - `executive-summary.md` — Template-compliant Executive Summary (loaded by `sow-narrative`).
+  - `fr-nfr.md` — FR + NFR patterns including binding Reliability Bad/Good pair (loaded by `sow-requirements`).
+  - `scope-contractual.md` — OOS + Assumptions + CR Policy (loaded by `sow-scope-boundaries`).
+  - `risks.md` — Risks patterns (loaded by `sow-scope-boundaries`).
+  - `delivery.md` — Activities + Deliverables (loaded by `sow-delivery-plan`).
+  - `architecture.md` — Tech Stack + Architecture Description (loaded by `sow-architecture`).
 
 ## What is NOT here
 
-Section-specific rules (Functional Requirements patterns, NFR WAF pillars,
-Out-of-Scope categories, Assumption patterns, architecture rules, deliverable
-workstream structure, executive summary template) live in the matching
-workflow skill, not here. Load the section skill for those.
+Section-specific rules (FR patterns, NFR WAF pillars, OOS categories, assumption patterns, architecture rules, workstream structure, exec summary template) live in the matching workflow skill — not here.
 
-## No workflow
+## Out of scope (critical boundary)
 
-There is no `## Workflow`, no `## Phase`, no `## Step` here, and there will
-not be. Load the file you need from `references/` and follow the rules in
-the calling skill's own Phase Step.
+- **MUST NOT be activated via `load_skill`.** This skill has no workflow and there will not be one. Calling `load_skill("sow-shared")` is a routing defect.

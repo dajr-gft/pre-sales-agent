@@ -20,228 +20,64 @@ metadata:
 
 # SOW Scope Boundaries
 
-**Scope of this skill.** The contractual surface — what the partner is NOT
-promising. The five lists are produced together because every assumption
-needs an OOS counter-anchor, every handover statement mirrors a Reliability
-NFR phrasing, and the cross-references between them are how the validation
-critic catches `missing_consequence_clause`, `missing_handover_boundary`,
-and `missing_ai_nondeterminism_disclosure` findings.
+The contractual surface — what the partner is NOT promising. The five
+lists are produced together because every assumption needs an OOS
+counter-anchor, every handover statement mirrors a Reliability NFR
+phrasing, and AI/ML non-determinism must reconcile across all three lists.
 
-## Reference authority and depth rules
+References below are binding — they override any paraphrase here. Use
+scope-boundary language ("strictly limited to", "exclusively", "explicitly
+excluded") with no softening verbs. "Brief" and "concise" apply to
+orchestration messages only, never to content.
 
-The loaded reference files are the **binding quality contract** for the
-contractual surface — not optional examples, loose inspiration, or style
-suggestions.
+## Load before drafting (mandatory)
 
-Priority order for generated/patched content quality:
+via `load_skill_resource`:
 
-1. `sow-shared/references/style-guide.md` — binding cross-cutting writing
-   rules (scope-boundary language: "strictly limited to", "exclusively",
-   "explicitly excluded") and the Self-sufficiency contract.
-2. `sow-shared/references/id-stability-rules.md` — binding ID
-   preservation when revising an existing scope (assumption order, OOS
-   order, handover order).
-3. `references/oos-categories.md` — binding 17-category coverage list
-   plus the MANDATORY Category 17 (uptime/SLA denial).
-4. `references/assumption-patterns.md` — binding consequence-clause
-   pattern, 15 categories, and the counter-anchor walk.
-5. `references/cr-policy-template.md` — binding Change Request Policy
-   structure (what it MUST say, what it MUST NOT contain).
-6. `references/handover-rules.md` — binding handover disclaimers
-   (operational ownership, production-availability boundary, AI/ML
-   non-determinism disclosure).
-7. This `SKILL.md` — workflow orchestration only (sub-step ordering,
-   cross-anchor gate, risks rules inline).
+- `sow-shared` / `references/style-guide.md` — quality contract.
+- `sow-shared` / `references/scope-examples/scope-contractual.md` — quality floor for OOS + Assumptions + CR Policy.
+- `sow-shared` / `references/scope-examples/risks.md` — quality floor for Risks.
+- `sow-shared` / `references/language-rules.md` — language hygiene.
+- `sow-scope-boundaries` / `references/oos-categories.md` — 17-category contract + mandatory Category 17.
+- `sow-scope-boundaries` / `references/assumption-patterns.md` — consequence-clause pattern + 15 categories.
+- `sow-scope-boundaries` / `references/cr-policy-template.md` — Change Request Policy structure.
+- `sow-scope-boundaries` / `references/handover-rules.md` — handover disclaimers (operational, availability, AI/ML, hypercare).
+- `sow-scope-boundaries` / `references/risks-rules.md` — Risks rules.
 
-If this skill says to do X and a reference defines how X must be
-written/patched, the reference controls the content. Do not simplify,
-shorten, or reinterpret reference requirements unless the reference
-explicitly allows it.
+When patching: also `sow-shared` / `references/id-stability-rules.md`. OOS / assumption / handover order are frozen once shown to the user.
 
-**Brevity scope rule:** instructions such as "brief", "concise", "direct",
-or "short" apply only to conversational orchestration messages,
-confirmations, and error handling. They do NOT apply to SOW scope-boundary
-content. For assumptions, OOS items, CR policy text, handover disclaimers,
-and risks, follow the depth, structure, minimums, required wording, and
-quality rules from the loaded references.
+## Inputs
 
----
+- `manifest.extracted_items` for `[Constraints, Decisions, Briefing]` + `manifest.gaps.pending_decisions`.
+- Current `sow_data` snapshot with FRs, NFRs, deliverables, and activity_phases already populated. Deliverables supply OOS counter-anchors and assumption phase-deadline references.
 
-## Workflow — generate the five lists in one turn
+## Generate (one turn)
 
-**Pre-step — Load and apply references (mandatory gate before any drafting):**
+1. **OOS** (`out_of_scope`). Walk the 17 categories in `oos-categories.md`; skip only when genuinely inapplicable. **Category 17 is mandatory** — pick one of the two approved phrasings. Target 20-30+ items.
+2. **Assumptions** (`assumptions`). Walk the 15 categories in `assumption-patterns.md`. Every customer-dependent assumption follows the consequence-clause pattern: `[Customer] must [obligation] [by when]. [Consequence if not met].` When AI/ML is in scope, include Category 12 (mirror of the handover disclosure). Target 15-25+.
+3. **CR Policy** (`change_request_policy_text`). Apply `cr-policy-template.md`. Single multi-paragraph string. MUST state: (a) no out-of-scope work without signed CR, (b) verbal agreements not binding, (c) partner may pause non-CR'd work, (d) all CRs follow the same process. MUST NOT contain hours, rates, or the 7 CR template fields.
+4. **Handover** (`handover_disclaimers`). Apply `handover-rules.md`. MUST contain: operational-ownership statement; production-availability boundary statement; AI/ML non-determinism disclosure (IF any AI/ML component); hypercare statement (inclusion-with-window OR explicit exclusion).
+5. **Risks** (`risks`). Apply `risks-rules.md`.
+6. **Cross-anchor walk.** Verify:
+   - Every customer-dependent assumption has a consequence clause.
+   - OOS Category 10/17 items each have a matching handover assumption.
+   - Category 17 phrasing is one of the two approved variants.
+   - Production-availability handover statement is present AND the upstream Reliability NFR uses the architectural-pattern phrasing.
+   - If AI/ML is in scope, non-determinism disclosure is in `handover_disclaimers` AND mirrored as Category 12 in `assumptions`.
 
-- `load_skill_resource(skill_name="sow-shared", file_path="references/style-guide.md")`
-  — **Binding quality contract.**
-- `load_skill_resource(skill_name="sow-shared", file_path="references/scope-examples.md")`
-  — **Quality floor.** Match or exceed the depth shown for OOS and
-  Assumptions sections.
-- `load_skill_resource(skill_name="sow-shared", file_path="references/language-rules.md")`
-  — **Binding language hygiene.**
-- `load_skill_resource(skill_name="sow-scope-boundaries", file_path="references/oos-categories.md")`
-  — **Binding 17-category OOS contract.**
-- `load_skill_resource(skill_name="sow-scope-boundaries", file_path="references/assumption-patterns.md")`
-  — **Binding consequence-clause pattern + 15 categories.**
-- `load_skill_resource(skill_name="sow-scope-boundaries", file_path="references/cr-policy-template.md")`
-  — **Binding CR policy structure.**
-- `load_skill_resource(skill_name="sow-scope-boundaries", file_path="references/handover-rules.md")`
-  — **Binding handover disclaimers.**
+   Fix in place. If a Reliability NFR upstream carries a forbidden uptime/SLA percentage, STOP and signal the orchestrator to reload `sow-requirements` and correct that NFR before continuing — never silently rewrite an upstream NFR from this skill (see Out of scope).
 
-If you are patching an existing scope (not generating from scratch), also
-load
-`load_skill_resource(skill_name="sow-shared", file_path="references/id-stability-rules.md")`
-and treat the Patch contract there as overriding any sub-step instinct to
-regenerate the lists. OOS order, assumption order, and handover order are
-frozen once the user has seen them.
+## Before returning (workflow gate)
 
-Use as input:
+- OOS count ≥ 20 with all 17 categories considered; Category 17 present with an approved phrasing.
+- Assumption count ≥ 15; every customer-dependent item carries the consequence clause.
+- CR policy contains all four required points; no rates / hours / template fields.
+- Operational-ownership + production-availability + AI-ML-when-applicable + hypercare statements all present.
+- Scope-boundary verbs used (no "may", "intends to", "is expected to").
+- When patching: existing OOS, Assumption, and Handover orders preserved byte-for-byte per `id-stability-rules.md`.
 
-- The Extraction Manifest — `manifest.extracted_items` for categories
-  `Constraints`, `Decisions`, `Briefing`, and `manifest.gaps.pending_decisions`.
-- The current `sow_data` snapshot with `functional_requirements`,
-  `non_functional_requirements`, `deliverables`, and `activity_phases`
-  already populated. The deliverables list is what supplies OOS
-  counter-anchors and assumption phase-deadline references.
+## Out of scope
 
-### (1a) Generate Out-of-Scope (`out_of_scope`)
-
-Walk the 17 categories in `references/oos-categories.md`. For each
-applicable category, write one or more OOS items naming specific
-technologies, environments, integrations, or capabilities that are
-excluded. Use the disambiguation rule when an OOS item could appear to
-contradict an in-scope FR.
-
-**Category 17 is mandatory** — pick one of the two approved phrasings in
-`references/oos-categories.md` → "Approved phrasings for Category 17".
-
-Target: 20-30 items minimum. Most engagements produce 25-35.
-
-### (1b) Generate Assumptions (`assumptions`)
-
-Walk the 15 categories in `references/assumption-patterns.md`. For each
-applicable category, produce one or more assumptions following the
-consequence-clause pattern: `"[Customer] must [obligation] [by when].
-[Consequence if not met]."`
-
-When the Manifest contains AI/ML components, include Category 12 (GenAI/ML
-acknowledgment) — the canonical phrasing lives in
-`references/handover-rules.md` → "AI / ML non-determinism disclosure"
-because that's where the deeper disclosure lives. The assumption is a
-shorter mirror of the handover statement.
-
-Target: 15-25 assumptions minimum. Most engagements produce 20-30.
-
-### (1c) Generate Change Request Policy (`change_request_policy_text`)
-
-Apply `references/cr-policy-template.md`. Single string field
-(multi-paragraph). The text MUST contain the four required points (no
-out-of-scope without signed CR, verbal agreements not binding, partner
-may pause non-CR'd work, all CRs follow the same process) and MUST NOT
-contain hours / rates / specific timeline numbers or the 7 template
-fields.
-
-### (1d) Generate Handover Disclaimers (`handover_disclaimers`)
-
-Apply `references/handover-rules.md`. The list MUST contain:
-
-- The operational-ownership statement.
-- The production-availability boundary statement.
-- The AI/ML non-determinism disclosure IF the architecture / FR set
-  includes any AI/ML component.
-- The hypercare statement (either the inclusion form with the window or
-  the explicit exclusion form).
-
-### (1e) Generate Risks (`risks`)
-
-Risks are conditional — the customer may opt to omit them during review;
-when present, the section is 3-5 project-specific items with mitigations.
-
-Each risk is an object with two fields:
-
-```
-{"description": "<risk statement>", "mitigation": "<mitigation strategy>"}
-```
-
-Rules:
-
-- **3-5 risks**, project-specific. Generic "delivery risk" is rejected.
-- **Each risk references specific systems, technologies, or
-  stakeholders** named in the architecture or the FRs / NFRs.
-- **Each risk has a concrete mitigation** the partner team can execute —
-  not a passive "we will monitor" phrasing.
-- **No risks that promise customer behavior** — those are assumptions.
-- **No "risk: the project might fail"** — that is not a risk, it is a
-  meta-statement. Risks name specific failure modes.
-
-Inferred risks are marked with the conversation-language equivalent of
-`(inferred)` per `sow-shared/references/language-rules.md`.
-
-### Cross-anchor gate (mandatory before exit)
-
-Walk the five lists pair-wise once. Verify:
-
-1. **Assumption ↔ Consequence**: every customer-dependent assumption has
-   a consequence clause (`references/assumption-patterns.md` →
-   "The consequence-clause pattern").
-2. **Assumption ↔ OOS counter-anchor**: every OOS Category 10 (excluded
-   post-delivery) or Category 17 (uptime/SLA denial) item has a matching
-   handover assumption that transfers ownership at KT.
-3. **OOS ↔ Category 17 present**: Category 17 is in the OOS list with
-   one of the approved phrasings.
-4. **Handover ↔ Reliability NFR**: the production-availability handover
-   statement is present AND the FR/NFR list (already populated upstream)
-   uses the architectural-pattern phrasing for Reliability. If the
-   Reliability NFR carries a forbidden percentage phrasing, this is a
-   defect upstream — emit a finding back via the orchestrator instead of
-   silently rewriting the NFR.
-5. **Handover ↔ AI/ML disclosure**: if the architecture / FRs include
-   any AI/ML component, the non-determinism disclosure is present in
-   `handover_disclaimers` AND a matching assumption is in
-   `assumptions` (Category 12).
-6. **CR Policy ↔ no rates**: `change_request_policy_text` contains
-   neither hours nor rates nor specific timeline numbers.
-
-If any check fails, **fix it in place before returning**.
-
-### Step 1.5 — Reference Compliance (silent, mandatory before returning)
-
-Self-test checklist (all items mandatory):
-
-1. Is OOS count ≥ 20, with all 17 categories considered (and the
-   omissions justified)?
-2. Is Category 17 (uptime/SLA denial) present with an approved phrasing?
-3. Is assumption count ≥ 15, with every customer-dependent item carrying
-   a consequence clause?
-4. Does the CR policy state all four required points and exclude rates /
-   hours / template fields?
-5. Are operational-ownership and production-availability handover
-   statements present?
-6. If AI/ML is in scope, is the non-determinism disclosure present in
-   `handover_disclaimers` AND mirrored as Category 12 in `assumptions`?
-7. Are inferred items marked with the conversation-language equivalent
-   of `(inferred)`?
-8. Are scope-boundary phrasings used ("strictly limited to",
-   "exclusively", "explicitly excluded") where applicable, with no
-   softening verbs ("may", "intends to", "is expected to")?
-
-If patching an existing scope, add:
-
-9. Are existing OOS, Assumption, and Handover orders preserved
-   byte-for-byte? Removals leave gaps in numbering; additions append
-   after the last existing item.
-   (`sow-shared/references/id-stability-rules.md` → Patch contract.)
-
----
-
-## What this skill does NOT do
-
-- It does not produce `functional_requirements`,
-  `non_functional_requirements`, `activity_phases`, `deliverables`,
-  `success_criteria`, `timeline`, `partner_roles`, `customer_roles`,
-  or any architecture / narrative field. Those belong to other section
-  skills.
-- It does not call `stage_sow`, present the user-facing review, or call
-  `confirm_phase_completion`. The orchestrator owns all three.
-- It does not rewrite the FR/NFR list. If a Reliability NFR carries a
-  forbidden uptime/SLA phrasing, that is a defect upstream — emit a
-  finding (handled by `sow-revision`) instead of patching the NFR here.
+- Does not rewrite FRs/NFRs. A Reliability NFR with a forbidden uptime/SLA percentage is an upstream defect — stop and instruct the orchestrator to reload `sow-requirements` to correct that field. Never silently patch an upstream NFR from this skill.
+- Does not produce architecture / narrative / delivery-plan fields.
+- Does not call `stage_sow` or `confirm_phase_completion`.

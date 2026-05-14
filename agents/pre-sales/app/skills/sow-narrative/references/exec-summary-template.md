@@ -85,7 +85,7 @@ The Executive Summary covers, in order:
 
 Each item is a candidate paragraph boundary. Merge adjacent items only
 when they share a single line of reasoning. The Template-compliant example
-in `sow-shared/references/scope-examples.md` shows ~5 paragraphs for
+in `sow-shared/references/scope-examples/executive-summary.md` shows ~5 paragraphs for
 250-450 words; the required opening sentence and the required Google
 funding sentence are NEVER collapsed into surrounding prose.
 
