@@ -59,6 +59,10 @@ pre_sales_skill_toolset = skill_toolset.SkillToolset(
         # SOW workflow skill via load_skill_resource. NOT a workflow skill;
         # its frontmatter description warns the LLM against load_skill activation.
         load_skill_from_dir(_SKILLS_DIR / 'sow-shared'),
+        # Section skill — produces architecture artifacts (description, tech
+        # stack, components, integrations, diagram PNG). Loaded by the
+        # orchestrator during Phase 2 Step D.
+        load_skill_from_dir(_SKILLS_DIR / 'sow-architecture'),
     ]
 )
 

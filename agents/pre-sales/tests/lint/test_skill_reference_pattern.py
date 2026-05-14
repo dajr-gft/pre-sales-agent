@@ -221,16 +221,28 @@ _REFERENCE_PATH_RE = re.compile(
     r'(?<!`)(?<!\w)([a-z][\w-]+/)?references/[\w./-]+\.md(?!`)'
 )
 # Lines that are obviously code blocks (start with four spaces or live inside
-# a fenced block) are skipped — we lint prose, not code samples.
+# a fenced block) are skipped — we lint prose, not code samples. Inline code
+# spans (single backticks) are also stripped because the wrapping backticks
+# already make those paths well-formed citations.
 _FENCED_BLOCK_RE = re.compile(r'```')
+_INLINE_CODE_RE = re.compile(r'`[^`\n]+`')
 
 
 def _strip_fenced_blocks(content: str) -> str:
-    """Remove ``` fenced blocks so their internal paths are not flagged."""
+    """Remove fenced blocks and inline code spans so their paths are not flagged.
+
+    The check is concerned with paths that appear in raw prose without any
+    backtick wrapper — those are the ones the LLM will read as soft
+    suggestions. Anything already inside a backtick (fenced block or inline
+    span) is by definition a well-formed citation and must not trigger the
+    lint.
+    """
     parts = _FENCED_BLOCK_RE.split(content)
     # Keep the even-indexed parts (outside fences) — odd indices are the
     # fenced bodies including the opening line.
-    return '\n'.join(parts[::2])
+    without_fences = '\n'.join(parts[::2])
+    # Strip remaining inline `...` spans (single-line, single-pair backticks).
+    return _INLINE_CODE_RE.sub('', without_fences)
 
 
 @pytest.mark.parametrize(
