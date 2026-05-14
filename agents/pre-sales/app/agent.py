@@ -22,6 +22,7 @@ from .config import config
 from .guardrails import scope_guardrail
 from .prompts import build_instruction
 from .shared.logging_config import setup_logging
+from .sub_agents import validation_critic
 from .tools.recovery import _request_continuation
 from .tools.sow.confirm_phase import confirm_phase_completion
 from .tools.sow.generate_architecture_diagram import \
@@ -34,7 +35,7 @@ from .tools.sow.manifest_tools import (
     load_extraction_manifest,
     validate_extraction_manifest,
 )
-from .tools.sow.validate_sow_content import validate_sow_content
+from .tools.sow.stage_sow import stage_sow
 
 # --- Bootstrap ---
 setup_logging(level=config.LOG_LEVEL, json_output=config.LOG_JSON)
@@ -94,12 +95,17 @@ google_search_agent = Agent(
 )
 
 # --- Tools ---
+# Note: `validate_sow_content` was removed when validation moved to the
+# `validation_critic` sub-agent. To validate the SOW, the root agent now
+# calls `stage_sow` (staging-only, Python-pure) and then transfers to
+# `validation_critic`. The legacy tool survives as a CI-only helper that
+# wraps `ContentValidator` without invoking the critic.
 _TOOLS = [
     pre_sales_skill_toolset,
     load_artifacts,
     generate_architecture_diagram,
     confirm_phase_completion,
-    validate_sow_content,
+    stage_sow,
     generate_sow_document,
     initialize_extraction_buffer,
     append_extraction_items,
@@ -123,6 +129,7 @@ root_agent = Agent(
     ),
     instruction=build_instruction(company_name=config.COMPANY_NAME),
     tools=_TOOLS,
+    sub_agents=[validation_critic],
     before_model_callback=scope_guardrail,
     after_model_callback=empty_response_guard,
     before_tool_callback=before_tool_callback,
