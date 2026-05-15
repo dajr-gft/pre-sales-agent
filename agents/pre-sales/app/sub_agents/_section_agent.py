@@ -20,10 +20,24 @@ canonical pattern for every section — is:
   sees this SequentialAgent (via ``AgentTool``).
 
 The factory caps the per-section boilerplate at a single function call.
+
+## Runtime input contract
+
+The worker also runs with ``include_contents='none'`` — the root's
+conversation history is dropped on entry. To prevent the worker from
+fabricating content, the factory builds an **instruction provider**
+(callable) that reads pre-declared state keys at every turn and
+injects them into the prompt as labelled XML blocks. Each section
+declares the packet it needs via ``state_inputs=`` — typically the
+extraction manifest plus the bundles produced by the prior Phase
+Steps. When any declared input is missing from state, the provider
+overrides the closing instruction with a STOP-and-emit-empty-bundle
+directive so the worker never invents content from training data.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -100,6 +114,133 @@ def _make_formatter_instruction_provider(draft_key: str):
     return _provider
 
 
+def _serialize_state_value(value: Any) -> str:
+    """Compact JSON encoding for state-derived runtime inputs.
+
+    Compact (``separators=(',', ':')``, no indent) keeps prompts lean —
+    a fully prettified manifest can run into thousands of tokens. We
+    fall back to ``repr`` for anything ``json`` cannot encode so a
+    bizarre state value doesn't blow up the whole turn; the worker will
+    treat it as raw text. ``ensure_ascii=False`` preserves Portuguese
+    accents in customer / vendor names.
+    """
+    try:
+        return json.dumps(value, ensure_ascii=False, separators=(',', ':'))
+    except (TypeError, ValueError):
+        return repr(value)
+
+
+def _is_present(value: Any) -> bool:
+    """Return True when a state value should count as 'provided'.
+
+    Empty dicts / lists / strings are treated as MISSING — the section
+    agents need substantive content, not zero-length placeholders, to
+    do their work. ``None`` is obviously missing.
+    """
+    if value is None:
+        return False
+    if isinstance(value, (dict, list, str, tuple, set)) and not value:
+        return False
+    return True
+
+
+_MISSING_INPUTS_FOOTER = (
+    '\n\n---\n\n'
+    '# Runtime inputs — MISSING (do not fabricate)\n\n'
+    'The following declared inputs are NOT available in session state '
+    'on this turn:\n{missing_list}\n\n'
+    '**STOP.** Do NOT invent content from prior training, general '
+    'knowledge, or earlier turns. Required upstream state has not been '
+    'written yet — the orchestrator invoked this section out of order '
+    'or with an interrupted manifest.\n\n'
+    'End your turn with the JSON object below, exactly as written, '
+    'matching the Output protocol shape declared above. Use empty '
+    'arrays / empty objects for every list field and the literal '
+    'string `"MISSING_INPUT"` for every required scalar string field. '
+    'The orchestrator detects this sentinel and surfaces to the user.\n'
+)
+
+
+_INPUTS_PRESENT_FOOTER = (
+    '\n\n---\n\n'
+    '# Runtime inputs\n\n'
+    '{rendered_inputs}\n\n'
+    'Use ONLY the data above plus the references loaded via '
+    '`load_skill_resource`. Do NOT invent vendors, systems, '
+    'integrations, dates, costs, SLAs, scope commitments, customer '
+    'responsibilities, or business facts that are not grounded in the '
+    'inputs above or the references. When the manifest is silent on a '
+    'topic that the style guide or architecture references cover, '
+    'safe inference from those references is allowed; inventing new '
+    'facts is not.\n'
+)
+
+
+def _make_worker_instruction_provider(
+    *,
+    skill_body: str,
+    output_protocol: str,
+    state_inputs: tuple[tuple[str, str], ...],
+):
+    """Build the runtime instruction for a section worker.
+
+    The provider is invoked by ADK every time the worker runs, so it
+    sees the latest state — including any upstream bundle written by a
+    prior section agent within the same SOW build. The closure captures
+    only immutable strings + the input tuple; no references to mutable
+    state.
+
+    Args:
+        skill_body: ``SKILL.md`` instructions block (already stripped
+            of frontmatter by ``load_skill_from_dir``).
+        output_protocol: The closing block built by
+            :func:`_build_worker_output_protocol`. Comes pre-built so
+            the factory has full control over the example shape that
+            shows up in MISSING mode and PRESENT mode alike.
+        state_inputs: Ordered tuple of ``(label, state_key)`` pairs.
+            ``label`` becomes the XML tag in the rendered prompt
+            (``<extraction_manifest>...</extraction_manifest>``) and
+            also appears in the MISSING listing so the worker — and the
+            user reading logs — sees exactly which dependency is gone.
+
+    Returns:
+        A callable accepted by ADK's ``LlmAgent(instruction=...)``.
+    """
+
+    def _provider(ctx: ReadonlyContext) -> str:
+        state = ctx.state
+        rendered: list[str] = []
+        missing: list[str] = []
+
+        for label, key in state_inputs:
+            value = state.get(key)
+            if not _is_present(value):
+                missing.append(f'- `{label}` (state[{key!r}])')
+                continue
+            rendered.append(
+                f'<{label}>\n{_serialize_state_value(value)}\n</{label}>'
+            )
+
+        base = skill_body + output_protocol
+        if missing:
+            footer = _MISSING_INPUTS_FOOTER.format(
+                missing_list='\n'.join(missing)
+            )
+            return base + footer
+
+        if not rendered:
+            # No declared inputs: nothing to inject. Worker runs with
+            # SKILL.md + output protocol only. Kept explicit so future
+            # readers see this branch is intentional, not a bug.
+            return base
+
+        return base + _INPUTS_PRESENT_FOOTER.format(
+            rendered_inputs='\n\n'.join(rendered)
+        )
+
+    return _provider
+
+
 def build_section_agent(
     *,
     name: str,
@@ -110,6 +251,7 @@ def build_section_agent(
     output_example: str,
     extra_tools: list[Any] | None = None,
     extra_skills_for_resources: tuple[str, ...] = ('sow-shared',),
+    state_inputs: tuple[tuple[str, str], ...] = (),
     model: str | None = None,
     temperature: float | None = None,
     thinking_budget: int | None = None,
@@ -136,6 +278,18 @@ def build_section_agent(
             should be reachable via ``load_skill_resource`` (default:
             ``('sow-shared',)``). The section's own skill is always
             included; duplicates are deduplicated.
+        state_inputs: Ordered tuple of ``(label, state_key)`` pairs to
+            inject into the worker's prompt at every turn. The label
+            becomes the XML tag (``<label>...</label>``) and the value
+            at ``ctx.state[state_key]`` is JSON-serialized into the
+            block. Each section declares ONLY the upstream artifacts
+            it actually needs (e.g. ``requirements_agent`` takes the
+            manifest only; ``narrative_agent`` takes every prior
+            bundle). When any declared input is missing from state,
+            the provider switches to a STOP-and-emit-empty-bundle
+            footer so the worker cannot fabricate content out of
+            training data. See the module docstring "Runtime input
+            contract" for the full rationale.
         model: Override the Gemini model id (defaults to
             ``config.GEMINI_MODEL``).
         temperature: Override generation temperature for the worker.
@@ -181,8 +335,11 @@ def build_section_agent(
             model=effective_model,
             retry_options=types.HttpRetryOptions(attempts=config.MAX_RETRIES),
         ),
-        instruction=own_skill.instructions
-        + _build_worker_output_protocol(output_example),
+        instruction=_make_worker_instruction_provider(
+            skill_body=own_skill.instructions,
+            output_protocol=_build_worker_output_protocol(output_example),
+            state_inputs=state_inputs,
+        ),
         include_contents='none',
         tools=worker_tools,
         output_key=draft_key,

@@ -35,4 +35,8 @@ delivery_plan_agent = build_section_agent(
     output_schema=DeliveryPlanBundle,
     output_key=DELIVERY_PLAN_OUTPUT_KEY,
     output_example=_OUTPUT_EXAMPLE,
+    state_inputs=(
+        ('extraction_manifest', SOW_BUNDLE_STATE_KEYS['manifest']),
+        ('prior_requirements', SOW_BUNDLE_STATE_KEYS['requirements']),
+    ),
 )

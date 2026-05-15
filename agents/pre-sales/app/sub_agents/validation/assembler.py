@@ -32,7 +32,13 @@ logger = structlog.get_logger()
 
 
 def _fallback_summary(report: ValidationReport) -> SummaryDraft:
-    """Deterministic backup when the summary skill failed to produce JSON."""
+    """Deterministic backup when the summary skill failed to produce JSON.
+
+    The ``next_action`` text mirrors the gate semantics enforced by the
+    aggregator: ``blocked`` invites an automatic patch by the
+    revision_agent (never a user question); ``needs_human_review`` is
+    the only path that surfaces a question to the user.
+    """
     if report.overall_status == 'passed':
         summary = (
             f'Validation passed at stage `{report.stage}`. '
@@ -45,13 +51,19 @@ def _fallback_summary(report: ValidationReport) -> SummaryDraft:
             f'deterministic error(s) and {report.blocker_count} blocker '
             f'finding(s) at stage `{report.stage}`.'
         )
-        next_action = 'Fix the blocking findings before re-validating.'
+        next_action = (
+            'Apply the recommended fixes from the findings via the '
+            'revision_agent and re-run validation; do not ask the user.'
+        )
     else:
         summary = (
             f'Validation requires human review at stage `{report.stage}`. '
             f'{report.major_count} major finding(s) with low confidence.'
         )
-        next_action = 'Surface the report to the user and request guidance.'
+        next_action = (
+            'Surface the decision-required findings to the user and '
+            'request guidance on the specific decision they name.'
+        )
     return SummaryDraft(summary=summary, next_action=next_action)
 
 

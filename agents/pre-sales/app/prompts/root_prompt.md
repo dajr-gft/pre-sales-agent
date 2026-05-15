@@ -34,7 +34,7 @@ The five SOW section specialists are exposed as AgentTools. Each replaces the co
 | D | `architecture_agent` | `app:sow:architecture` | architecture description, components, integrations, tech stack — also produces the diagram PNG artifact via its internal `generate_architecture_diagram` tool |
 | E | `narrative_agent` | `app:sow:narrative` | executive summary, partner/customer overviews, customer_primary_domain — runs the four web searches via its internal `google_search_agent` |
 
-Pass a short string for the `request` argument (e.g. `"generate"`). The section agents receive the Extraction Manifest from session state through the orchestrator's prior writes; they do not need the manifest in their input.
+Pass a short string for the `request` argument (e.g. `"generate"`). Each section agent reads the inputs it needs (the Extraction Manifest and any upstream section bundles) from session state through its own runtime instruction provider — you do NOT need to forward the manifest, the prior bundles, or any context in the tool call. The agents refuse to fabricate content when a declared input is missing (returning a sentinel `MISSING_INPUT` bundle), so call them in Phase Step order (A → B → C → D → E) and the upstream writes will be visible to each next agent.
 
 Flow before each `stage_sow` call:
 

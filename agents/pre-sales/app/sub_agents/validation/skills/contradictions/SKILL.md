@@ -21,19 +21,21 @@ other skills.
   only applies when `stage == "full"`.
 
 
-## Human-review boundary
+## Resolution-mode boundary
 
-Most real contradictions are auto-correctable: emit `BLOCKER` or `MAJOR`
-with a concrete rewrite recommendation and let the root/reviser fix them.
-Set `requires_human_review: true` only when the conflict cannot be
-resolved from the SOW itself because it requires an unknown business
-fact, commercial decision, legal/regulatory judgment, or a choice between
-two equally valid alternatives. Do not ask humans to approve obvious
-textual disambiguation.
+Most real contradictions are auto-correctable. Default
+``resolution_mode`` to ``auto_fixable`` and emit a concrete rewrite
+recommendation; the revision_agent will pick the side that aligns with
+the manifest / references. Severity does NOT drive this choice — a
+BLOCKER FR-vs-NFR conflict is still ``auto_fixable`` when one side can
+be aligned with the manifest.
 
-Standard contractual protections and safe inferences from reference
-materials are not contradictions merely because they were not literal
-Manifest items.
+Escalate to ``decision_required`` only when picking the surviving side
+requires a real business / commercial / scope trade-off (e.g. relaxing
+a latency target the customer signed off on). Use ``source_conflict``
+when two equally authoritative sources disagree and the SOW cannot
+choose safely. Standard contractual protections and safe inferences
+from reference material are not contradictions.
 
 ## The six canonical pairs
 
@@ -136,7 +138,8 @@ where `confidence < 0.7`. Report confidence honestly.
 - 0.60–0.84 — defect is real but one side allows an interpretation the
   generator could defend. Severity ≤ MAJOR.
 - < 0.60 — speculative; do not emit unless human-only context is
-  genuinely required to resolve the conflict.
+  genuinely required to resolve the conflict. In that case set
+  ``resolution_mode: "decision_required"``.
 
 ## Output
 
@@ -153,7 +156,8 @@ Return ONLY a JSON object matching `SkillFindings`:
       "confidence": 0.9,
       "evidence": "FR-NN: '<verbatim quote>'. NFR-NN: '<verbatim quote>'. <One short sentence on why both cannot hold>.",
       "recommendation": "Rewrite NFR-NN to support FR-NN's <axis> requirement, or downgrade FR-NN to match NFR-NN's profile. Choice depends on upstream context.",
-      "fields": ["functional_requirements", "non_functional_requirements"]
+      "fields": ["functional_requirements", "non_functional_requirements"],
+      "resolution_mode": "auto_fixable"
     }
   ]
 }

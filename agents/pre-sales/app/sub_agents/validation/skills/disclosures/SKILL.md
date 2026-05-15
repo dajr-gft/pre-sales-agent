@@ -26,19 +26,21 @@ signal that the project type applies. Do not flag the absence of an AI
 disclosure on a SOW with no AI services — that would be inventing scope.
 
 
-## Human-review boundary
+## Resolution-mode boundary
 
-Missing standard disclosures are usually auto-correctable. Emit `MAJOR`
-with a concrete recommendation; do not set `requires_human_review` just
-because the topic is contractual. Use human review only when the fix
-requires choosing a fact the model cannot infer (for example an actual
-region, residency rule, retention period, governing policy, price, or
-commercial commitment) or when regulated-data handling creates a genuine
-approval requirement.
+Missing standard disclosures are auto-correctable: emit ``MAJOR`` with
+a concrete recommendation and let the revision_agent insert the
+canonical phrasing. Do not flag the disclosure as ``decision_required``
+just because the topic is contractual.
+
+Escalate to ``decision_required`` only when the fix requires choosing
+a fact the model cannot infer — an actual region, residency rule,
+retention period, governing policy, price, or commercial commitment —
+or when regulated-data handling demands explicit human approval.
 
 The generator may add standard disclosures and Customer-responsibility
-boundaries based on the SOW context and references even when they are not
-literal Manifest items. Do not flag such protective language as unsupported.
+boundaries based on the SOW context and references even when they are
+not literal Manifest items; treat that as correct content, not a gap.
 
 ## The six disclosures
 
@@ -72,10 +74,11 @@ data, financial transactions, healthcare data, or any regulated
 industry. The disclosure must appear as an Assumption or in the
 Customer roles section.
 
-PII + production deployment → set `requires_human_review: true` only
-when the SOW must choose or approve a concrete data policy, retention
-rule, residency rule, or regulated-data handling decision. Missing
-standard Customer-responsibility wording is auto-correctable.
+PII + production deployment → mark ``resolution_mode: "decision_required"``
+only when the SOW must choose or approve a concrete data policy,
+retention rule, residency rule, or regulated-data handling decision.
+Missing standard Customer-responsibility wording stays
+``auto_fixable``.
 
 ### 4. Production deployment (`missing_production_handover_disclosure`)
 
@@ -129,7 +132,8 @@ a specific region or residency policy must be selected.
 - ≥ 0.85 — project-type signal is clear; disclosure fully absent.
 - 0.60–0.84 — signal is implicit or disclosure partial.
 - < 0.60 — speculative; do not emit unless a real human approval or
-  external policy decision is required.
+  external policy decision is required (then
+  ``resolution_mode: "decision_required"``).
 
 ## Output
 
@@ -145,6 +149,7 @@ a specific region or residency policy must be selected.
       "evidence": "The architecture_description mentions <AI service>. Assumptions, Customer roles, and Out-of-Scope sections do not contain the GenAI non-determinism acknowledgment.",
       "recommendation": "Add an Assumption acknowledging non-deterministic AI output, advisory-only nature, and human-review requirement.",
       "fields": ["assumptions"],
+      "resolution_mode": "auto_fixable",
       "requires_human_review": false
     }
   ]

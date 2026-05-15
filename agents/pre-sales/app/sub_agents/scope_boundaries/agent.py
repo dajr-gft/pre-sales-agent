@@ -29,4 +29,9 @@ scope_boundaries_agent = build_section_agent(
     output_schema=ScopeBoundariesBundle,
     output_key=SCOPE_BOUNDARIES_OUTPUT_KEY,
     output_example=_OUTPUT_EXAMPLE,
+    state_inputs=(
+        ('extraction_manifest', SOW_BUNDLE_STATE_KEYS['manifest']),
+        ('prior_requirements', SOW_BUNDLE_STATE_KEYS['requirements']),
+        ('prior_delivery_plan', SOW_BUNDLE_STATE_KEYS['delivery_plan']),
+    ),
 )

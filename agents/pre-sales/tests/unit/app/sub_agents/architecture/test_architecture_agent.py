@@ -84,13 +84,63 @@ class TestWorker:
             f'architecture_worker carries unexpected extras: {non_section}'
         )
 
-    def test_instruction_includes_skill_md_and_protocol(self):
+    def test_worker_instruction_is_callable_provider(self):
+        assert callable(_worker().instruction)
+
+    def test_instruction_provider_includes_skill_md_and_protocol(self):
         skill_md = (_SKILLS_DIR / 'SKILL.md').read_text(encoding='utf-8')
         body = skill_md.split('---', 2)[-1].strip()
-        assert body in _worker().instruction
-        assert 'Output protocol' in _worker().instruction
-        assert 'architecture_description' in _worker().instruction
-        assert 'technology_stack' in _worker().instruction
+
+        class _Ctx:
+            state: dict = {}
+
+        instr = _worker().instruction(_Ctx())
+        assert body in instr
+        assert 'Output protocol' in instr
+        assert 'architecture_description' in instr
+        assert 'technology_stack' in instr
+
+    def test_instruction_provider_requires_full_upstream_packet(self):
+        """Step D needs the manifest + the three prior bundles. Missing
+        any one must trigger the MISSING_INPUT abort so the worker does
+        not invent an architecture from training data."""
+
+        class _Ctx:
+            state = {
+                'extraction_manifest': {'project_name': 'Test'},
+                'app:sow:requirements': {
+                    'functional_requirements': [{'number': 'FR-01'}],
+                    'non_functional_requirements': [],
+                },
+                'app:sow:delivery_plan': {'activity_phases': []},
+                # scope_boundaries deliberately missing
+            }
+
+        instr = _worker().instruction(_Ctx())
+        assert 'MISSING' in instr
+        assert 'prior_scope_boundaries' in instr
+
+    def test_instruction_provider_injects_all_four_when_present(self):
+        class _Ctx:
+            state = {
+                'extraction_manifest': {'project_name': 'Test'},
+                'app:sow:requirements': {
+                    'functional_requirements': [{'number': 'FR-01'}],
+                    'non_functional_requirements': [],
+                },
+                'app:sow:delivery_plan': {'activity_phases': [{'name': 'P1'}]},
+                'app:sow:scope_boundaries': {
+                    'assumptions': ['x'],
+                    'out_of_scope': [],
+                },
+            }
+
+        instr = _worker().instruction(_Ctx())
+        assert '<extraction_manifest>' in instr
+        assert '<prior_requirements>' in instr
+        assert '<prior_delivery_plan>' in instr
+        assert '<prior_scope_boundaries>' in instr
+        assert 'MISSING' not in instr
 
 
 class TestFormatter:

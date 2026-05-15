@@ -25,23 +25,24 @@ quality — those belong to other skills.
 - `<stage>`: `content` or `full`.
 
 
-## Human-review boundary
+## Resolution-mode boundary
 
-Do not turn standard contract hardening into `needs_human_review`.
-Missing CR language, missing consequence clauses, handover boundaries,
-or Customer-responsibility statements are normally auto-correctable:
-emit `MAJOR` with a precise recommendation.
+Standard contract hardening (CR gate, consequence clause, handover
+boundary, customer-responsibility shift, parent-contract reference,
+quantification of an existing NFR axis) is always ``auto_fixable`` —
+emit ``MAJOR`` with a precise recommendation and the revision_agent
+will apply the canonical phrasing.
 
-Set `requires_human_review: true` only when the fix requires information
-or authority the model cannot infer: choosing a governing document,
-changing commercial terms, setting price/payment timing, selecting a
-region/residency policy, making a legal/regulatory judgment, or choosing
-between valid business alternatives.
+Escalate to ``decision_required`` only when the fix requires a fact
+the model cannot infer from the SOW, manifest, or references: choosing
+a governing document, changing commercial terms, setting price /
+payment timing, selecting a region / residency policy, making a
+legal / regulatory judgment, or picking between valid business
+alternatives.
 
-Explicit manual placeholders or deferred fields are not findings by
-themselves. Flag only if the deferral creates ambiguity beyond the
-placeholder, conflicts with another section, or leaves precedence/impact
-undefined.
+Explicit manual placeholders or deferred fields are not findings.
+Flag only if the deferral creates ambiguity beyond the placeholder,
+conflicts with another section, or leaves precedence/impact undefined.
 
 ## The seven patterns
 
@@ -127,9 +128,9 @@ deferring what is being referenced is exposure.
 - `MAJOR` — default for a real exposure with a concrete recommendation.
 - `MINOR` — narrow exposure or partially mitigated elsewhere.
 
-Mark `requires_human_review: true` only when the correction requires a
-human-only decision or missing external fact. Otherwise leave it false so
-the root/reviser can apply the standard contractual correction.
+Severity is independent of ``resolution_mode``. A ``BLOCKER`` exposure
+is still ``auto_fixable`` when the recommendation is "add the canonical
+clause" or "quantify with the manifest value".
 
 ## Confidence
 
@@ -137,7 +138,7 @@ the root/reviser can apply the standard contractual correction.
   the SOW has no compensating section.
 - 0.60–0.84 — implicit or partially compensated.
 - < 0.60 — speculative; do not emit unless the missing decision is
-  truly human-only; then set `requires_human_review: true`.
+  truly human-only; then set ``resolution_mode: "decision_required"``.
 
 ## Output
 
@@ -152,7 +153,8 @@ the root/reviser can apply the standard contractual correction.
       "confidence": 0.82,
       "evidence": "Assumption A-NN: '<verbatim quote that stops after the obligation>'. No consequence sentence follows.",
       "recommendation": "Append a consequence sentence naming the impact when the obligation is not met (e.g., timeline extension proportional to the delay).",
-      "fields": ["assumptions"]
+      "fields": ["assumptions"],
+      "resolution_mode": "auto_fixable"
     }
   ]
 }

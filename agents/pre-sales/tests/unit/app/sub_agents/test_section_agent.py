@@ -299,15 +299,116 @@ class TestWorkerWiring:
         assert tools[0] is toolset
         assert tools[1] is extra
 
-    def test_worker_instruction_includes_skill_body_and_protocol(
+    def test_worker_instruction_is_callable_provider(self, tmp_path: Path):
+        """Instruction must be a callable so the provider can read state
+        at every turn. A static string cannot inject the manifest and
+        prior bundles the worker needs to do its job (see plan v2.2 §
+        'Runtime input contract')."""
+        agent_factory, _, _ = self._build(tmp_path)
+        assert callable(agent_factory.worker['instruction'])
+
+    def test_worker_instruction_provider_includes_skill_body_and_protocol(
         self, tmp_path: Path
     ):
         agent_factory, _, _ = self._build(tmp_path)
-        instr = agent_factory.worker['instruction']
+        provider = agent_factory.worker['instruction']
+
+        class _Ctx:
+            state: dict = {}
+
+        instr = provider(_Ctx())
         assert '<sow-requirements instructions>' in instr
         assert 'Output protocol' in instr
         # The output_example must be interpolated into the protocol.
         assert '"functional_requirements": []' in instr
+
+    def test_worker_instruction_provider_injects_state_inputs(
+        self, tmp_path: Path
+    ):
+        agent_factory, _, _ = self._build(
+            tmp_path,
+            state_inputs=(
+                ('extraction_manifest', 'extraction_manifest'),
+                ('prior_requirements', 'app:sow:requirements'),
+            ),
+        )
+        provider = agent_factory.worker['instruction']
+
+        class _Ctx:
+            state = {
+                'extraction_manifest': {'project': 'P1', 'gaps': []},
+                'app:sow:requirements': {
+                    'functional_requirements': [{'number': 'FR-01'}],
+                    'non_functional_requirements': [],
+                },
+            }
+
+        instr = provider(_Ctx())
+        assert '<extraction_manifest>' in instr
+        assert '</extraction_manifest>' in instr
+        assert '"project":"P1"' in instr
+        assert '<prior_requirements>' in instr
+        assert '"FR-01"' in instr
+        # PRESENT branch must include the anti-invention reminder.
+        assert 'Do NOT invent' in instr
+
+    def test_worker_instruction_provider_flags_missing_inputs(
+        self, tmp_path: Path
+    ):
+        agent_factory, _, _ = self._build(
+            tmp_path,
+            state_inputs=(
+                ('extraction_manifest', 'extraction_manifest'),
+                ('prior_requirements', 'app:sow:requirements'),
+            ),
+        )
+        provider = agent_factory.worker['instruction']
+
+        class _Ctx:
+            state: dict = {}  # nothing in state
+
+        instr = provider(_Ctx())
+        assert 'MISSING' in instr
+        assert 'extraction_manifest' in instr
+        assert 'prior_requirements' in instr
+        assert 'STOP' in instr
+        assert 'MISSING_INPUT' in instr  # sentinel for empty-bundle mode
+
+    def test_worker_instruction_provider_empty_state_value_counts_as_missing(
+        self, tmp_path: Path
+    ):
+        """An empty dict / list / string in state is treated as missing —
+        the section agents need substantive content, not stubs."""
+        agent_factory, _, _ = self._build(
+            tmp_path,
+            state_inputs=(
+                ('extraction_manifest', 'extraction_manifest'),
+            ),
+        )
+        provider = agent_factory.worker['instruction']
+
+        class _Ctx:
+            state = {'extraction_manifest': {}}
+
+        instr = provider(_Ctx())
+        assert 'MISSING' in instr
+
+    def test_worker_instruction_provider_without_state_inputs_skips_block(
+        self, tmp_path: Path
+    ):
+        """A section that declares no inputs (legacy / no upstream needed)
+        must still produce a working instruction — no missing-block, no
+        runtime-inputs block, just SKILL.md + protocol."""
+        agent_factory, _, _ = self._build(tmp_path)  # default state_inputs=()
+        provider = agent_factory.worker['instruction']
+
+        class _Ctx:
+            state: dict = {}
+
+        instr = provider(_Ctx())
+        assert 'MISSING' not in instr
+        assert 'Runtime inputs' not in instr
+        assert 'Output protocol' in instr
 
 
 # ---------------------------------------------------------------------------

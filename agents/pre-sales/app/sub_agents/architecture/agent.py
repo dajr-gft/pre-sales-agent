@@ -46,4 +46,10 @@ architecture_agent = build_section_agent(
     output_key=ARCHITECTURE_OUTPUT_KEY,
     output_example=_OUTPUT_EXAMPLE,
     extra_tools=[generate_architecture_diagram],
+    state_inputs=(
+        ('extraction_manifest', SOW_BUNDLE_STATE_KEYS['manifest']),
+        ('prior_requirements', SOW_BUNDLE_STATE_KEYS['requirements']),
+        ('prior_delivery_plan', SOW_BUNDLE_STATE_KEYS['delivery_plan']),
+        ('prior_scope_boundaries', SOW_BUNDLE_STATE_KEYS['scope_boundaries']),
+    ),
 )

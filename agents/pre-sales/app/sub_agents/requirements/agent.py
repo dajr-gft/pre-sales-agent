@@ -26,4 +26,7 @@ requirements_agent = build_section_agent(
     output_schema=RequirementsBundle,
     output_key=REQUIREMENTS_OUTPUT_KEY,
     output_example=_OUTPUT_EXAMPLE,
+    state_inputs=(
+        ('extraction_manifest', SOW_BUNDLE_STATE_KEYS['manifest']),
+    ),
 )

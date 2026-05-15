@@ -28,23 +28,23 @@ belongs here.
 - `<stage>`: `content` or `full`.
 
 
-## Grounding and human-review boundary
+## Grounding and resolution-mode boundary
 
-The Manifest is evidence, not an exhaustive constraint. The SOW may
-legitimately include standard contractual protections, reference-driven
-details, and safe
-inferences from the architecture/style guides even when they are not
-literal Manifest entries. Do not flag these as quality defects.
+The Manifest is evidence, not an exhaustive constraint. Standard
+contractual protections, reference-driven details, and safe inferences
+from the architecture / style guides are valid content even when not
+literal Manifest entries. Do not flag these.
 
-Quality findings should almost always be auto-correctable (`MINOR` or
-`MAJOR` with a rewrite recommendation). Set `requires_human_review: true`
-only when the rewrite needs an unknown business fact, a stakeholder
-choice, legal/regulatory approval, or a choice between valid alternatives.
-Do not ask humans to approve obvious wording, clarity, or consistency fixes.
+Quality findings are almost always ``auto_fixable`` (``MINOR`` or
+``MAJOR`` with a rewrite recommendation). Naming drift, vague phrasing,
+redundancy, and generic labels all have textual fixes the
+revision_agent can apply. Escalate to ``decision_required`` only when
+the rewrite needs an unknown business fact, stakeholder choice,
+legal/regulatory approval, or a choice between valid alternatives.
 
-Explicit manual placeholders and `[TO BE DEFINED]` markers are valid
-signals of deferred information. Do not repeatedly flag them unless they
-make the surrounding clause internally inconsistent or unusable.
+Explicit manual placeholders and ``[TO BE DEFINED]`` markers are valid
+signals of deferred information — do not flag them unless they make
+the surrounding clause internally inconsistent.
 
 ## The patterns
 
@@ -165,7 +165,8 @@ ContentValidator covers format only; pattern compliance is semantic.
       "confidence": 0.74,
       "evidence": "FR-NN reads: '<verbatim quote>'. <other section> names the specifics that should have been incorporated: '<verbatim quote>'.",
       "recommendation": "Rewrite FR-NN to name <the specifics>, replacing the generic phrase with the concrete reference already present in <other section>.",
-      "fields": ["functional_requirements"]
+      "fields": ["functional_requirements"],
+      "resolution_mode": "auto_fixable"
     }
   ]
 }

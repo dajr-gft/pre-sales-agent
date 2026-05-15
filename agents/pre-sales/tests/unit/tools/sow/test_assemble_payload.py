@@ -321,3 +321,131 @@ class TestArgValidation:
 
         assert result['status'] == 'error'
         assert 'manifest' in result['error'].lower()
+
+
+# ---------------------------------------------------------------------------
+# MISSING_INPUT sentinel detection (stage-aware)
+#
+# When a section worker is invoked without its required upstream state
+# (manifest / prior bundles), its instruction provider switches to a
+# "STOP and emit empty bundle" footer that writes the literal string
+# ``"MISSING_INPUT"`` in scalar required fields. The assembler must
+# short-circuit on this sentinel for the bundles relevant to the
+# current stage — and ONLY those — so a content-stage assembly is not
+# blocked by an absent architecture/narrative (which simply have not
+# been generated yet).
+# ---------------------------------------------------------------------------
+
+
+class TestMissingInputSentinel:
+    async def test_content_stage_rejects_sentinel_in_scope_boundaries(
+        self, mock_tool_context
+    ):
+        """A worker that aborted with MISSING_INPUT must not flow through
+        to ``sow_quality_loop`` — burning a critic round on a SOW the
+        orchestrator already knows is incomplete."""
+        _populate_content_state(mock_tool_context)
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['scope_boundaries']] = {
+            'assumptions': [],
+            'out_of_scope': [],
+            'risks': [],
+            'handover_disclaimers': [],
+            'change_request_policy_text': 'MISSING_INPUT',
+        }
+
+        result = await assemble_sow_payload(
+            stage='content',
+            tool_context=mock_tool_context,
+        )
+
+        assert result['status'] == 'error'
+        assert 'MISSING_INPUT' in result['error']
+        assert SOW_BUNDLE_STATE_KEYS['scope_boundaries'] in result['suggestion']
+
+    async def test_content_stage_rejects_sentinel_nested_in_requirements(
+        self, mock_tool_context
+    ):
+        """The sentinel can appear nested inside list items (e.g. an
+        FR.description) — the recursive walk must catch it."""
+        _populate_content_state(mock_tool_context)
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['requirements']] = {
+            'functional_requirements': [
+                {'number': 'FR-01', 'description': 'MISSING_INPUT'},
+            ],
+            'non_functional_requirements': [],
+        }
+
+        result = await assemble_sow_payload(
+            stage='content',
+            tool_context=mock_tool_context,
+        )
+
+        assert result['status'] == 'error'
+        assert 'MISSING_INPUT' in result['error']
+
+    async def test_content_stage_ignores_sentinel_in_architecture(
+        self, mock_tool_context
+    ):
+        """architecture is NOT part of CONTENT_STAGE_KEYS. A stray
+        sentinel there must not affect a content-stage assembly —
+        otherwise the very first ``assemble(stage='content')`` after a
+        failed Step D would never recover."""
+        _populate_content_state(mock_tool_context)
+        # Architecture bundle present but corrupted; not required for content stage.
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['architecture']] = {
+            'architecture_description': 'MISSING_INPUT',
+            'architecture_components': [],
+            'architecture_integrations': [],
+            'technology_stack': [],
+        }
+
+        result = await assemble_sow_payload(
+            stage='content',
+            tool_context=mock_tool_context,
+        )
+
+        assert result['status'] == 'success'
+
+    async def test_full_stage_rejects_sentinel_in_narrative(
+        self, mock_tool_context
+    ):
+        _populate_full_state(mock_tool_context)
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['narrative']] = {
+            'executive_summary': 'MISSING_INPUT',
+            'partner_overview': 'MISSING_INPUT',
+            'customer_overview': 'MISSING_INPUT',
+            'customer_primary_domain': None,
+        }
+
+        result = await assemble_sow_payload(
+            stage='full',
+            tool_context=mock_tool_context,
+        )
+
+        assert result['status'] == 'error'
+        assert 'MISSING_INPUT' in result['error']
+        assert SOW_BUNDLE_STATE_KEYS['narrative'] in result['suggestion']
+
+    async def test_sentinel_message_lists_only_affected_bundles(
+        self, mock_tool_context
+    ):
+        """When several bundles are clean and one is poisoned, only the
+        poisoned key should appear in the suggestion — so the root knows
+        exactly which section to re-invoke."""
+        _populate_full_state(mock_tool_context)
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['architecture']] = {
+            'architecture_description': 'MISSING_INPUT',
+            'architecture_components': [],
+            'architecture_integrations': [],
+            'technology_stack': [],
+        }
+
+        result = await assemble_sow_payload(
+            stage='full',
+            tool_context=mock_tool_context,
+        )
+
+        assert result['status'] == 'error'
+        assert SOW_BUNDLE_STATE_KEYS['architecture'] in result['suggestion']
+        assert SOW_BUNDLE_STATE_KEYS['narrative'] not in result['suggestion']
+        assert SOW_BUNDLE_STATE_KEYS['requirements'] not in result['suggestion']

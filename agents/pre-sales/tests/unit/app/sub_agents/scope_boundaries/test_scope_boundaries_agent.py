@@ -68,13 +68,58 @@ class TestWorker:
             f'Got: {non_toolset}'
         )
 
-    def test_instruction_includes_skill_md_and_protocol(self):
+    def test_worker_instruction_is_callable_provider(self):
+        assert callable(_worker().instruction)
+
+    def test_instruction_provider_includes_skill_md_and_protocol(self):
         skill_md = (_SKILLS_DIR / 'SKILL.md').read_text(encoding='utf-8')
         body = skill_md.split('---', 2)[-1].strip()
-        assert body in _worker().instruction
-        assert 'Output protocol' in _worker().instruction
-        assert 'assumptions' in _worker().instruction
-        assert 'out_of_scope' in _worker().instruction
+
+        class _Ctx:
+            state: dict = {}
+
+        instr = _worker().instruction(_Ctx())
+        assert body in instr
+        assert 'Output protocol' in instr
+        assert 'assumptions' in instr
+        assert 'out_of_scope' in instr
+
+    def test_instruction_provider_requires_manifest_requirements_and_delivery(self):
+        """Step C declares manifest + requirements + delivery_plan as
+        mandatory inputs. Any missing one must trigger the abort path."""
+
+        class _Ctx:
+            state = {
+                'extraction_manifest': {'project_name': 'Test'},
+                'app:sow:requirements': {
+                    'functional_requirements': [{'number': 'FR-01'}],
+                    'non_functional_requirements': [],
+                },
+                # delivery_plan deliberately missing
+            }
+
+        instr = _worker().instruction(_Ctx())
+        assert 'MISSING' in instr
+        assert 'prior_delivery_plan' in instr
+
+    def test_instruction_provider_injects_all_three_when_present(self):
+        class _Ctx:
+            state = {
+                'extraction_manifest': {'project_name': 'Test'},
+                'app:sow:requirements': {
+                    'functional_requirements': [{'number': 'FR-01'}],
+                    'non_functional_requirements': [],
+                },
+                'app:sow:delivery_plan': {
+                    'activity_phases': [{'name': 'P1'}],
+                },
+            }
+
+        instr = _worker().instruction(_Ctx())
+        assert '<extraction_manifest>' in instr
+        assert '<prior_requirements>' in instr
+        assert '<prior_delivery_plan>' in instr
+        assert 'MISSING' not in instr
 
 
 class TestFormatter:

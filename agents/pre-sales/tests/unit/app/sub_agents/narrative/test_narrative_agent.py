@@ -82,12 +82,77 @@ class TestWorker:
             f'narrative_worker carries unexpected extras: {non_section}'
         )
 
-    def test_instruction_includes_skill_md_and_protocol(self):
+    def test_worker_instruction_is_callable_provider(self):
+        assert callable(_worker().instruction)
+
+    def test_instruction_provider_includes_skill_md_and_protocol(self):
         skill_md = (_SKILLS_DIR / 'SKILL.md').read_text(encoding='utf-8')
         body = skill_md.split('---', 2)[-1].strip()
-        assert body in _worker().instruction
-        assert 'Output protocol' in _worker().instruction
-        assert 'executive_summary' in _worker().instruction
+
+        class _Ctx:
+            state: dict = {}
+
+        instr = _worker().instruction(_Ctx())
+        assert body in instr
+        assert 'Output protocol' in instr
+        assert 'executive_summary' in instr
+
+    def test_instruction_provider_requires_full_upstream_packet(self):
+        """Step E is the final section — it needs every prior bundle.
+        Missing the architecture bundle (the most likely failure when
+        someone calls narrative out of order) must trigger the
+        MISSING_INPUT abort."""
+
+        class _Ctx:
+            state = {
+                'extraction_manifest': {'project_name': 'Test'},
+                'app:sow:requirements': {
+                    'functional_requirements': [{'number': 'FR-01'}],
+                    'non_functional_requirements': [],
+                },
+                'app:sow:delivery_plan': {'activity_phases': []},
+                'app:sow:scope_boundaries': {
+                    'assumptions': [],
+                    'out_of_scope': [],
+                },
+                # architecture deliberately missing
+            }
+
+        instr = _worker().instruction(_Ctx())
+        assert 'MISSING' in instr
+        assert 'prior_architecture' in instr
+
+    def test_instruction_provider_injects_all_five_when_present(self):
+        class _Ctx:
+            state = {
+                'extraction_manifest': {'project_name': 'Test'},
+                'app:sow:requirements': {
+                    'functional_requirements': [{'number': 'FR-01'}],
+                    'non_functional_requirements': [],
+                },
+                'app:sow:delivery_plan': {'activity_phases': [{'name': 'P1'}]},
+                'app:sow:scope_boundaries': {
+                    'assumptions': ['x'],
+                    'out_of_scope': [],
+                },
+                'app:sow:architecture': {
+                    'architecture_description': 'd',
+                    'architecture_components': [],
+                    'architecture_integrations': [],
+                    'technology_stack': [],
+                },
+            }
+
+        instr = _worker().instruction(_Ctx())
+        for tag in (
+            '<extraction_manifest>',
+            '<prior_requirements>',
+            '<prior_delivery_plan>',
+            '<prior_scope_boundaries>',
+            '<prior_architecture>',
+        ):
+            assert tag in instr
+        assert 'MISSING' not in instr
 
 
 class TestFormatter:

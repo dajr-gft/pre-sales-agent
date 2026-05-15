@@ -41,4 +41,11 @@ narrative_agent = build_section_agent(
     output_key=NARRATIVE_OUTPUT_KEY,
     output_example=_OUTPUT_EXAMPLE,
     extra_tools=[AgentTool(agent=google_search_agent)],
+    state_inputs=(
+        ('extraction_manifest', SOW_BUNDLE_STATE_KEYS['manifest']),
+        ('prior_requirements', SOW_BUNDLE_STATE_KEYS['requirements']),
+        ('prior_delivery_plan', SOW_BUNDLE_STATE_KEYS['delivery_plan']),
+        ('prior_scope_boundaries', SOW_BUNDLE_STATE_KEYS['scope_boundaries']),
+        ('prior_architecture', SOW_BUNDLE_STATE_KEYS['architecture']),
+    ),
 )

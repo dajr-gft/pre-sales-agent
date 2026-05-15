@@ -25,6 +25,28 @@ SkillName = Literal[
     'semantic_quality',
 ]
 Stage = Literal['content', 'full']
+# How a finding can be resolved. Decoupled from severity on purpose: a
+# BLOCKER can still be ``auto_fixable`` (the revision_agent can rewrite
+# the SOW from the same evidence/recommendation the critic produced),
+# while a MINOR can still be ``decision_required`` (cosmetically small,
+# but the choice is not the agent's to make). The aggregator uses this
+# field — not severity — to decide ``needs_human_review``.
+#
+# - ``auto_fixable``         — revision_agent can apply the fix from the
+#                              SOW + manifest + recommendation alone.
+# - ``decision_required``    — fix needs a commercial, legal, or scope
+#                              decision that is not in the sources.
+# - ``source_conflict``      — two equally authoritative sources disagree;
+#                              the model cannot pick one safely.
+# - ``not_fixable_by_agent`` — fix needs information that is neither in
+#                              the SOW, the manifest, nor inferable from
+#                              the references (truly missing input).
+ResolutionMode = Literal[
+    'auto_fixable',
+    'decision_required',
+    'source_conflict',
+    'not_fixable_by_agent',
+]
 
 SKILL_NAMES: tuple[str, ...] = (
     'coverage',
@@ -107,7 +129,26 @@ class Finding(BaseModel):
         default=False,
         description='Flag set when the finding re-appears across loop rounds.',
     )
-    requires_human_review: bool = Field(default=False)
+    resolution_mode: ResolutionMode = Field(
+        default='auto_fixable',
+        description=(
+            'How the finding should be resolved. The aggregator routes '
+            'anything other than `auto_fixable` to `needs_human_review`. '
+            'Severity (BLOCKER/MAJOR/MINOR) is independent — a BLOCKER '
+            'can still be `auto_fixable` when the revision_agent has '
+            'enough context to rewrite it.'
+        ),
+    )
+    requires_human_review: bool = Field(
+        default=False,
+        description=(
+            'Legacy flag kept for backwards compatibility with older '
+            'skill emissions and downstream consumers (telemetry, '
+            'fallback summary). The authoritative signal is '
+            '`resolution_mode`: the aggregator reconciles this flag '
+            'so `auto_fixable` always wins over a stale True.'
+        ),
+    )
     model_used: str = Field(
         default='', description='Model id when emitted by an LLM.'
     )

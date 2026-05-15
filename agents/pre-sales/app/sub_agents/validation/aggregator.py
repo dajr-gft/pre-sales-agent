@@ -10,13 +10,30 @@ produced here — it only fills the two text fields.
 Severity calibration rules (executed in order, all deterministic):
 - BLOCKER with `confidence < 0.7`                 → downgrade to MAJOR.
 - BLOCKER without ≥ 2 quoted anchors in evidence  → downgrade to MAJOR.
+- ``resolution_mode == auto_fixable``             → force
+                                                    ``requires_human_review = False``
+                                                    (auto-fixable always wins
+                                                    over a stale legacy flag).
+- ``resolution_mode != auto_fixable``             → force
+                                                    ``requires_human_review = True``
+                                                    so the report stays
+                                                    internally consistent.
+
 Gate rules (strict, order matters):
 - Critical skill failed                           → `needs_human_review`.
-- Any finding flagged `requires_human_review`     → `needs_human_review`.
+- Any finding with ``resolution_mode`` in
+  {decision_required, source_conflict,
+  not_fixable_by_agent}                           → `needs_human_review`.
 - Any deterministic error                         → `blocked`.
 - Any BLOCKER (post-calibration)                  → `blocked`.
 - Any MAJOR (post-calibration)                    → `blocked`.
 - Otherwise                                       → `passed`.
+
+Severity is intentionally NOT a trigger for `needs_human_review`: a
+BLOCKER with ``resolution_mode == auto_fixable`` resolves to `blocked`
+so the QualityLoopAgent can invoke the revision_agent. Human review is
+reserved for findings whose resolution requires a decision the agent
+cannot make from the SOW, manifest, and references alone.
 
 `blocked` means the root/reviser may attempt an automatic correction.
 `needs_human_review` means the system should not decide or correct without
@@ -56,6 +73,13 @@ logger = structlog.get_logger()
 _SEVERITY_ORDER = {'BLOCKER': 0, 'MAJOR': 1, 'MINOR': 2}
 _BLOCKER_CONFIDENCE_FLOOR = 0.7
 _CRITICAL_SKILLS = frozenset({'coverage', 'contradictions'})
+# Resolution modes that justify ``needs_human_review``. ``auto_fixable``
+# is the default and is excluded on purpose — the whole calibration
+# change exists to stop severity alone from leaking into the human-review
+# gate.
+_HUMAN_REVIEW_MODES: frozenset[str] = frozenset(
+    {'decision_required', 'source_conflict', 'not_fixable_by_agent'},
+)
 
 
 def _fingerprint(f: Finding) -> str:
@@ -98,14 +122,47 @@ def _normalize_findings(raw: Iterable[dict] | None) -> list[Finding]:
 
 
 def _calibrate(findings: list[Finding]) -> list[Finding]:
-    """Apply severity downgrades in Python. Human review is explicit per finding."""
+    """Apply severity downgrades + reconcile resolution_mode/human-review flag.
+
+    Two independent calibrations applied in a single pass so the rest of
+    the pipeline (gate, score, persistence tracking) can trust both the
+    severity label and the human-review signal:
+
+    1. **Severity downgrade.** A BLOCKER without enough confidence (≥ 0.7)
+       or without two quoted anchors in the evidence drops to MAJOR. This
+       protects against costly false positives — a confidently-quoted
+       BLOCKER is a real blocker; anything weaker is at most a MAJOR.
+
+    2. **resolution_mode / requires_human_review reconciliation.**
+       ``resolution_mode`` is the authoritative signal:
+
+       - ``auto_fixable`` → force ``requires_human_review=False``. The
+         revision_agent can apply the fix from the recommendation alone;
+         a stray ``True`` from the LLM does not override that.
+       - any other mode → force ``requires_human_review=True`` so the
+         report's two human-review channels never disagree.
+
+    Severity does NOT influence the human-review flag. A BLOCKER can
+    remain ``auto_fixable``; conversely a MINOR can be
+    ``decision_required``. This decoupling is the whole point of the
+    calibration change — see the module docstring for the rationale.
+    """
     calibrated: list[Finding] = []
     for f in findings:
+        update: dict = {}
         if f.severity == 'BLOCKER':
             if f.confidence < _BLOCKER_CONFIDENCE_FLOOR or not _has_two_anchors(
                 f.evidence
             ):
-                f = f.model_copy(update={'severity': 'MAJOR'})
+                update['severity'] = 'MAJOR'
+        if f.resolution_mode == 'auto_fixable':
+            if f.requires_human_review:
+                update['requires_human_review'] = False
+        elif f.resolution_mode in _HUMAN_REVIEW_MODES:
+            if not f.requires_human_review:
+                update['requires_human_review'] = True
+        if update:
+            f = f.model_copy(update=update)
         calibrated.append(f)
     return calibrated
 
@@ -148,12 +205,20 @@ def _decide_status(
     """Return (overall_status, requires_human_review). LLM never touches this.
 
     Order matters: human-review conditions are evaluated before blocked,
-    because `blocked` invites automated correction while human-review means
-    the system should stop and ask for guidance.
+    because ``blocked`` invites automated correction while
+    ``needs_human_review`` means the system should stop and ask for
+    guidance.
+
+    Human-review is driven by ``resolution_mode``, never by severity. A
+    BLOCKER with ``resolution_mode == auto_fixable`` is intentionally
+    routed to ``blocked`` so the revision_agent can run; the previous
+    behaviour (where ``requires_human_review=True`` from the LLM was
+    enough to short-circuit the loop) over-escalated standard fixes the
+    agent already has context to apply.
     """
     if skills_failed_critical:
         return 'needs_human_review', True
-    if any(f.requires_human_review for f in findings):
+    if any(f.resolution_mode in _HUMAN_REVIEW_MODES for f in findings):
         return 'needs_human_review', True
     if det.error_count > 0:
         return 'blocked', False

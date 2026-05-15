@@ -49,6 +49,32 @@ from ...sub_agents.schemas import (
 logger = structlog.get_logger()
 
 
+# Sentinel written by section workers when their declared upstream
+# inputs are missing from state. See
+# ``app.sub_agents._section_agent._MISSING_INPUTS_FOOTER`` — the worker
+# emits a schema-valid empty bundle with this string in required scalar
+# fields rather than fabricating content. The assembler short-circuits
+# on the sentinel so the downstream quality loop does not burn a critic
+# round revalidating a SOW the orchestrator already knows is incomplete.
+_MISSING_INPUT_SENTINEL = 'MISSING_INPUT'
+
+
+def _contains_missing_sentinel(value: Any) -> bool:
+    """True when ``value`` (or any nested string) equals the sentinel.
+
+    Walks dicts, lists, and tuples — anything else (int, bool, None) is
+    skipped because the sentinel is always emitted as a literal string.
+    Cheap recursion; bundles are small.
+    """
+    if isinstance(value, str):
+        return value == _MISSING_INPUT_SENTINEL
+    if isinstance(value, dict):
+        return any(_contains_missing_sentinel(v) for v in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_contains_missing_sentinel(v) for v in value)
+    return False
+
+
 _PROJECT_METADATA_KEYS: tuple[str, ...] = (
     'partner_name',
     'customer_name',
@@ -177,6 +203,44 @@ async def assemble_sow_payload(
                 f'calling assemble_sow_payload. Missing: {missing}'
             ),
         )
+
+    # ----- MISSING_INPUT sentinel detection (stage-aware) ----------------
+    # A section worker aborts and emits ``MISSING_INPUT`` in its scalar
+    # fields when one of its declared upstream state inputs was empty
+    # at run time (see _section_agent._make_worker_instruction_provider).
+    # We check ONLY the bundles required for the current stage so a
+    # content-stage assembly does not get blocked by an absent
+    # architecture / narrative — those keys are not part of
+    # ``CONTENT_STAGE_KEYS``.
+    sentinel_keys = [
+        key for key in required
+        if _contains_missing_sentinel(tool_context.state.get(key))
+    ]
+    if sentinel_keys:
+        logger.warning(
+            'assemble_sow_payload_sentinel_detected',
+            stage=stage_normalized,
+            sentinel_keys=sentinel_keys,
+        )
+        return ToolError(
+            status='error',
+            error=(
+                f'Cannot assemble stage={stage_normalized!r}: '
+                f'{len(sentinel_keys)} bundle(s) carry the '
+                f'{_MISSING_INPUT_SENTINEL!r} sentinel from an aborted '
+                'section worker.'
+            ),
+            retryable=False,
+            tool='assemble_sow_payload',
+            suggestion=(
+                'A section sub-agent emitted an empty bundle because a '
+                'required upstream input was missing from state. Re-invoke '
+                'the affected section agent(s) in Phase Step order; the '
+                'sentinel will clear once the section runs with all its '
+                f'inputs present. Affected bundles: {sentinel_keys}.'
+            ),
+        )
+    # ---------------------------------------------------------------------
 
     manifest = tool_context.state[SOW_BUNDLE_STATE_KEYS['manifest']]
     if not isinstance(manifest, dict):

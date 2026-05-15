@@ -112,19 +112,68 @@ class TestWorker:
             f'extras would widen its reach. Got: {non_toolset}'
         )
 
-    def test_instruction_includes_skill_md_body(self):
-        """The worker's instruction must carry the real SKILL.md content."""
+    def test_instruction_is_callable_provider(self):
+        """The worker's instruction is now a runtime provider so it can
+        inject manifest + prior bundles from session state on every
+        turn. A static string would force the worker to fabricate
+        content because ``include_contents='none'`` drops the root's
+        conversation history."""
+        assert callable(_worker().instruction)
+
+    def test_instruction_provider_includes_skill_md_body(self):
+        """Provider output must carry the real SKILL.md content so the
+        worker actually follows the section rules."""
         skill_md = (_SKILLS_DIR / 'SKILL.md').read_text(encoding='utf-8')
         body = skill_md.split('---', 2)[-1].strip()
         assert body, 'sow-requirements SKILL.md is empty after frontmatter'
-        assert body in _worker().instruction
 
-    def test_instruction_appends_output_protocol(self):
+        class _Ctx:
+            state: dict = {}
+
+        instr = _worker().instruction(_Ctx())
+        assert body in instr
+
+    def test_instruction_provider_appends_output_protocol(self):
         """The closing protocol is what makes the draft consumable downstream."""
-        instr = _worker().instruction
+
+        class _Ctx:
+            state: dict = {}
+
+        instr = _worker().instruction(_Ctx())
         assert 'Output protocol' in instr
         assert 'functional_requirements' in instr
         assert 'non_functional_requirements' in instr
+
+    def test_instruction_provider_injects_manifest_when_present(self):
+        """When ``state['extraction_manifest']`` is populated, the
+        provider must render it as a labelled XML block so the worker
+        has the canonical project metadata to ground every FR/NFR."""
+
+        class _Ctx:
+            state = {
+                'extraction_manifest': {
+                    'project_name': 'PoC X',
+                    'extracted_items': [{'item_id': 'B-01'}],
+                }
+            }
+
+        instr = _worker().instruction(_Ctx())
+        assert '<extraction_manifest>' in instr
+        assert '"PoC X"' in instr
+        assert 'MISSING' not in instr
+
+    def test_instruction_provider_aborts_when_manifest_missing(self):
+        """The whole point of the input contract: an empty state must
+        trigger the STOP / MISSING_INPUT path so the worker does not
+        invent FR/NFR out of training data."""
+
+        class _Ctx:
+            state: dict = {}
+
+        instr = _worker().instruction(_Ctx())
+        assert 'MISSING' in instr
+        assert 'extraction_manifest' in instr
+        assert 'STOP' in instr
 
 
 class TestFormatter:
