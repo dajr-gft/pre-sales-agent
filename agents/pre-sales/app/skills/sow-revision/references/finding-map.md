@@ -1,7 +1,7 @@
 # Finding → Reference mapping (binding)
 
 For each `ValidationReport.findings` entry, this table names the target
-section skill + reference to load via `load_skill_resource` BEFORE applying
+section skill + reference to load via `load_sow_reference` BEFORE applying
 the patch. `sow-revision` MUST load this file during its Pre-step and
 consult it for every finding it processes.
 
@@ -97,4 +97,4 @@ If a finding's `(skill, category)` is not in the direct mapping AND
 
 Patching a field without first loading the mapped reference is a defect —
 the correction will not know the rule it must satisfy. Always: lookup →
-`load_skill_resource` → read → patch.
+`load_sow_reference` → read → patch.

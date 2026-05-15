@@ -64,21 +64,27 @@ must equal round-1 IDs for every item the user has already seen.
 ### Contract 3 — Reference before patch
 
 For every finding: look up the mapping in
-`references/finding-map.md`, call `load_skill_resource` on the mapped
+`references/finding-map.md`, call `load_sow_reference` on the mapped
 section reference, READ the rule, THEN apply the patch. Patching without
 the rule loaded is a defect — you will recreate the same finding because
 the correction does not know the rule it must satisfy.
+
+`load_sow_reference(target_skill="<skill>", reference_path="references/<rule>.md")`
+is the allowlist-protected tool the revision agent owns. The allowlist
+is derived from this file (`finding-map.md`) at import time, so every
+mapping below is guaranteed to be loadable. Do NOT use `load_skill` or
+`load_skill_resource` — they are not available to this agent.
 
 ---
 
 ## Load before patching (mandatory)
 
-via `load_skill_resource`:
+via `load_sow_reference(target_skill=..., reference_path=...)`:
 
-- `sow-shared` / `references/id-stability-rules.md` — Patch contract, overrides every other instinct.
-- `sow-shared` / `references/style-guide.md` — Self-sufficiency contract still applies to patched items.
-- `sow-shared` / `references/language-rules.md` — patched content stays in the same surface as the original.
-- `sow-revision` / `references/finding-map.md` — mapping from `(finding.skill, finding.category)` and, when needed, `finding.fields` to the section reference to load per finding.
+- `load_sow_reference(target_skill="sow-shared", reference_path="references/id-stability-rules.md")` — Patch contract, overrides every other instinct.
+- `load_sow_reference(target_skill="sow-shared", reference_path="references/style-guide.md")` — Self-sufficiency contract still applies to patched items.
+- `load_sow_reference(target_skill="sow-shared", reference_path="references/language-rules.md")` — patched content stays in the same surface as the original.
+- `load_sow_reference(target_skill="sow-revision", reference_path="references/finding-map.md")` — mapping from `(finding.skill, finding.category)` and, when needed, `finding.fields` to the section reference to load per finding.
 
 Section-specific references are loaded dynamically per finding (Contract 3) — the mapping above is consulted for every finding before its patch.
 
@@ -106,7 +112,7 @@ For each finding in order:
    field-dependent, also consult the field-dependent table using
    `finding.fields[0]`.
 2. **Load** the mapped reference:
-   `load_skill_resource(skill_name="<target_skill>", file_path="references/<rule>.md")`.
+   `load_sow_reference(target_skill="<target_skill>", reference_path="references/<rule>.md")`.
    If `finding.fields` lists more than one field (cross-section finding),
    also load the secondary reference mapped from `fields[1..n]` — both
    sides must be loaded before the patch.
@@ -143,7 +149,7 @@ After this skill returns, the root re-invokes `validation_critic`.
 - Top-level keys of patched `sow_data` exactly equal the pre-patch keys (none added or removed).
 - For every top-level key NOT listed in any processed `finding.fields`, its value hashes identically to the pre-patch snapshot. If not → Contract 1 violated; re-anchor on the pre-patch payload.
 - Every refinement preserved its ID (Contract 2).
-- For each processed finding, the mapped reference(s) were loaded via `load_skill_resource` BEFORE the patch was applied (Contract 3). When `finding.fields` had more than one entry, the secondary reference was also loaded.
+- For each processed finding, the mapped reference(s) were loaded via `load_sow_reference` BEFORE the patch was applied (Contract 3). When `finding.fields` had more than one entry, the secondary reference was also loaded.
 - Patched content holds to the same depth/structure as the original (no "shorter because patch").
 - `state['app:sow:revision_log']` was populated with one entry per processed finding, including `before_hash` and `after_hash` per field touched.
 
