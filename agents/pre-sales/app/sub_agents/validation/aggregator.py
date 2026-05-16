@@ -1,0 +1,393 @@
+"""Step 4 of validation_critic — Python-only gate decision.
+
+Reads ``state[STATE_DET_RESULT]`` and the five per-skill keys
+(``state[app:skill_findings:{name}]``), deduplicates findings, calibrates
+severity, decides ``overall_status``, and writes a partial
+``ValidationReport`` (no summary, no next_action) to
+``state[STATE_REPORT_PARTIAL]``. The summary skill never alters anything
+produced here — it only fills the two text fields.
+
+Severity calibration rules (executed in order, all deterministic):
+- BLOCKER with `confidence < 0.7`                 → downgrade to MAJOR.
+- BLOCKER without ≥ 2 quoted anchors in evidence  → downgrade to MAJOR.
+- ``resolution_mode == auto_fixable``             → force
+                                                    ``requires_human_review = False``
+                                                    (auto-fixable always wins
+                                                    over a stale legacy flag).
+- ``resolution_mode != auto_fixable``             → force
+                                                    ``requires_human_review = True``
+                                                    so the report stays
+                                                    internally consistent.
+
+Gate rules (strict, order matters):
+- Critical skill failed                           → `needs_human_review`.
+- Any finding with ``resolution_mode`` in
+  {decision_required, source_conflict,
+  not_fixable_by_agent}                           → `needs_human_review`.
+- Any deterministic error                         → `blocked`.
+- Any BLOCKER (post-calibration)                  → `blocked`.
+- Any MAJOR (post-calibration)                    → `blocked`.
+- Otherwise                                       → `passed`.
+
+Severity is intentionally NOT a trigger for `needs_human_review`: a
+BLOCKER with ``resolution_mode == auto_fixable`` resolves to `blocked`
+so the QualityLoopAgent can invoke the revision_agent. Human review is
+reserved for findings whose resolution requires a decision the agent
+cannot make from the SOW, manifest, and references alone.
+
+`blocked` means the root/reviser may attempt an automatic correction.
+`needs_human_review` means the system should not decide or correct without
+human guidance.
+"""
+
+from __future__ import annotations
+
+import hashlib
+from collections import Counter
+from typing import AsyncGenerator, ClassVar, Iterable
+
+import structlog
+from google.adk.agents import BaseAgent
+from google.adk.agents.base_agent_config import BaseAgentConfig
+from google.adk.agents.invocation_context import InvocationContext
+from google.adk.events import Event, EventActions
+
+from .schema import (
+    PRIOR_FINGERPRINTS_CAP,
+    SKILL_NAMES,
+    STATE_DET_RESULT,
+    STATE_PRIOR_BLOCKING_FINGERPRINTS,
+    STATE_REPORT_PARTIAL,
+    STATE_ROUND_COUNT,
+    STATE_STAGE,
+    DeterministicResult,
+    Finding,
+    SkillRunMetadata,
+    Status,
+    ValidationReport,
+    skill_findings_state_key,
+)
+
+logger = structlog.get_logger()
+
+_SEVERITY_ORDER = {'BLOCKER': 0, 'MAJOR': 1, 'MINOR': 2}
+_BLOCKER_CONFIDENCE_FLOOR = 0.7
+_CRITICAL_SKILLS = frozenset({'coverage', 'contradictions'})
+# Resolution modes that justify ``needs_human_review``. ``auto_fixable``
+# is the default and is excluded on purpose — the whole calibration
+# change exists to stop severity alone from leaking into the human-review
+# gate.
+_HUMAN_REVIEW_MODES: frozenset[str] = frozenset(
+    {'decision_required', 'source_conflict', 'not_fixable_by_agent'},
+)
+
+
+def _fingerprint(f: Finding) -> str:
+    """Stable identity used to deduplicate findings across rounds/skills."""
+    key = (
+        f.skill,
+        f.category,
+        (f.evidence or '')[:240].strip().lower(),
+        tuple(sorted(f.fields or [])),
+        f.manifest_item_id or '',
+    )
+    return hashlib.sha256(repr(key).encode('utf-8')).hexdigest()[:16]
+
+
+def _has_two_anchors(evidence: str) -> bool:
+    """Heuristic for the BLOCKER evidence bar — count quoted SOW items."""
+    if not evidence:
+        return False
+    anchors = sum(1 for token in ('FR-', 'NFR-', 'OOS-', 'A-', 'I-') if token in evidence)
+    return anchors >= 2 or evidence.count("'") >= 4 or evidence.count('"') >= 4
+
+
+def _normalize_findings(raw: Iterable[dict] | None) -> list[Finding]:
+    """Drop malformed entries (wrong schema) rather than crashing the gate."""
+    out: list[Finding] = []
+    if not raw:
+        return out
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        try:
+            out.append(Finding.model_validate(item))
+        except Exception as exc:
+            logger.warning(
+                'invalid_finding_dropped',
+                error=str(exc),
+                evidence_excerpt=(item.get('evidence') or '')[:120],
+            )
+    return out
+
+
+def _calibrate(findings: list[Finding]) -> list[Finding]:
+    """Apply severity downgrades + reconcile resolution_mode/human-review flag.
+
+    Two independent calibrations applied in a single pass so the rest of
+    the pipeline (gate, score, persistence tracking) can trust both the
+    severity label and the human-review signal:
+
+    1. **Severity downgrade.** A BLOCKER without enough confidence (≥ 0.7)
+       or without two quoted anchors in the evidence drops to MAJOR. This
+       protects against costly false positives — a confidently-quoted
+       BLOCKER is a real blocker; anything weaker is at most a MAJOR.
+
+    2. **resolution_mode / requires_human_review reconciliation.**
+       ``resolution_mode`` is the authoritative signal:
+
+       - ``auto_fixable`` → force ``requires_human_review=False``. The
+         revision_agent can apply the fix from the recommendation alone;
+         a stray ``True`` from the LLM does not override that.
+       - any other mode → force ``requires_human_review=True`` so the
+         report's two human-review channels never disagree.
+
+    Severity does NOT influence the human-review flag. A BLOCKER can
+    remain ``auto_fixable``; conversely a MINOR can be
+    ``decision_required``. This decoupling is the whole point of the
+    calibration change — see the module docstring for the rationale.
+    """
+    calibrated: list[Finding] = []
+    for f in findings:
+        update: dict = {}
+        if f.severity == 'BLOCKER':
+            if f.confidence < _BLOCKER_CONFIDENCE_FLOOR or not _has_two_anchors(
+                f.evidence
+            ):
+                update['severity'] = 'MAJOR'
+        if f.resolution_mode == 'auto_fixable':
+            if f.requires_human_review:
+                update['requires_human_review'] = False
+        elif f.resolution_mode in _HUMAN_REVIEW_MODES:
+            if not f.requires_human_review:
+                update['requires_human_review'] = True
+        if update:
+            f = f.model_copy(update=update)
+        calibrated.append(f)
+    return calibrated
+
+
+def _dedupe(findings: list[Finding]) -> list[Finding]:
+    seen: dict[str, Finding] = {}
+    for f in findings:
+        fp = _fingerprint(f)
+        existing = seen.get(fp)
+        if existing is None or f.confidence > existing.confidence:
+            seen[fp] = f
+    return sorted(
+        seen.values(),
+        key=lambda x: (_SEVERITY_ORDER.get(x.severity, 9), -x.confidence),
+    )
+
+
+def _is_blocking_finding(f: Finding, det: DeterministicResult) -> bool:
+    """Return True if this finding (post-calibration) contributes to ``blocked``.
+
+    Single source of truth for "blocking" semantics consumed by round tracking.
+    Today this mirrors the gate policy in :func:`_decide_status`: any
+    ``BLOCKER`` or ``MAJOR`` finding makes the gate ``blocked``. If the gate
+    policy changes (e.g. additional criteria), update this helper in one
+    place and round tracking stays consistent.
+
+    Note: ``det`` is accepted for forward-compatibility (e.g. if a future
+    policy makes some severities blocking only when there are no
+    deterministic errors). It is unused today.
+    """
+    del det  # reserved for future policy revisions
+    return f.severity in {'BLOCKER', 'MAJOR'}
+
+
+def _decide_status(
+    det: DeterministicResult,
+    findings: list[Finding],
+    skills_failed_critical: bool,
+) -> tuple[Status, bool]:
+    """Return (overall_status, requires_human_review). LLM never touches this.
+
+    Order matters: human-review conditions are evaluated before blocked,
+    because ``blocked`` invites automated correction while
+    ``needs_human_review`` means the system should stop and ask for
+    guidance.
+
+    Human-review is driven by ``resolution_mode``, never by severity. A
+    BLOCKER with ``resolution_mode == auto_fixable`` is intentionally
+    routed to ``blocked`` so the revision_agent can run; the previous
+    behaviour (where ``requires_human_review=True`` from the LLM was
+    enough to short-circuit the loop) over-escalated standard fixes the
+    agent already has context to apply.
+    """
+    if skills_failed_critical:
+        return 'needs_human_review', True
+    if any(f.resolution_mode in _HUMAN_REVIEW_MODES for f in findings):
+        return 'needs_human_review', True
+    if det.error_count > 0:
+        return 'blocked', False
+    if any(f.severity == 'BLOCKER' for f in findings):
+        return 'blocked', False
+    if any(f.severity == 'MAJOR' for f in findings):
+        return 'blocked', False
+    return 'passed', False
+
+
+def _overall_score(det: DeterministicResult, findings: list[Finding]) -> float:
+    """Heuristic 0..1 score for telemetry — never the gate."""
+    score = 1.0
+    score -= 0.4 * min(det.error_count, 2)
+    score -= 0.05 * min(det.warning_count, 4)
+    for f in findings:
+        weight = {'BLOCKER': 0.4, 'MAJOR': 0.15, 'MINOR': 0.05}.get(
+            f.severity, 0.0
+        )
+        score -= weight
+    return max(0.0, min(1.0, score))
+
+
+class ValidationAggregatorAgent(BaseAgent):
+    """Python-only gate. Consumes deterministic + 5 skill outputs from state."""
+
+    config_type: ClassVar[type[BaseAgentConfig]] = BaseAgentConfig
+
+    async def _run_async_impl(
+        self, ctx: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+        state = ctx.session.state
+        det_raw = state.get(STATE_DET_RESULT) or {}
+        det = (
+            DeterministicResult.model_validate(det_raw)
+            if det_raw
+            else DeterministicResult(passed=False, error_count=1)
+        )
+
+        all_findings: list[Finding] = []
+        skills_run: list[SkillRunMetadata] = []
+        skills_not_run: list[str] = []
+        skills_failed_critical = False
+
+        for name in SKILL_NAMES:
+            payload = state.get(skill_findings_state_key(name)) or {}
+            ran = bool(payload)
+            raw_findings = (
+                payload.get('findings')
+                if isinstance(payload, dict)
+                else None
+            )
+            findings = _normalize_findings(raw_findings)
+            all_findings.extend(findings)
+
+            if ran:
+                skills_run.append(
+                    SkillRunMetadata(
+                        skill=name,
+                        ran=True,
+                        finding_count=len(findings),
+                    )
+                )
+            else:
+                skills_not_run.append(name)
+                if name in _CRITICAL_SKILLS:
+                    skills_failed_critical = True
+
+        findings = _dedupe(_calibrate(all_findings))
+        overall_status, requires_human = _decide_status(
+            det, findings, skills_failed_critical
+        )
+
+        # --- Round tracking --------------------------------------------------
+        # The aggregator is the only writer of round_count and the prior
+        # blocking fingerprint set. Reset on stage transition is the root's
+        # responsibility (see root_prompt). We only ever increment here.
+        prior_blocking_fps_raw = state.get(STATE_PRIOR_BLOCKING_FINGERPRINTS) or []
+        prior_blocking_fps: set[str] = set(prior_blocking_fps_raw)
+
+        current_blocking_pairs = [
+            (f, _fingerprint(f)) for f in findings if _is_blocking_finding(f, det)
+        ]
+        current_blocking_fps: set[str] = {fp for _, fp in current_blocking_pairs}
+
+        # Mark each finding that is blocking AND was already blocking last
+        # round as persistent. We mutate the calibrated copies in place so the
+        # report carries the flag through to the root.
+        for f, fp in current_blocking_pairs:
+            if fp in prior_blocking_fps:
+                f.persistent = True
+
+        persistent_count = len(current_blocking_fps & prior_blocking_fps)
+        new_count = len(current_blocking_fps - prior_blocking_fps)
+        resolved_count = len(prior_blocking_fps - current_blocking_fps)
+
+        round_count = int(state.get(STATE_ROUND_COUNT) or 0) + 1
+
+        # Cap fingerprints to avoid unbounded state growth. We only ever store
+        # the current round's set (not an accumulation) so the cap is a guard
+        # against pathological SOWs, not a FIFO across rounds.
+        capped_fps = list(current_blocking_fps)[:PRIOR_FINGERPRINTS_CAP]
+        # ---------------------------------------------------------------------
+
+        sev_counts = Counter(f.severity for f in findings)
+        skill_counts = Counter(f.skill for f in findings)
+
+        report = ValidationReport(
+            overall_status=overall_status,
+            overall_score=_overall_score(det, findings),
+            requires_human_review=requires_human,
+            deterministic=det,
+            findings=findings,
+            skills_run=skills_run,
+            skills_not_run=skills_not_run,
+            stage=state.get(STATE_STAGE) or 'full',
+            blocker_count=sev_counts.get('BLOCKER', 0),
+            major_count=sev_counts.get('MAJOR', 0),
+            minor_count=sev_counts.get('MINOR', 0),
+            findings_by_skill=dict(skill_counts),
+            round_count=round_count,
+            persistent_blocking_finding_count=persistent_count,
+            new_blocking_finding_count=new_count,
+            resolved_blocking_finding_count=resolved_count,
+        )
+
+        partial = report.model_dump()
+        state[STATE_REPORT_PARTIAL] = partial
+        state[STATE_ROUND_COUNT] = round_count
+        state[STATE_PRIOR_BLOCKING_FINGERPRINTS] = capped_fps
+
+        logger.info(
+            'validation_aggregated',
+            overall_status=overall_status,
+            requires_human_review=requires_human,
+            blocker=report.blocker_count,
+            major=report.major_count,
+            minor=report.minor_count,
+            findings_by_skill=report.findings_by_skill,
+            skills_not_run=skills_not_run,
+            round_count=round_count,
+            persistent_blocking_finding_count=persistent_count,
+            new_blocking_finding_count=new_count,
+            resolved_blocking_finding_count=resolved_count,
+        )
+
+        # State-only event. Telemetry already in Cloud Logging via logger.info.
+        # No Content so the gate decision does not surface to the chat — the
+        # root agent reads `state[STATE_VALIDATION_RESULT]` after the
+        # assembler runs and produces the user-facing reply.
+        yield Event(
+            invocation_id=ctx.invocation_id,
+            author=self.name,
+            branch=ctx.branch,
+            actions=EventActions(
+                state_delta={
+                    STATE_REPORT_PARTIAL: partial,
+                    STATE_ROUND_COUNT: round_count,
+                    STATE_PRIOR_BLOCKING_FINGERPRINTS: capped_fps,
+                },
+            ),
+        )
+
+
+validation_aggregator_agent = ValidationAggregatorAgent(
+    name='validation_aggregator_agent',
+    description=(
+        'Python-only gate that dedupes findings from the 5 skills, '
+        'calibrates severity, decides overall_status, and writes the '
+        'partial ValidationReport.'
+    ),
+)

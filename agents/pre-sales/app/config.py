@@ -45,6 +45,36 @@ class AgentConfig(BaseSettings):
         default='gemini-3.1-pro-preview',
         description='Primary Gemini model for the root agent',
     )
+    VALIDATION_SKILL_MODEL: str = Field(
+        default='gemini-flash-latest',
+        description=(
+            'Model used by each of the 5 semantic skills inside '
+            'validation_critic. Default is Flash because skills are '
+            'tightly scoped and benefit from low latency / low cost.'
+        ),
+    )
+    VALIDATION_SKILL_THINKING_BUDGET: int = Field(
+        default=1024,
+        ge=0,
+        le=24576,
+        description=(
+            'Thinking budget for the 5 semantic skills. Medium recovers '
+            'recall lost by zero-thinking Flash on cross-section reasoning.'
+        ),
+    )
+    VALIDATION_SUMMARY_MODEL: str = Field(
+        default='gemini-flash-lite-latest',
+        description=(
+            'Model used by ValidationSummarySkill (text-only summary). '
+            'Flash-Lite is enough because the skill only writes 2 fields.'
+        ),
+    )
+    VALIDATION_SUMMARY_THINKING_BUDGET: int = Field(
+        default=1024,
+        ge=0,
+        le=24576,
+        description='Thinking budget for ValidationSummarySkill.',
+    )
 
     # Agent identity
     COMPANY_NAME: str = Field(
