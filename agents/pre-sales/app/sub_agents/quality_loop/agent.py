@@ -92,6 +92,7 @@ class QualityLoopAgent(BaseAgent):
             )
 
             async for event in critic.run_async(ctx):
+                self._apply_state_delta(ctx, event)
                 yield event
 
             report = ctx.session.state.get(STATE_VALIDATION_RESULT) or {}
@@ -161,6 +162,7 @@ class QualityLoopAgent(BaseAgent):
                 finding_count=len(report.get('findings', []) or []),
             )
             async for event in reviser.run_async(ctx):
+                self._apply_state_delta(ctx, event)
                 yield event
 
         # Defensive: the loop body must return before this point (the
@@ -173,6 +175,42 @@ class QualityLoopAgent(BaseAgent):
             observed_status=last_status,
             message='Quality loop fell through without emitting a result.',
         )
+
+    @staticmethod
+    def _apply_state_delta(
+        ctx: InvocationContext, event: Event
+    ) -> None:
+        """Mirror an event's ``state_delta`` into ``ctx.session.state``.
+
+        ADK's runner is what normally applies ``EventActions.state_delta``
+        to the live session state — outside of that runner (e.g. when the
+        QualityLoopAgent is called via ``AgentTool`` and reads state
+        between sub-agent invocations) we cannot rely on the runner
+        having processed the yielded event before the next read.
+
+        Production sub-agents (the validation aggregator, the assembler,
+        and the revision_agent's tools) all write directly to
+        ``ctx.session.state`` AND emit ``state_delta`` for persistence,
+        so this loop reads the right value either way. But the contract
+        ought not depend on that double-write: a sub-agent that only
+        emits ``state_delta`` (the canonical ADK pattern) MUST still
+        produce a state update the loop's branching logic can see.
+
+        Applying the delta here is idempotent — when the runner later
+        processes the yielded event it just rewrites the same keys with
+        the same values. Tests assert that a critic which only emits
+        ``state_delta`` still drives the loop correctly (see
+        ``test_quality_loop::TestStateDeltaOnlyCritic``).
+
+        ``event.actions`` is always populated (``EventActions`` field has
+        ``default_factory=dict``), so the only guard we need is on the
+        delta dict itself being empty.
+        """
+        delta = event.actions.state_delta
+        if not delta:
+            return
+        for key, value in delta.items():
+            ctx.session.state[key] = value
 
     def _emit_result(
         self,

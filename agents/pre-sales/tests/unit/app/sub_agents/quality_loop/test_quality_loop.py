@@ -27,7 +27,7 @@ from unittest.mock import MagicMock
 import pytest
 from google.adk.agents import BaseAgent
 from google.adk.agents.base_agent_config import BaseAgentConfig
-from google.adk.events import Event
+from google.adk.events import Event, EventActions
 
 from app.sub_agents.quality_loop.agent import (
     QUALITY_LOOP_RESULT_KEY,
@@ -375,3 +375,192 @@ class TestStateDeltaContract:
         # downstream agents inside the same invocation read in-memory,
         # the session service persists the delta. They cannot diverge.
         assert ctx.session.state[QUALITY_LOOP_RESULT_KEY] == delta[QUALITY_LOOP_RESULT_KEY]
+
+
+# ---------------------------------------------------------------------------
+# F-06: state_delta-only critic — loop must read what production writes
+# ---------------------------------------------------------------------------
+
+
+class StateDeltaOnlyCritic(BaseAgent):
+    """Critic stub that ONLY emits ``EventActions.state_delta``.
+
+    Production sub-agents inside ``validation_critic`` write to
+    ``ctx.session.state`` directly AND emit ``state_delta``; either
+    channel alone would suffice in production because the ADK runner
+    applies ``state_delta`` to the live session state when it consumes
+    yielded events. But the QualityLoopAgent reads
+    ``ctx.session.state.get(STATE_VALIDATION_RESULT)`` between sub-agent
+    invocations — outside of the runner's processing loop. If the loop
+    does not itself apply ``state_delta`` from yielded sub-agent events,
+    the read returns ``None`` and the loop terminates with
+    ``unexpected_status`` even though the critic produced a valid
+    report. This stub exercises the state_delta-only path and pins the
+    loop's read-side guarantee.
+    """
+
+    config_type: ClassVar[type[BaseAgentConfig]] = BaseAgentConfig
+
+    statuses: List[str] = []
+    calls: int = 0
+
+    async def run_async(self, ctx) -> AsyncGenerator[Event, None]:  # type: ignore[override]
+        idx = min(self.calls, len(self.statuses) - 1) if self.statuses else 0
+        status = self.statuses[idx] if self.statuses else 'passed'
+        self.calls += 1
+
+        report = {
+            'overall_status': status,
+            'summary': f'round {self.calls} produced {status}',
+            'next_action': '...',
+            'findings': [],
+        }
+        # NOTE: deliberately NO direct ``ctx.session.state[KEY] = report``
+        # write here. The whole point of this fixture is to verify that
+        # the QualityLoopAgent applies state_delta itself, exactly as the
+        # production ADK runner would on the event flowing back up.
+        yield Event(
+            invocation_id='test-invocation',
+            author='state_delta_only_critic',
+            branch=None,
+            actions=EventActions(state_delta={STATE_VALIDATION_RESULT: report}),
+        )
+
+
+def _build_state_delta_only_loop(
+    *,
+    statuses: List[str],
+    max_rounds: int = 5,
+) -> tuple[QualityLoopAgent, StateDeltaOnlyCritic, FakeReviser]:
+    critic = StateDeltaOnlyCritic(
+        name='state_delta_only_critic', statuses=statuses
+    )
+    reviser = FakeReviser(name='fake_reviser')
+    loop = QualityLoopAgent(
+        name='sow_quality_loop',
+        description='test',
+        sub_agents=[critic, reviser],
+        max_rounds=max_rounds,
+    )
+    return loop, critic, reviser
+
+
+class TestStateDeltaOnlyCritic:
+    """Production sub-agents are allowed to write state ONLY via the
+    canonical ``EventActions.state_delta`` channel. The QualityLoopAgent
+    must read what they wrote regardless of whether they also mirrored
+    it into ``ctx.session.state`` directly — otherwise the loop would
+    couple itself to an implementation detail of the critic's helpers.
+    """
+
+    async def test_passed_via_state_delta_short_circuits(self):
+        loop, critic, reviser = _build_state_delta_only_loop(
+            statuses=['passed']
+        )
+        ctx = _fake_ctx()
+
+        await _run_loop(loop, ctx)
+
+        assert critic.calls == 1
+        assert reviser.calls == 0, (
+            'loop must see the state_delta payload and short-circuit on '
+            'passed; running revision means the loop misread the report.'
+        )
+        result = ctx.session.state[QUALITY_LOOP_RESULT_KEY]
+        assert result['status'] == 'passed'
+        assert result['rounds_used'] == 1
+
+    async def test_blocked_then_passed_runs_revision_once(self):
+        loop, critic, reviser = _build_state_delta_only_loop(
+            statuses=['blocked', 'passed']
+        )
+        ctx = _fake_ctx()
+
+        await _run_loop(loop, ctx)
+
+        assert critic.calls == 2
+        assert reviser.calls == 1
+        assert ctx.session.state[QUALITY_LOOP_RESULT_KEY]['status'] == 'passed'
+
+    async def test_loop_mirrors_state_delta_into_session_state(self):
+        """Direct contract: after each critic run the loop's session
+        state must reflect the latest report written via state_delta."""
+        loop, critic, _ = _build_state_delta_only_loop(statuses=['passed'])
+        ctx = _fake_ctx()
+
+        await _run_loop(loop, ctx)
+
+        # The critic only emitted state_delta — but the loop must have
+        # applied it so the report is queryable through session.state
+        # exactly like production reads would do.
+        report = ctx.session.state.get(STATE_VALIDATION_RESULT)
+        assert report is not None
+        assert report['overall_status'] == 'passed'
+        assert report['summary'] == 'round 1 produced passed'
+
+    async def test_needs_human_review_via_state_delta_terminates(self):
+        loop, _, reviser = _build_state_delta_only_loop(
+            statuses=['needs_human_review']
+        )
+        ctx = _fake_ctx()
+
+        await _run_loop(loop, ctx)
+
+        assert reviser.calls == 0
+        result = ctx.session.state[QUALITY_LOOP_RESULT_KEY]
+        assert result['status'] == 'needs_human_review'
+
+
+class TestApplyStateDeltaHelper:
+    """Direct coverage of the helper so the contract is testable in
+    isolation, independent of the critic/reviser stubs."""
+
+    def test_empty_state_delta_is_noop(self):
+        ctx = _fake_ctx()
+        event = Event(
+            invocation_id='t',
+            author='x',
+            branch=None,
+            actions=EventActions(),
+        )
+
+        QualityLoopAgent._apply_state_delta(ctx, event)
+
+        assert ctx.session.state == {}
+
+    def test_applies_every_key_in_delta(self):
+        ctx = _fake_ctx()
+        event = Event(
+            invocation_id='t',
+            author='x',
+            branch=None,
+            actions=EventActions(
+                state_delta={
+                    'app:foo': 1,
+                    'app:bar': {'nested': True},
+                }
+            ),
+        )
+
+        QualityLoopAgent._apply_state_delta(ctx, event)
+
+        assert ctx.session.state['app:foo'] == 1
+        assert ctx.session.state['app:bar'] == {'nested': True}
+
+    def test_idempotent_when_runner_already_applied(self):
+        """The helper may be called for an event the ADK runner will
+        also process later; re-applying must overwrite with the same
+        value (idempotent), not crash or accumulate."""
+        ctx = _fake_ctx()
+        ctx.session.state['app:foo'] = 'stale'
+        event = Event(
+            invocation_id='t',
+            author='x',
+            branch=None,
+            actions=EventActions(state_delta={'app:foo': 'fresh'}),
+        )
+
+        QualityLoopAgent._apply_state_delta(ctx, event)
+        QualityLoopAgent._apply_state_delta(ctx, event)  # second time
+
+        assert ctx.session.state['app:foo'] == 'fresh'

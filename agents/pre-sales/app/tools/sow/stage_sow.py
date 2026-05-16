@@ -25,7 +25,12 @@ from google.adk.tools import ToolContext
 
 from ...shared.errors import safe_tool
 from ...shared.types import ToolError, ToolSuccess
-from ...sub_agents.validation.schema import STATE_SOW, STATE_STAGE
+from ...sub_agents.validation.schema import (
+    STATE_PRIOR_BLOCKING_FINGERPRINTS,
+    STATE_ROUND_COUNT,
+    STATE_SOW,
+    STATE_STAGE,
+)
 from ._sow_helpers import sow_data_hash
 
 logger = structlog.get_logger()
@@ -92,8 +97,30 @@ async def stage_sow(
     if stage_normalized not in ('content', 'full'):
         stage_normalized = 'full'
 
+    # Detect stage transitions BEFORE writing the new stage. The aggregator
+    # increments STATE_ROUND_COUNT monotonically across critic runs within a
+    # single staged payload — that signal is meaningful only while the staged
+    # SOW (and its `stage`) is unchanged. The moment we re-stage with a
+    # different stage value (typically `content` -> `full` after the user
+    # approves the Content Review and the architecture / narrative bundles
+    # join the payload), the previous round_count and the persistent
+    # fingerprint set refer to a SOW that no longer exists. Carrying them
+    # forward poisons persistence detection on the new payload and inflates
+    # the round counter in telemetry. Reset both keys here so the next
+    # `sow_quality_loop` run starts from a clean budget.
+    previous_stage = tool_context.state.get(STATE_STAGE)
+    stage_changed = previous_stage is not None and previous_stage != stage_normalized
+
     tool_context.state[STATE_SOW] = sow_data
     tool_context.state[STATE_STAGE] = stage_normalized
+    if stage_changed:
+        tool_context.state[STATE_ROUND_COUNT] = 0
+        tool_context.state[STATE_PRIOR_BLOCKING_FINGERPRINTS] = []
+        logger.info(
+            'stage_sow_reset_round_state',
+            previous_stage=previous_stage,
+            new_stage=stage_normalized,
+        )
     if language:
         tool_context.state[_LANGUAGE_STATE_KEY] = language
 
