@@ -535,3 +535,251 @@ class TestGenerateArchitectureDiagramErrorPaths:
         assert result['status'] == 'error'
         assert result['retryable'] is True
         assert 'AUD-05' in result['error']
+
+
+# ---------------------------------------------------------------------------
+# F-04 — deterministic retry budget for the audit
+#
+# The LLM is told (audit-rules.md) to retry up to 3 times on the same
+# defective spec. Without code-level enforcement a confused worker can
+# burn the Gemini round budget by calling forever. These tests pin the
+# budget contract: per-input counter that increments on consecutive
+# audit failures and refuses from the 4th attempt with a non-retryable
+# fallback error.
+# ---------------------------------------------------------------------------
+
+
+class TestAuditRetryBudget:
+    @staticmethod
+    def _call_kwargs(spec):
+        return {
+            'nodes': spec['nodes'],
+            'edges': spec['edges'],
+            'architecture_description': spec['description'],
+            'technology_stack': spec['technology_stack'],
+        }
+
+    @staticmethod
+    def _break_spec(spec) -> None:
+        """Mutate the fixture so audit BLOCKER AUD-05 fires."""
+        spec['nodes'][1].label = 'Backend'
+
+    async def test_first_failure_increments_counter_to_one(
+        self, architecture_spec, mock_tool_context
+    ):
+        self._break_spec(architecture_spec)
+        with patch.object(gad, '_D2_AVAILABLE', True), patch.object(
+            gad, '_RSVG_AVAILABLE', True
+        ):
+            result = await generate_architecture_diagram(
+                title='x',
+                tool_context=mock_tool_context,
+                **self._call_kwargs(architecture_spec),
+            )
+
+        assert result['status'] == 'error'
+        assert result['retryable'] is True  # still inside the budget
+        assert (
+            mock_tool_context.state[gad._STATE_DIAGRAM_AUDIT_FAILURES] == 1
+        )
+        # Input hash recorded so a follow-up call on the same spec
+        # carries the counter; a different spec resets via mismatch.
+        assert mock_tool_context.state[gad._STATE_DIAGRAM_INPUT_HASH]
+
+    async def test_third_consecutive_failure_still_retryable(
+        self, architecture_spec, mock_tool_context
+    ):
+        """Budget is 3 → first 3 failures stay retryable so the worker
+        can try the silent-fix protocol from audit-rules.md."""
+        self._break_spec(architecture_spec)
+        with patch.object(gad, '_D2_AVAILABLE', True), patch.object(
+            gad, '_RSVG_AVAILABLE', True
+        ):
+            for _ in range(3):
+                result = await generate_architecture_diagram(
+                    title='x',
+                    tool_context=mock_tool_context,
+                    **self._call_kwargs(architecture_spec),
+                )
+                assert result['status'] == 'error'
+                assert result['retryable'] is True
+
+        assert (
+            mock_tool_context.state[gad._STATE_DIAGRAM_AUDIT_FAILURES] == 3
+        )
+
+    async def test_fourth_failure_returns_budget_exhausted(
+        self, architecture_spec, mock_tool_context
+    ):
+        """The 4th call on the same defective spec returns a
+        non-retryable ToolError instructing the worker to proceed
+        without the diagram."""
+        self._break_spec(architecture_spec)
+        with patch.object(gad, '_D2_AVAILABLE', True), patch.object(
+            gad, '_RSVG_AVAILABLE', True
+        ):
+            for _ in range(3):
+                await generate_architecture_diagram(
+                    title='x',
+                    tool_context=mock_tool_context,
+                    **self._call_kwargs(architecture_spec),
+                )
+            final = await generate_architecture_diagram(
+                title='x',
+                tool_context=mock_tool_context,
+                **self._call_kwargs(architecture_spec),
+            )
+
+        assert final['status'] == 'error'
+        assert final['retryable'] is False
+        assert 'budget exhausted' in final['error'].lower()
+        # Suggestion must tell the worker to STOP retrying and proceed
+        # without the diagram — that is the documented fallback.
+        assert 'placeholder' in final['suggestion'].lower()
+
+    async def test_changing_the_spec_resets_the_counter(
+        self, architecture_spec, mock_tool_context
+    ):
+        """A worker that genuinely fixes the spec in response to audit
+        feedback gets a fresh budget — the counter keys on input hash."""
+        self._break_spec(architecture_spec)
+        with patch.object(gad, '_D2_AVAILABLE', True), patch.object(
+            gad, '_RSVG_AVAILABLE', True
+        ):
+            for _ in range(3):
+                await generate_architecture_diagram(
+                    title='x',
+                    tool_context=mock_tool_context,
+                    **self._call_kwargs(architecture_spec),
+                )
+            assert (
+                mock_tool_context.state[gad._STATE_DIAGRAM_AUDIT_FAILURES]
+                == 3
+            )
+
+            # Mutate the spec to a different shape — counter must reset
+            # on the next call (hash mismatch branch).
+            architecture_spec['nodes'][1].label = (
+                'Customer Operations Service'
+            )
+            architecture_spec['description'] = (
+                architecture_spec['description'] + ' Additional sentence.'
+            )
+            # The new spec is still defective in some way — but the
+            # counter for THIS hash should be 1, not 4.
+            architecture_spec['nodes'][2].label = 'Storage'
+            await generate_architecture_diagram(
+                title='x',
+                tool_context=mock_tool_context,
+                **self._call_kwargs(architecture_spec),
+            )
+
+        assert (
+            mock_tool_context.state[gad._STATE_DIAGRAM_AUDIT_FAILURES] == 1
+        )
+
+    async def test_d2_missing_does_not_burn_budget(
+        self, architecture_spec, mock_tool_context
+    ):
+        """Infrastructure errors (D2 binary absent) are not the LLM's
+        fault — they must not consume the audit retry budget."""
+        self._break_spec(architecture_spec)
+        # Seed counter so we can prove it didn't increment.
+        mock_tool_context.state[gad._STATE_DIAGRAM_AUDIT_FAILURES] = 2
+
+        with patch.object(gad, '_D2_AVAILABLE', False):
+            await generate_architecture_diagram(
+                title='x',
+                tool_context=mock_tool_context,
+                **self._call_kwargs(architecture_spec),
+            )
+
+        # Counter unchanged — the early D2-missing branch returned before
+        # the audit ran.
+        assert (
+            mock_tool_context.state[gad._STATE_DIAGRAM_AUDIT_FAILURES] == 2
+        )
+
+    async def test_without_tool_context_no_budget_enforcement(
+        self, architecture_spec
+    ):
+        """The budget needs durable state to track attempts; without a
+        ``tool_context`` we fall back to legacy behavior (always
+        retryable). Keeps non-runtime callers — e.g. ad-hoc scripts —
+        functional."""
+        self._break_spec(architecture_spec)
+        with patch.object(gad, '_D2_AVAILABLE', True), patch.object(
+            gad, '_RSVG_AVAILABLE', True
+        ):
+            for _ in range(5):
+                result = await generate_architecture_diagram(
+                    title='x',
+                    **self._call_kwargs(architecture_spec),
+                )
+                assert result['retryable'] is True
+
+
+class TestDiagramInputHash:
+    """Direct coverage on the helper so the keying contract is testable
+    without driving the whole tool."""
+
+    def test_hash_stable_across_calls(self, architecture_spec):
+        h1 = gad._diagram_input_hash(
+            title='x',
+            nodes=architecture_spec['nodes'],
+            edges=architecture_spec['edges'],
+            architecture_description=architecture_spec['description'],
+            technology_stack=architecture_spec['technology_stack'],
+            direction='LR',
+        )
+        h2 = gad._diagram_input_hash(
+            title='x',
+            nodes=architecture_spec['nodes'],
+            edges=architecture_spec['edges'],
+            architecture_description=architecture_spec['description'],
+            technology_stack=architecture_spec['technology_stack'],
+            direction='LR',
+        )
+        assert h1 == h2
+
+    def test_description_change_alters_hash(self, architecture_spec):
+        h1 = gad._diagram_input_hash(
+            title='x',
+            nodes=architecture_spec['nodes'],
+            edges=architecture_spec['edges'],
+            architecture_description=architecture_spec['description'],
+            technology_stack=architecture_spec['technology_stack'],
+            direction='LR',
+        )
+        h2 = gad._diagram_input_hash(
+            title='x',
+            nodes=architecture_spec['nodes'],
+            edges=architecture_spec['edges'],
+            architecture_description=(
+                architecture_spec['description'] + ' Extra sentence.'
+            ),
+            technology_stack=architecture_spec['technology_stack'],
+            direction='LR',
+        )
+        assert h1 != h2
+
+    def test_direction_change_alters_hash(self, architecture_spec):
+        h1 = gad._diagram_input_hash(
+            title='x',
+            nodes=architecture_spec['nodes'],
+            edges=architecture_spec['edges'],
+            architecture_description=architecture_spec['description'],
+            technology_stack=architecture_spec['technology_stack'],
+            direction='LR',
+        )
+        h2 = gad._diagram_input_hash(
+            title='x',
+            nodes=architecture_spec['nodes'],
+            edges=architecture_spec['edges'],
+            architecture_description=architecture_spec['description'],
+            technology_stack=architecture_spec['technology_stack'],
+            direction='TB',
+        )
+        # Layout-only changes don't fix structural defects — they MUST
+        # count as a retry, hence different hash.
+        assert h1 != h2

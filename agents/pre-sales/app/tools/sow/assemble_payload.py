@@ -91,6 +91,19 @@ _PROJECT_METADATA_KEYS: tuple[str, ...] = (
     'organization_term',
 )
 
+# F-07: project-level fields the docx template + validation pipeline
+# treat as load-bearing. Empty strings here mean the template renders a
+# header that says "Partner: " with nothing after, which the validation
+# critic does not currently flag as a deterministic error (it focuses
+# on the section content). Reject in the assembler so a discovery bug
+# does not silently propagate into the generated SOW.
+_REQUIRED_PROJECT_METADATA_KEYS: tuple[str, ...] = (
+    'partner_name',
+    'customer_name',
+    'project_title',
+    'funding_type',
+)
+
 
 def _extract_project_metadata(manifest: dict[str, Any]) -> dict[str, Any]:
     """Pull project-level fields from the manifest in a shape-tolerant way.
@@ -257,12 +270,49 @@ async def assemble_sow_payload(
             ),
         )
 
+    project_metadata = _extract_project_metadata(manifest)
+
+    # F-07: fail fast when project-level fields the docx template treats
+    # as load-bearing are blank. ``_extract_project_metadata`` emits the
+    # empty string for missing keys so the template never KeyErrors —
+    # great for resilience, terrible for catching upstream bugs. Validate
+    # here so a discovery-side defect surfaces as a clear ToolError
+    # instead of an SOW with "Partner: " in the header.
+    missing_metadata = [
+        key
+        for key in _REQUIRED_PROJECT_METADATA_KEYS
+        if not (project_metadata.get(key) or '').strip()
+    ]
+    if missing_metadata:
+        logger.warning(
+            'assemble_sow_payload_missing_metadata',
+            stage=stage_normalized,
+            missing=missing_metadata,
+        )
+        return ToolError(
+            status='error',
+            error=(
+                f'Cannot assemble stage={stage_normalized!r}: required '
+                f'project metadata fields are empty: {missing_metadata}. '
+                'The manifest must populate these before SOW assembly so '
+                'the document header is not rendered with blanks.'
+            ),
+            retryable=False,
+            tool='assemble_sow_payload',
+            suggestion=(
+                'Re-run sow-discovery (or the manifest tools) so the '
+                f'manifest carries non-empty values for: {missing_metadata}. '
+                'Both flat (e.g. `manifest["partner_name"]`) and nested '
+                '(`manifest["project"]["partner_name"]`) shapes are accepted.'
+            ),
+        )
+
     requirements = tool_context.state[SOW_BUNDLE_STATE_KEYS['requirements']]
     delivery_plan = tool_context.state[SOW_BUNDLE_STATE_KEYS['delivery_plan']]
     scope_boundaries = tool_context.state[SOW_BUNDLE_STATE_KEYS['scope_boundaries']]
 
     sow_data: dict[str, Any] = {
-        **_extract_project_metadata(manifest),
+        **project_metadata,
         # Requirements bundle
         'functional_requirements': requirements.get('functional_requirements', []),
         'non_functional_requirements': requirements.get(

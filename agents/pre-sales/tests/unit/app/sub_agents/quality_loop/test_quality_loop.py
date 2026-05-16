@@ -31,9 +31,10 @@ from google.adk.events import Event, EventActions
 
 from app.sub_agents.quality_loop.agent import (
     QUALITY_LOOP_RESULT_KEY,
+    STATE_LAST_LOOP_HASH,
     QualityLoopAgent,
 )
-from app.sub_agents.validation.schema import STATE_VALIDATION_RESULT
+from app.sub_agents.validation.schema import STATE_SOW, STATE_VALIDATION_RESULT
 
 
 # ---------------------------------------------------------------------------
@@ -564,3 +565,206 @@ class TestApplyStateDeltaHelper:
         QualityLoopAgent._apply_state_delta(ctx, event)  # second time
 
         assert ctx.session.state['app:foo'] == 'fresh'
+
+
+# ---------------------------------------------------------------------------
+# F-05 — anti-thrashing cache via SOW hash
+#
+# The loop short-circuits when the staged SOW hash matches the hash
+# from the previous loop's terminal write. The cache key is the SOW
+# *at termination time* (post-revision) so a re-invocation on that
+# exact payload returns the cached result instead of burning a fresh
+# critic budget. ``stage_sow`` overwriting STATE_SOW with new content
+# changes the hash → cache misses naturally.
+# ---------------------------------------------------------------------------
+
+
+def _ctx_with_sow(sow: dict) -> MagicMock:
+    ctx = _fake_ctx()
+    ctx.session.state[STATE_SOW] = sow
+    return ctx
+
+
+class TestAntiThrashingCache:
+    async def test_first_run_writes_terminal_hash(self):
+        loop, _, _ = _build_loop(critic_statuses=['passed'])
+        ctx = _ctx_with_sow({'project_title': 'P', 'fr': []})
+
+        await _run_loop(loop, ctx)
+
+        cached_hash = ctx.session.state.get(STATE_LAST_LOOP_HASH)
+        assert cached_hash is not None
+        # The cached hash must match the SOW currently in state, since
+        # nothing else patched it during this passed-on-round-1 run.
+        from app.tools.sow._sow_helpers import sow_data_hash
+        assert cached_hash == sow_data_hash(ctx.session.state[STATE_SOW])
+
+    async def test_second_run_on_same_sow_hits_cache_and_skips_critic(
+        self,
+    ):
+        loop, critic, reviser = _build_loop(
+            critic_statuses=['passed', 'blocked'],  # would fail if rerun
+            max_rounds=3,
+        )
+        ctx = _ctx_with_sow({'project_title': 'P', 'fr': []})
+
+        await _run_loop(loop, ctx)
+        first_critic_calls = critic.calls
+        first_result = ctx.session.state[QUALITY_LOOP_RESULT_KEY]
+
+        # Re-invoke with the SOW untouched — critic must NOT run again.
+        events = await _run_loop(loop, ctx)
+
+        assert critic.calls == first_critic_calls, (
+            'Cache hit must skip the critic — re-running it on the same '
+            'staged SOW is the whole thrashing scenario the cache prevents.'
+        )
+        assert reviser.calls == 0
+        # The cached envelope is re-emitted; the in-state result payload
+        # equals the first run's terminal payload (status, rounds_used,
+        # final_report all stable).
+        assert ctx.session.state[QUALITY_LOOP_RESULT_KEY] == first_result
+        # The terminal event must still carry state_delta + content so
+        # the AgentTool caller sees a consistent envelope.
+        terminal = _terminal_event(events)
+        assert terminal.content is not None
+        import json as _json
+        body = _json.loads(terminal.content.parts[0].text)
+        assert body['cached'] is True
+        assert body['status'] == 'passed'
+
+    async def test_sow_change_invalidates_cache(self):
+        loop, critic, _ = _build_loop(
+            critic_statuses=['passed', 'passed'],
+            max_rounds=3,
+        )
+        ctx = _ctx_with_sow({'project_title': 'P', 'fr': []})
+
+        await _run_loop(loop, ctx)
+        assert critic.calls == 1
+
+        # Simulate stage_sow writing a different payload (the cache key
+        # the loop wrote is now stale).
+        ctx.session.state[STATE_SOW] = {'project_title': 'P', 'fr': ['FR-01']}
+
+        await _run_loop(loop, ctx)
+
+        assert critic.calls == 2, (
+            'Different SOW hash MUST miss the cache and re-run the critic.'
+        )
+
+    async def test_cache_miss_when_result_key_absent(self):
+        """If a previous loop crashed before writing the result, the
+        cache key alone is not enough — the loop must re-run."""
+        loop, critic, _ = _build_loop(critic_statuses=['passed'])
+        ctx = _ctx_with_sow({'project_title': 'P'})
+        # Seed: hash present, but result missing (crash midway scenario).
+        from app.tools.sow._sow_helpers import sow_data_hash
+        ctx.session.state[STATE_LAST_LOOP_HASH] = sow_data_hash(
+            ctx.session.state[STATE_SOW]
+        )
+        # Deliberately do NOT seed QUALITY_LOOP_RESULT_KEY.
+
+        await _run_loop(loop, ctx)
+
+        # Critic ran because cache check failed on the missing-result side.
+        assert critic.calls == 1
+        # And the loop completed cleanly — result key now populated.
+        assert (
+            ctx.session.state[QUALITY_LOOP_RESULT_KEY]['status'] == 'passed'
+        )
+
+    async def test_no_sow_in_state_skips_cache_check(self):
+        """If STATE_SOW is absent the loop simply runs (and the critic
+        will surface the missing-payload deterministic error). The cache
+        must not crash on a None payload."""
+        loop, critic, _ = _build_loop(critic_statuses=['passed'])
+        ctx = _fake_ctx()  # no STATE_SOW
+
+        await _run_loop(loop, ctx)
+
+        assert critic.calls == 1
+        # And nothing was written to the cache key (would mislead a
+        # later run that DOES have a SOW).
+        assert STATE_LAST_LOOP_HASH not in ctx.session.state
+
+    async def test_cache_hit_does_not_invoke_reviser(self):
+        loop, _, reviser = _build_loop(
+            critic_statuses=['blocked', 'passed'],  # would call reviser
+            max_rounds=3,
+        )
+        ctx = _ctx_with_sow({'project_title': 'P'})
+
+        await _run_loop(loop, ctx)
+        reviser_calls_after_first = reviser.calls
+
+        # Replay — reviser must not be called via the cache path.
+        await _run_loop(loop, ctx)
+
+        assert reviser.calls == reviser_calls_after_first
+
+    async def test_post_revision_terminal_hash_matches_current_sow(self):
+        """Critical contract: STATE_LAST_LOOP_HASH must equal the hash
+        of the SOW as it stands at termination time, NOT the entry
+        hash. So a follow-up call on the patched SOW hits the cache."""
+        loop = QualityLoopAgent(
+            name='loop',
+            description='test',
+            sub_agents=[
+                _CriticThatTouchesSow(
+                    name='critic',
+                    statuses=['blocked', 'passed'],
+                ),
+                _ReviserThatPatches(name='reviser'),
+            ],
+            max_rounds=3,
+        )
+        ctx = _ctx_with_sow({'project_title': 'P', 'fr': ['FR-01']})
+
+        await _run_loop(loop, ctx)
+
+        from app.tools.sow._sow_helpers import sow_data_hash
+        terminal_sow = ctx.session.state[STATE_SOW]
+        # Reviser patched the SOW between critic rounds — final hash
+        # must reflect that, not the entry hash.
+        assert ctx.session.state[STATE_LAST_LOOP_HASH] == sow_data_hash(
+            terminal_sow
+        )
+
+
+class _CriticThatTouchesSow(BaseAgent):
+    """Variant of FakeCritic for the terminal-hash test — does not
+    mutate the SOW itself; just emits the status as a report write."""
+
+    config_type: ClassVar[type[BaseAgentConfig]] = BaseAgentConfig
+    statuses: List[str] = []
+    calls: int = 0
+
+    async def run_async(self, ctx) -> AsyncGenerator[Event, None]:  # type: ignore[override]
+        idx = min(self.calls, len(self.statuses) - 1)
+        status = self.statuses[idx]
+        self.calls += 1
+        ctx.session.state[STATE_VALIDATION_RESULT] = {
+            'overall_status': status,
+            'summary': '',
+            'next_action': '',
+            'findings': [],
+        }
+        if False:  # pragma: no cover
+            yield  # type: ignore[unreachable]
+
+
+class _ReviserThatPatches(BaseAgent):
+    """Reviser stub that patches STATE_SOW so the terminal hash
+    differs from the entry hash — exercises the "post-revision cache
+    key" contract."""
+
+    config_type: ClassVar[type[BaseAgentConfig]] = BaseAgentConfig
+
+    async def run_async(self, ctx) -> AsyncGenerator[Event, None]:  # type: ignore[override]
+        sow = ctx.session.state.get(STATE_SOW) or {}
+        patched = dict(sow)
+        patched.setdefault('fr', []).append('FR-02-added-by-reviser')
+        ctx.session.state[STATE_SOW] = patched
+        if False:  # pragma: no cover
+            yield  # type: ignore[unreachable]

@@ -50,13 +50,49 @@ class TestAppendBehaviour:
         assert mock_tool_context.state[REVISION_LOG_STATE_KEY] == [first, second]
         assert result['data']['total'] == 2
 
-    async def test_empty_entries_list_is_valid(self, mock_tool_context):
+    async def test_empty_entries_requires_noop_reason(self, mock_tool_context):
+        """F-11: silent empty rounds masked bugs where the revision
+        agent ran but did nothing. Calling with ``entries=[]`` now
+        requires a ``noop_reason`` so the log has evidence of why the
+        round produced zero patches."""
         result = await record_revision_log_entries(
             entries=[], tool_context=mock_tool_context,
         )
 
+        assert result['status'] == 'error'
+        assert 'noop_reason' in result['error']
+        # State must NOT have been mutated on rejection — partial writes
+        # would leak the rejected call into telemetry.
+        assert REVISION_LOG_STATE_KEY not in mock_tool_context.state
+
+    async def test_empty_entries_with_noop_reason_appends_synthetic_marker(
+        self, mock_tool_context
+    ):
+        """F-11: when the reason is provided the tool appends one
+        synthetic entry with ``action='noop'`` and the supplied reason.
+        Downstream Revision Note composers skip noop entries — see the
+        root prompt."""
+        result = await record_revision_log_entries(
+            entries=[],
+            noop_reason='all findings deferred to human review',
+            round_label='round-3',
+            tool_context=mock_tool_context,
+        )
+
         assert result['status'] == 'success'
-        assert mock_tool_context.state[REVISION_LOG_STATE_KEY] == []
+        assert result['data']['noop'] is True
+        assert result['data']['appended'] == 1
+
+        log = mock_tool_context.state[REVISION_LOG_STATE_KEY]
+        assert len(log) == 1
+        entry = log[0]
+        assert entry['action'] == 'noop'
+        assert entry['fields_touched'] == []
+        assert entry['reason'] == 'all findings deferred to human review'
+        assert entry['round_label'] == 'round-3'
+        # Synthetic finding_id carries the round label so audit reads
+        # can group multiple rounds without rebuilding context.
+        assert entry['finding_id'] == '__noop__::round-3'
 
     async def test_non_list_state_replaced_with_fresh(self, mock_tool_context):
         """Defensive: someone else wrote a non-list — start over."""

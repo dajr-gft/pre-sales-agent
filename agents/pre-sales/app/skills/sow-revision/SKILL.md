@@ -138,9 +138,19 @@ After every finding in every group is processed:
 1. `stage_sow(patched_sow_data)` — writes to `state['app:sow:current']`.
    The only place this skill mutates the document state directly.
 2. Write the per-finding revision entries to
-   `state['app:sow:revision_log']` (append-only across rounds). The root
-   reads this state key to compose the user-facing Revision Note after
-   re-validation.
+   `state['app:sow:revision_log']` via
+   `record_revision_log_entries(entries=[...])`. Append-only across
+   rounds. The root reads this state key to compose the user-facing
+   Revision Note after re-validation.
+
+**Zero-patch rounds (noop):** if a round legitimately produces no
+patches — every finding fell under `decision_required`/`source_conflict`
+and was deferred to human review, or no finding mapped to a patchable
+field — you still MUST call
+`record_revision_log_entries(entries=[], noop_reason="<short why>",
+round_label="round-<N>")` so the log records evidence the round ran.
+Calling with `entries=[]` and no `noop_reason` is rejected: silent
+empty rounds mask bugs where the patcher ran but did nothing.
 
 After this skill returns, the root re-invokes `validation_critic`.
 

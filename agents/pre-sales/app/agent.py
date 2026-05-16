@@ -23,7 +23,6 @@ from .sub_agents import (
     architecture_agent,
     delivery_plan_agent,
     discovery_agent,
-    google_search_agent,
     narrative_agent,
     requirements_agent,
     scope_boundaries_agent,
@@ -97,7 +96,12 @@ _TOOLS = [
     # control back here.
     load_extraction_manifest,
     _request_continuation,
-    AgentTool(agent=google_search_agent),
+    # F-10: `google_search_agent` is NOT exposed at the root. Web search
+    # is a section-level concern owned by `narrative_agent`, which wraps
+    # the same singleton (defined in `app.sub_agents.web_search`) as an
+    # internal AgentTool. Exposing it twice would invite the root LLM
+    # to run searches outside the narrative flow, leaking unverified
+    # context into other section sub-agents on subsequent turns.
     # NOTE: do NOT set skip_summarization=True on any AgentTool here.
     # AgentTool propagates that flag onto the function_response event,
     # which then satisfies `Event.is_final_response()` (see event.py:

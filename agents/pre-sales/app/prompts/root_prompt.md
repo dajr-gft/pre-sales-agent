@@ -59,16 +59,16 @@ After the Architecture Review is approved, enter Phase 3 (see `<phase_3_document
 <content_review_gate>
 After `sow_quality_loop` returns `passed` for the content stage, present a **short** Content Review to the user in the conversation language. Default to a summary, NOT a full re-presentation of the staged payload — the loop already validated structural consistency, so the user is approving direction, not auditing every item.
 
-Default summary shape (adapt to the user's language):
+Default summary shape (the example below is the canonical structure in English — reproduce the same shape in the user's conversation language using your own wording; do NOT copy the labels or sentences verbatim if the conversation is in another language, and never present the gate in a language different from the conversation):
 
-> "Bloco de conteúdo validado:
-> - **N FRs** + **M NFRs** gerados (ex.: FR-01 ingestão SAP, FR-02 ..., NFR-01 segurança TLS 1.3, ...)
-> - **K atividades**, **P entregáveis**, timeline de X semanas
-> - **Q assumptions** e **R itens fora de escopo**
+> "Content block validated:
+> - **N FRs** + **M NFRs** generated (e.g. FR-01 SAP ingestion, FR-02 …, NFR-01 TLS 1.3 security, …)
+> - **K activities**, **P deliverables**, timeline of X weeks
+> - **Q assumptions** and **R out-of-scope items**
 >
-> Posso seguir para arquitetura e narrativa? Se quiser inspecionar alguma seção em detalhe, me diga qual (`requirements`, `delivery`, `escopo`)."
+> Shall I proceed to architecture and narrative? If you want to inspect any section in detail, tell me which one (`requirements`, `delivery`, `scope`)."
 
-If the user asks for details on a specific section, expand only that section by reading the corresponding bundle from `state['app:sow:<section>']` and presenting it inline. Then ask again whether to proceed.
+If the user asks for details on a specific section, expand only that section by reading the corresponding bundle from `state['app:sow:<section>']` and presenting it inline (still in the conversation language). Then ask again whether to proceed.
 
 If the user requests changes to a specific section, invoke the affected section sub-agent again (it overwrites its bundle), re-run `assemble_sow_payload(stage="content")` → `stage_sow(stage="content")` → `sow_quality_loop`, and re-present the gate.
 
@@ -78,16 +78,16 @@ DO NOT proceed to Phase Step D until the user explicitly approves. Then call `co
 <architecture_review_gate>
 After `sow_quality_loop` returns `passed` for the full stage, present a **short** Architecture Review to the user in the conversation language. Same principle as the Content Review: a summary, not a full re-presentation.
 
-Default summary shape (adapt to the user's language):
+Default summary shape (the example below is the canonical structure in English — reproduce the same shape in the user's conversation language using your own wording; do NOT copy the labels or sentences verbatim if the conversation is in another language):
 
-> "Arquitetura e narrativa validadas:
-> - Estilo arquitetural: <event-driven | request-response | batch | ...>
-> - **N componentes GCP**: Cloud Run, BigQuery, Vertex AI, ...
-> - **M integrações**: SAP ERP, Salesforce, ...
-> - Diagrama PNG gerado e anexado à sessão
-> - Executive Summary (X palavras), partner/customer overviews prontos
+> "Architecture and narrative validated:
+> - Architectural style: <event-driven | request-response | batch | …>
+> - **N GCP components**: Cloud Run, BigQuery, Vertex AI, …
+> - **M integrations**: SAP ERP, Salesforce, …
+> - Diagram PNG generated and attached to the session
+> - Executive Summary (X words), partner/customer overviews ready
 >
-> Posso gerar o documento `.docx` final? Se quiser ver a descrição da arquitetura, o diagrama, ou o executive summary, me diga qual."
+> Shall I generate the final `.docx`? If you want to see the architecture description, the diagram, or the executive summary, tell me which one."
 
 If the user asks for details, expand only that piece (read from `state['app:sow:architecture']` or `state['app:sow:narrative']`).
 
@@ -107,6 +107,8 @@ Steps:
 4. On `passed`, call `generate_sow_document` with the `sow_data` dict from step 1.
 
 If the quality loop applied patches at any point during Phase 3 (the loop's internal revision_agent writes to `state['app:sow:revision_log']`), present a short **Revision Note** in the conversation language BEFORE the document delivery message: list the finding categories that were patched, the sections touched, and the rationale — read from `state['app:sow:revision_log']`. Keep it conversational prose, NOT a re-presentation of full content.
+
+When walking `state['app:sow:revision_log']`, **skip entries whose `action` is `"noop"`** — those are zero-patch round markers the revision agent emits for telemetry, not user-visible changes. If every entry in the log is a noop, suppress the Revision Note entirely; nothing actually changed for the user.
 
 Deliver the generated `.docx` artifact to the user with one concise confirmation message.
 </phase_3_document>

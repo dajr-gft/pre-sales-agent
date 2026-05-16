@@ -53,13 +53,21 @@ from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event, EventActions
 from google.genai import types
 
+from ...tools.sow._sow_helpers import sow_data_hash
 from ..revision import revision_agent
 from ..validation import validation_critic
-from ..validation.schema import STATE_VALIDATION_RESULT
+from ..validation.schema import STATE_SOW, STATE_VALIDATION_RESULT
 
 logger = structlog.get_logger()
 
 QUALITY_LOOP_RESULT_KEY = 'app:sow:quality_loop_result'
+
+# F-05 anti-thrashing: the loop caches the SOW hash from the last full
+# run so a re-invocation on the same staged payload short-circuits to
+# the cached terminal result instead of burning a fresh budget of
+# critic rounds. Cleared whenever ``stage_sow`` runs with a new payload
+# (the next loop entry recomputes the hash and finds a mismatch).
+STATE_LAST_LOOP_HASH = 'app:sow:last_loop_hash'
 
 # Cap mirrors the 4-round budget the legacy root prompt used (rounds 1-4
 # allowed to patch, round 5 caps with a downgrade). Tunable per project
@@ -81,6 +89,35 @@ class QualityLoopAgent(BaseAgent):
         self, ctx: InvocationContext
     ) -> AsyncGenerator[Event, None]:
         critic, reviser = self.sub_agents[0], self.sub_agents[1]
+
+        # ----- F-05 anti-thrashing cache --------------------------------
+        # If the previous loop invocation already terminated on a SOW
+        # with the same hash that is in state right now, re-emit the
+        # cached terminal result instead of running the critic again.
+        # ``stage_sow`` is the only writer of ``STATE_SOW`` between loop
+        # runs — when it overwrites the payload with anything materially
+        # different the hash changes and the cache misses naturally. The
+        # cached hash is written at ``_emit_result`` time on the SOW *as
+        # it stood when the loop terminated* (post-revision), so a re-
+        # invocation on that same final payload short-circuits cleanly.
+        current_sow = ctx.session.state.get(STATE_SOW)
+        if isinstance(current_sow, dict) and current_sow:
+            entry_hash = sow_data_hash(current_sow)
+            last_hash = ctx.session.state.get(STATE_LAST_LOOP_HASH)
+            cached_result = ctx.session.state.get(QUALITY_LOOP_RESULT_KEY)
+            if (
+                last_hash == entry_hash
+                and isinstance(cached_result, dict)
+                and cached_result
+            ):
+                logger.info(
+                    'quality_loop_cache_hit',
+                    sow_hash=entry_hash,
+                    cached_status=cached_result.get('status'),
+                )
+                yield self._emit_cached_result(ctx, cached_result)
+                return
+        # ----------------------------------------------------------------
 
         last_status: Optional[str] = None
         for round_idx in range(self.max_rounds):
@@ -238,6 +275,14 @@ class QualityLoopAgent(BaseAgent):
         compact JSON envelope guarantees the root sees the outcome both
         in the tool result and in state, regardless of how the runtime
         composes the AgentTool response.
+
+        F-05 anti-thrashing: we also mirror the hash of the SOW *as it
+        stands in state at termination time* (post-revision) into
+        ``STATE_LAST_LOOP_HASH``. The next invocation's cache check
+        compares that hash against the SOW in state at entry — a match
+        means the staged payload hasn't changed since the previous loop
+        terminated, so the cached result is the right answer and we can
+        skip the critic rounds entirely.
         """
         payload: dict[str, Any] = {
             'status': status,
@@ -248,12 +293,21 @@ class QualityLoopAgent(BaseAgent):
             payload['observed_status'] = observed_status
 
         ctx.session.state[QUALITY_LOOP_RESULT_KEY] = payload
+        state_delta: dict[str, Any] = {QUALITY_LOOP_RESULT_KEY: payload}
+
+        terminal_sow = ctx.session.state.get(STATE_SOW)
+        terminal_hash: Optional[str] = None
+        if isinstance(terminal_sow, dict) and terminal_sow:
+            terminal_hash = sow_data_hash(terminal_sow)
+            ctx.session.state[STATE_LAST_LOOP_HASH] = terminal_hash
+            state_delta[STATE_LAST_LOOP_HASH] = terminal_hash
 
         logger.info(
             'quality_loop_result',
             status=status,
             rounds_used=rounds_used,
             has_message=bool(message),
+            terminal_sow_hash=terminal_hash,
         )
 
         # Compact summary for the AgentTool response — full report stays
@@ -279,7 +333,57 @@ class QualityLoopAgent(BaseAgent):
                 role='model',
                 parts=[types.Part.from_text(text=text)],
             ),
-            actions=EventActions(state_delta={QUALITY_LOOP_RESULT_KEY: payload}),
+            actions=EventActions(state_delta=state_delta),
+        )
+
+    def _emit_cached_result(
+        self,
+        ctx: InvocationContext,
+        cached_payload: dict[str, Any],
+    ) -> Event:
+        """Re-emit the cached terminal event (F-05 anti-thrashing).
+
+        Fires when the staged SOW hash matches the hash from the last
+        full loop run. Re-running the critic on a payload that already
+        produced a terminal status would just spend tokens to arrive at
+        the same answer; surfacing the cached envelope keeps the root's
+        downstream logic identical to the fresh-run path (same JSON
+        shape in ``content``, same ``state_delta`` key).
+
+        ``state[STATE_LAST_LOOP_HASH]`` and
+        ``state[QUALITY_LOOP_RESULT_KEY]`` are already in sync with the
+        cached payload (the previous run wrote both), so no extra state
+        writes happen here — the ``state_delta`` is kept for the runner
+        / session service to re-persist the result the caller is about
+        to consume.
+        """
+        text_envelope = {
+            'status': cached_payload.get('status'),
+            'rounds_used': cached_payload.get('rounds_used'),
+            'summary': (cached_payload.get('final_report') or {}).get(
+                'summary', ''
+            ),
+            'blocking_findings': (
+                cached_payload.get('final_report') or {}
+            ).get('blocker_count', 0),
+            'state_key': QUALITY_LOOP_RESULT_KEY,
+            'cached': True,
+        }
+        if cached_payload.get('observed_status') is not None:
+            text_envelope['observed_status'] = cached_payload['observed_status']
+
+        text = json.dumps(text_envelope, ensure_ascii=False)
+        return Event(
+            invocation_id=ctx.invocation_id,
+            author=self.name,
+            branch=ctx.branch,
+            content=types.Content(
+                role='model',
+                parts=[types.Part.from_text(text=text)],
+            ),
+            actions=EventActions(
+                state_delta={QUALITY_LOOP_RESULT_KEY: cached_payload},
+            ),
         )
 
 

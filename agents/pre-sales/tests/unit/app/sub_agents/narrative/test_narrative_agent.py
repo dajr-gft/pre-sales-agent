@@ -167,3 +167,34 @@ class TestFormatter:
 
     def test_isolated_from_root_history(self):
         assert _formatter().include_contents == 'none'
+
+
+class TestRootDoesNotExposeWebSearch:
+    """F-10 — web search is a section-level concern owned by
+    ``narrative_agent``. Exposing the same agent at the root would let
+    the root LLM run searches outside the narrative flow, leaking
+    unverified context into other section sub-agents on later turns.
+    """
+
+    def test_google_search_agent_not_a_root_tool(self):
+        from google.adk.tools.agent_tool import AgentTool
+
+        from app.agent import root_agent
+
+        for tool in root_agent.tools:
+            if isinstance(tool, AgentTool):
+                assert tool.agent is not google_search_agent, (
+                    'google_search_agent must NOT be registered at the '
+                    'root anymore — narrative_agent owns web search. '
+                    'See F-10 in the pre-merge audit.'
+                )
+
+    def test_narrative_still_owns_the_search_agent(self):
+        """Negative-only assertions can rot silently; pair the removal
+        with positive proof that narrative continues to embed the agent
+        so we know the capability was moved, not lost."""
+        from google.adk.tools.agent_tool import AgentTool
+
+        worker_tools = _worker().tools
+        agent_tools = [t for t in worker_tools if isinstance(t, AgentTool)]
+        assert any(t.agent is google_search_agent for t in agent_tools)

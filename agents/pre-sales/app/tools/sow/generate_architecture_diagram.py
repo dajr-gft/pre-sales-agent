@@ -1,3 +1,5 @@
+import hashlib
+import json
 import re
 import shutil
 import subprocess
@@ -21,6 +23,59 @@ from ._diagram_models import (
     get_d2_icon_path,
     get_d2_shape,
 )
+
+# F-04 — deterministic retry budget for the structural audit.
+#
+# ``audit-rules.md`` instructs the LLM to retry "up to 3 consecutive
+# attempts" after a BLOCKER audit failure. Relying on prompt discipline
+# alone lets a confused worker burn the LLM round budget on the same
+# defective spec. The tool tracks consecutive failed attempts on the
+# same input in session state and refuses from the 4th attempt with a
+# fallback ToolError instructing the worker to proceed without a
+# diagram (the bundle schema doesn't carry diagram bytes — the docx
+# template renders a placeholder).
+_AUDIT_FAILURE_BUDGET = 3
+_STATE_DIAGRAM_INPUT_HASH = 'app:arch_diagram:last_input_hash'
+_STATE_DIAGRAM_AUDIT_FAILURES = 'app:arch_diagram:consecutive_audit_failures'
+
+
+def _diagram_input_hash(
+    title: str,
+    nodes: list[Any],
+    edges: list[Any],
+    architecture_description: str,
+    technology_stack: list[dict],
+    direction: str,
+) -> str:
+    """Stable hash of the tool's audit-relevant input.
+
+    The hash keys the consecutive-failure counter so a worker that
+    materially changes any of these fields (responding to the audit
+    feedback) gets a fresh budget. A worker that retries with the same
+    spec — what the budget exists to stop — sees the counter increment.
+
+    Only the audit-relevant arguments are hashed; ``direction`` is
+    included because layout-only changes still count as a retry (they
+    do not address structural defects). Node / edge objects can be
+    Pydantic models or dicts; ``model_dump``/``dict()`` is normalized
+    via ``default=str`` to avoid serialization explosions on enums.
+    """
+    payload = {
+        'title': title,
+        'direction': direction,
+        'nodes': [
+            n.model_dump(mode='json') if hasattr(n, 'model_dump') else n
+            for n in nodes
+        ],
+        'edges': [
+            e.model_dump(mode='json') if hasattr(e, 'model_dump') else e
+            for e in edges
+        ],
+        'description': architecture_description,
+        'technology_stack': technology_stack,
+    }
+    blob = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(blob.encode('utf-8')).hexdigest()[:16]
 
 logger = structlog.get_logger()
 
@@ -534,6 +589,36 @@ async def generate_architecture_diagram(
             ],
         )
 
+    # ----- F-04 retry budget bookkeeping (audit branch) ----------------
+    # The counter is keyed on the input hash so a worker that genuinely
+    # changes the spec in response to the audit feedback gets a fresh
+    # budget. A worker that calls again with the same arguments — the
+    # thrashing case the budget exists to stop — sees the counter
+    # increment. We only have a useful counter when ``tool_context`` is
+    # present (state is the only durable channel); a missing context
+    # falls back to the legacy behaviour (no budget).
+    current_input_hash: Optional[str] = None
+    consecutive_failures: int = 0
+    if tool_context is not None:
+        current_input_hash = _diagram_input_hash(
+            title=title,
+            nodes=nodes,
+            edges=edges,
+            architecture_description=architecture_description,
+            technology_stack=technology_stack,
+            direction=direction,
+        )
+        last_hash = tool_context.state.get(_STATE_DIAGRAM_INPUT_HASH)
+        # Input changed → reset budget. Same input → carry the counter so
+        # we can detect a repeated thrash.
+        if last_hash == current_input_hash:
+            consecutive_failures = int(
+                tool_context.state.get(_STATE_DIAGRAM_AUDIT_FAILURES) or 0
+            )
+        else:
+            consecutive_failures = 0
+    # -------------------------------------------------------------------
+
     if not audit.passed:
         logger.error(
             'architecture_audit_failed',
@@ -543,6 +628,52 @@ async def generate_architecture_diagram(
                 f'{b.check_id}: {b.defect}' for b in audit.blockers
             ],
         )
+
+        # F-04: refuse from the 4th consecutive failure on the same input
+        # so the worker stops burning Gemini turns on a spec it cannot
+        # fix. ``audit-rules.md`` documents the fallback path: continue
+        # with the textual sections only; the docx renders a placeholder.
+        if (
+            tool_context is not None
+            and consecutive_failures >= _AUDIT_FAILURE_BUDGET
+        ):
+            logger.error(
+                'architecture_audit_budget_exhausted',
+                consecutive_failures=consecutive_failures + 1,
+                budget=_AUDIT_FAILURE_BUDGET,
+                input_hash=current_input_hash,
+            )
+            tool_context.state[_STATE_DIAGRAM_AUDIT_FAILURES] = (
+                consecutive_failures + 1
+            )
+            tool_context.state[_STATE_DIAGRAM_INPUT_HASH] = current_input_hash
+            return ToolError(
+                status='error',
+                error=(
+                    'Audit retry budget exhausted '
+                    f'({_AUDIT_FAILURE_BUDGET} consecutive failures on '
+                    'the same diagram spec). Do NOT call this tool again '
+                    'with the same arguments — proceed without the diagram '
+                    'and emit the architecture bundle with the textual '
+                    'sections only.\n\n'
+                    'Remaining defects (for reference):\n'
+                    + audit.format_defects()
+                ),
+                retryable=False,
+                tool='generate_architecture_diagram',
+                suggestion=(
+                    'Per audit-rules.md the document renders a placeholder '
+                    'when the diagram cannot be produced. Emit the bundle '
+                    'now; downstream review can ask the user how to proceed.'
+                ),
+            )
+
+        if tool_context is not None:
+            tool_context.state[_STATE_DIAGRAM_AUDIT_FAILURES] = (
+                consecutive_failures + 1
+            )
+            tool_context.state[_STATE_DIAGRAM_INPUT_HASH] = current_input_hash
+
         return ToolError(
             status='error',
             error=(
@@ -686,6 +817,15 @@ async def generate_architecture_diagram(
                 artifact=artifact,
             )
             tool_context.state[_DIAGRAM_ARTIFACT_KEY] = artifact_filename
+            # F-04: a successful render clears the consecutive-failure
+            # counter so a future audit failure starts fresh. The input
+            # hash is also written so the next attempt on a DIFFERENT
+            # spec resets the budget via the hash-mismatch branch above.
+            tool_context.state[_STATE_DIAGRAM_AUDIT_FAILURES] = 0
+            if current_input_hash is not None:
+                tool_context.state[_STATE_DIAGRAM_INPUT_HASH] = (
+                    current_input_hash
+                )
             logger.info(
                 'artifact_saved',
                 filename=artifact_filename,
