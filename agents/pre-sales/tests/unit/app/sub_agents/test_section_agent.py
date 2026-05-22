@@ -526,3 +526,387 @@ class TestPublicSequentialAgent:
         assert len(result.sub_agents) == 2
         names = [a.name for a in result.sub_agents]
         assert names == ['requirements_worker', 'requirements_formatter']
+
+
+# ---------------------------------------------------------------------------
+# F-12 — patch mode via previous_bundle optional input
+#
+# When a section_agent is re-invoked (revision after a review gate,
+# upstream cascade), the worker must see its own prior output AND switch
+# to patch discipline — preserve ids, leave untouched items byte-for-
+# byte, apply only the minimum delta. The factory wires this for every
+# section by default (``enable_patch_mode=True``): an optional input
+# labelled ``previous_bundle`` pointing at the agent's own output_key,
+# plus a patch-mode footer that the provider appends iff that bundle is
+# populated at runtime.
+# ---------------------------------------------------------------------------
+
+
+class TestPatchModeWiring:
+    """Validates the factory hooks up patch mode by default."""
+
+    def _build(self, tmp_path: Path, **kwargs):
+        from app.sub_agents import _section_agent
+
+        _common_skill_tree(tmp_path)
+        agent_factory = _AgentCalls()
+        toolset = SimpleNamespace(name='toolset')
+
+        defaults = dict(
+            name='requirements_agent',
+            description='Generates FR/NFR.',
+            skill_name='sow-requirements',
+            output_schema=_DummyBundle,
+            output_key='app:sow:requirements',
+            output_example='{}',
+            state_inputs=(
+                ('extraction_manifest', 'extraction_manifest'),
+            ),
+        )
+        defaults.update(kwargs)
+
+        with _stack(_patches(
+            _section_agent, tmp_path, agent_factory,
+            lambda *, skills: toolset,
+        )):
+            _section_agent.build_section_agent(**defaults)
+
+        return agent_factory
+
+    def test_first_run_without_previous_bundle_omits_patch_footer(
+        self, tmp_path: Path
+    ):
+        """No prior output in state → no patch footer; the worker
+        generates from scratch using upstream alone."""
+        agent_factory = self._build(tmp_path)
+        provider = agent_factory.worker['instruction']
+
+        class _Ctx:
+            state = {
+                'extraction_manifest': {'project': 'P1'},
+                # NO 'app:sow:requirements' key — first run.
+            }
+
+        instr = provider(_Ctx())
+        assert 'Runtime inputs' in instr  # present-branch fired
+        # previous_bundle block must NOT appear when state has no prior.
+        assert '<previous_bundle>' not in instr
+        # Patch footer must NOT appear either.
+        assert 'Patch mode' not in instr
+
+    def test_revision_run_with_previous_bundle_injects_block_and_footer(
+        self, tmp_path: Path
+    ):
+        agent_factory = self._build(tmp_path)
+        provider = agent_factory.worker['instruction']
+
+        class _Ctx:
+            state = {
+                'extraction_manifest': {'project': 'P1'},
+                'app:sow:requirements': {
+                    'functional_requirements': [
+                        {'number': 'FR-01', 'description': 'Ingest data'},
+                    ],
+                    'non_functional_requirements': [
+                        {'number': 'NFR-01', 'description': 'TLS 1.3'},
+                    ],
+                },
+            }
+
+        instr = provider(_Ctx())
+        # The bundle is injected as an XML block.
+        assert '<previous_bundle>' in instr
+        assert '</previous_bundle>' in instr
+        # Contents make it into the prompt (compact JSON).
+        assert '"FR-01"' in instr
+        assert '"NFR-01"' in instr
+        # Patch-mode footer is appended ONLY when previous_bundle is
+        # populated — this is the F-12 contract.
+        assert 'Patch mode' in instr
+        # Footer must explicitly forbid regeneration / id changes.
+        assert 'Preserve every existing id' in instr
+        assert 'byte-for-byte' in instr
+        assert 'minimum delta' in instr
+
+    def test_empty_previous_bundle_does_not_trigger_patch_mode(
+        self, tmp_path: Path
+    ):
+        """An empty dict at the output_key (e.g. a stale write that
+        never got real content) must not trick the provider into
+        patch mode — there's nothing to preserve. ``_is_present``
+        treats empty containers as missing for this reason."""
+        agent_factory = self._build(tmp_path)
+        provider = agent_factory.worker['instruction']
+
+        class _Ctx:
+            state = {
+                'extraction_manifest': {'project': 'P1'},
+                'app:sow:requirements': {},  # empty
+            }
+
+        instr = provider(_Ctx())
+        assert '<previous_bundle>' not in instr
+        assert 'Patch mode' not in instr
+
+    def test_missing_required_input_wins_over_previous_bundle(
+        self, tmp_path: Path
+    ):
+        """If a required upstream input is missing AND a previous_bundle
+        exists, MISSING wins — there is no valid patching target without
+        the upstream packet that would drive the diff."""
+        agent_factory = self._build(tmp_path)
+        provider = agent_factory.worker['instruction']
+
+        class _Ctx:
+            state = {
+                # extraction_manifest deliberately absent
+                'app:sow:requirements': {
+                    'functional_requirements': [
+                        {'number': 'FR-01', 'description': 'x'},
+                    ],
+                    'non_functional_requirements': [],
+                },
+            }
+
+        instr = provider(_Ctx())
+        assert 'MISSING' in instr
+        assert 'STOP' in instr
+        # MISSING path returns before any input rendering, so neither
+        # the previous_bundle block nor the patch footer leak in.
+        assert '<previous_bundle>' not in instr
+        assert 'Patch mode' not in instr
+
+    def test_patch_mode_can_be_disabled(self, tmp_path: Path):
+        """``enable_patch_mode=False`` removes the auto-injected optional
+        input — no previous_bundle block, no patch footer, even when
+        state carries the prior output."""
+        agent_factory = self._build(tmp_path, enable_patch_mode=False)
+        provider = agent_factory.worker['instruction']
+
+        class _Ctx:
+            state = {
+                'extraction_manifest': {'project': 'P1'},
+                'app:sow:requirements': {
+                    'functional_requirements': [{'number': 'FR-01'}],
+                    'non_functional_requirements': [],
+                },
+            }
+
+        instr = provider(_Ctx())
+        assert '<previous_bundle>' not in instr
+        assert 'Patch mode' not in instr
+
+    def test_extra_optional_inputs_render_when_present(
+        self, tmp_path: Path
+    ):
+        """``extra_optional_state_inputs`` works alongside the auto-
+        injected previous_bundle — different state keys, both optional,
+        both render when populated."""
+        agent_factory = self._build(
+            tmp_path,
+            extra_optional_state_inputs=(
+                ('user_directive', 'app:sow:user_directive'),
+            ),
+        )
+        provider = agent_factory.worker['instruction']
+
+        class _Ctx:
+            state = {
+                'extraction_manifest': {'project': 'P1'},
+                'app:sow:user_directive': 'change NFR-03 to multi-zone',
+                # No previous_bundle → no patch mode, but the extra
+                # optional still renders.
+            }
+
+        instr = provider(_Ctx())
+        assert '<user_directive>' in instr
+        assert 'change NFR-03 to multi-zone' in instr
+        # No previous_bundle present, so patch footer must NOT appear.
+        assert 'Patch mode' not in instr
+
+    def test_extra_optional_input_cannot_shadow_previous_bundle_key(
+        self, tmp_path: Path
+    ):
+        """De-duplication contract: an extra optional input sharing the
+        same state_key as previous_bundle must NOT register a second
+        time under a different label — that would render the bundle
+        twice in the prompt, wasting tokens and confusing the LLM."""
+        agent_factory = self._build(
+            tmp_path,
+            extra_optional_state_inputs=(
+                # Same state_key as the auto-injected previous_bundle.
+                ('shadow_label', 'app:sow:requirements'),
+            ),
+        )
+        provider = agent_factory.worker['instruction']
+
+        class _Ctx:
+            state = {
+                'extraction_manifest': {'project': 'P1'},
+                'app:sow:requirements': {
+                    'functional_requirements': [{'number': 'FR-01'}],
+                    'non_functional_requirements': [],
+                },
+            }
+
+        instr = provider(_Ctx())
+        # previous_bundle is the canonical label and must win.
+        assert '<previous_bundle>' in instr
+        assert '<shadow_label>' not in instr
+        # Patch footer fires once.
+        assert instr.count('Patch mode') == 1
+
+
+class TestPatchModeProvider:
+    """Direct coverage of the instruction provider — verifies the
+    optional input semantics independently of the factory wiring."""
+
+    def test_optional_input_absent_does_not_trigger_missing(self):
+        from app.sub_agents import _section_agent
+
+        provider = _section_agent._make_worker_instruction_provider(
+            skill_body='SKILL',
+            output_protocol='\nOUTPUT',
+            state_inputs=(('manifest', 'mkey'),),
+            optional_state_inputs=(('previous_bundle', 'pkey'),),
+            patch_mode_label='previous_bundle',
+        )
+
+        class _Ctx:
+            state = {'mkey': {'x': 1}}  # required present, optional absent
+
+        instr = provider(_Ctx())
+        assert 'MISSING' not in instr
+        assert '<manifest>' in instr
+        assert '<previous_bundle>' not in instr
+        assert 'Patch mode' not in instr
+
+    def test_patch_label_label_must_match_to_activate_footer(self):
+        """The footer fires only when the optional input that's present
+        matches ``patch_mode_label``. Other optional inputs being
+        present should NOT trigger patch mode."""
+        from app.sub_agents import _section_agent
+
+        provider = _section_agent._make_worker_instruction_provider(
+            skill_body='SKILL',
+            output_protocol='\nOUTPUT',
+            state_inputs=(('manifest', 'mkey'),),
+            optional_state_inputs=(
+                ('previous_bundle', 'pkey'),
+                ('other_optional', 'okey'),
+            ),
+            patch_mode_label='previous_bundle',
+        )
+
+        class _Ctx:
+            state = {
+                'mkey': {'x': 1},
+                'okey': 'some other context',  # not the patch label
+                # 'pkey' deliberately absent
+            }
+
+        instr = provider(_Ctx())
+        assert '<other_optional>' in instr
+        assert '<previous_bundle>' not in instr
+        assert 'Patch mode' not in instr
+
+    def test_no_patch_label_means_footer_never_fires(self):
+        """When ``patch_mode_label`` is None, even a populated optional
+        input does not append the patch footer — confirms the opt-out."""
+        from app.sub_agents import _section_agent
+
+        provider = _section_agent._make_worker_instruction_provider(
+            skill_body='SKILL',
+            output_protocol='\nOUTPUT',
+            state_inputs=(('manifest', 'mkey'),),
+            optional_state_inputs=(('previous_bundle', 'pkey'),),
+            patch_mode_label=None,
+        )
+
+        class _Ctx:
+            state = {'mkey': {'x': 1}, 'pkey': {'y': 2}}
+
+        instr = provider(_Ctx())
+        assert '<previous_bundle>' in instr
+        assert 'Patch mode' not in instr
+
+
+class TestSectionAgentsAllOptInToPatchMode:
+    """Belt-and-suspenders: confirms every real section agent has patch
+    mode wired. If a future section_agent forgets ``enable_patch_mode``
+    or sets it to False inadvertently, this test catches it."""
+
+    @pytest.mark.parametrize(
+        'module_path,agent_attr,output_key',
+        [
+            (
+                'app.sub_agents.requirements',
+                'requirements_agent',
+                'app:sow:requirements',
+            ),
+            (
+                'app.sub_agents.delivery_plan',
+                'delivery_plan_agent',
+                'app:sow:delivery_plan',
+            ),
+            (
+                'app.sub_agents.scope_boundaries',
+                'scope_boundaries_agent',
+                'app:sow:scope_boundaries',
+            ),
+            (
+                'app.sub_agents.architecture',
+                'architecture_agent',
+                'app:sow:architecture',
+            ),
+            (
+                'app.sub_agents.narrative',
+                'narrative_agent',
+                'app:sow:narrative',
+            ),
+        ],
+    )
+    def test_worker_provider_emits_patch_footer_when_previous_bundle_present(
+        self, module_path: str, agent_attr: str, output_key: str
+    ):
+        import importlib
+
+        mod = importlib.import_module(module_path)
+        agent = getattr(mod, agent_attr)
+        worker = agent.sub_agents[0]
+        provider = worker.instruction
+
+        # Populate the section's own output_key plus every required
+        # upstream state input the worker declares. We don't enumerate
+        # them statically — the provider would otherwise complain
+        # MISSING on the upstream packet and short-circuit before the
+        # patch footer can fire. We construct the minimal state to
+        # exercise the patch-mode branch.
+        from app.sub_agents.schemas import SOW_BUNDLE_STATE_KEYS
+
+        non_empty_marker = {'__filled__': True}
+        state = {
+            SOW_BUNDLE_STATE_KEYS['manifest']: non_empty_marker,
+            SOW_BUNDLE_STATE_KEYS['requirements']: non_empty_marker,
+            SOW_BUNDLE_STATE_KEYS['delivery_plan']: non_empty_marker,
+            SOW_BUNDLE_STATE_KEYS['scope_boundaries']: non_empty_marker,
+            SOW_BUNDLE_STATE_KEYS['architecture']: non_empty_marker,
+            SOW_BUNDLE_STATE_KEYS['narrative']: non_empty_marker,
+        }
+        # Overwrite the section's OWN bundle with content that flags it
+        # as "previously produced" — the patch footer must fire.
+        state[output_key] = {'__prev__': True, 'items': [{'id': 'X-01'}]}
+
+        class _Ctx:
+            pass
+
+        _Ctx.state = state
+        instr = provider(_Ctx())
+        assert '<previous_bundle>' in instr, (
+            f'{agent_attr}: previous_bundle block must render when the '
+            f'output_key {output_key!r} carries prior content.'
+        )
+        assert 'Patch mode' in instr, (
+            f'{agent_attr}: patch-mode footer missing — F-12 contract '
+            f'broken. Did someone set enable_patch_mode=False?'
+        )

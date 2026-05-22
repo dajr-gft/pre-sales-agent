@@ -583,3 +583,307 @@ class TestProjectMetadataValidation:
         assert sow['date'] == ''
         assert sow['author'] == ''
         assert sow['engagement_type'] == ''
+
+
+# ---------------------------------------------------------------------------
+# F-13 — Identity primitives extraction
+#
+# Production discovery does NOT write project metadata at the manifest
+# top level or under a nested ``project`` dict (the
+# ``ExtractionManifest`` schema forbids extra fields at the root and
+# has no ``project`` sub-model). Instead it lives inside
+# ``extracted_items[*].primitives`` for items with ``category ==
+# 'Identity'``. The assembler must read THAT path or it would reject
+# every legitimate manifest discovery produces.
+# ---------------------------------------------------------------------------
+
+
+def _identity_item(primitives: dict[str, Any], item_id: str = 'I-001') -> dict:
+    """Build a minimal Identity ExtractedItem dict for tests."""
+    return {
+        'id': item_id,
+        'category': 'Identity',
+        'value': primitives.get('project_name', 'P'),
+        'value_detail': '',
+        'primitives': primitives,
+        'source': [{'artifact_id': 'A-001', 'anchor': 'page 1'}],
+        'confidence': 'stated',
+        'cross_refs': [],
+        'notes': '',
+    }
+
+
+def _manifest_with_identity(primitives: dict[str, Any]) -> dict[str, Any]:
+    """Manifest shaped the way production discovery actually writes it.
+
+    No top-level ``partner_name``, no ``project`` sub-dict — just the
+    Identity item carrying primitives under ``extracted_items``.
+    """
+    return {
+        'manifest_version': '1.0',
+        'conversation_language': 'pt-BR',
+        'inventory': [{'artifact_id': 'A-001', 'kind': 'doc'}],
+        'extracted_items': [_identity_item(primitives)],
+        'gaps': {
+            'hard_gaps': [],
+            'pending_decisions': [],
+            'ambiguities': [],
+            'to_be_defined': [],
+        },
+        'self_audit': {},
+    }
+
+
+class TestIdentityPrimitivesExtraction:
+    async def test_extracts_partner_customer_project_funding_from_identity(
+        self, mock_tool_context
+    ):
+        """The canonical happy path: discovery wrote primitives only,
+        and the assembler maps them into the flat sow_data keys."""
+        manifest = _manifest_with_identity({
+            'partner': 'GFT Technologies',
+            'customer': 'Acme Corp',
+            'project_name': 'Data Analytics Platform',
+            'funding_type': 'DAF',
+        })
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['manifest']] = manifest
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['requirements']] = _requirements_bundle()
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['delivery_plan']] = _delivery_plan_bundle()
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['scope_boundaries']] = _scope_bundle()
+
+        result = await assemble_sow_payload(
+            stage='content', tool_context=mock_tool_context,
+        )
+
+        assert result['status'] == 'success', result.get('error')
+        sow = result['data']['sow_data']
+        assert sow['partner_name'] == 'GFT Technologies'
+        assert sow['customer_name'] == 'Acme Corp'
+        assert sow['project_title'] == 'Data Analytics Platform'
+        assert sow['funding_type'] == 'DAF'
+
+    async def test_engagement_shape_maps_to_engagement_type(
+        self, mock_tool_context
+    ):
+        """``engagement_shape`` is a documented Identity primitive (per
+        extraction-rules.md §1) and is what downstream consumers expect
+        under the name ``engagement_type``."""
+        manifest = _manifest_with_identity({
+            'partner': 'GFT', 'customer': 'Acme',
+            'project_name': 'Test', 'funding_type': 'DAF',
+            'engagement_shape': 'enhance',
+        })
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['manifest']] = manifest
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['requirements']] = _requirements_bundle()
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['delivery_plan']] = _delivery_plan_bundle()
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['scope_boundaries']] = _scope_bundle()
+
+        result = await assemble_sow_payload(
+            stage='content', tool_context=mock_tool_context,
+        )
+
+        assert result['status'] == 'success'
+        assert result['data']['sow_data']['engagement_type'] == 'enhance'
+
+    async def test_not_stated_primitive_treated_as_missing(
+        self, mock_tool_context
+    ):
+        """``not_stated`` is discovery's "I looked but found nothing"
+        sentinel — the assembler must treat it as absent so the F-07
+        required-field gate fires and the user is told to re-run
+        discovery."""
+        manifest = _manifest_with_identity({
+            'partner': 'GFT',
+            'customer': 'not_stated',  # sentinel
+            'project_name': 'Test',
+            'funding_type': 'DAF',
+        })
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['manifest']] = manifest
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['requirements']] = _requirements_bundle()
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['delivery_plan']] = _delivery_plan_bundle()
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['scope_boundaries']] = _scope_bundle()
+
+        result = await assemble_sow_payload(
+            stage='content', tool_context=mock_tool_context,
+        )
+
+        assert result['status'] == 'error'
+        assert 'customer_name' in result['error']
+
+    async def test_multiple_identity_items_coalesce_with_first_value_winning(
+        self, mock_tool_context
+    ):
+        """When discovery produces multiple Identity items (e.g. one
+        per artifact), the first non-empty value wins for each
+        primitive — matches the skill's own reconciliation rules."""
+        items = [
+            _identity_item(
+                {
+                    'partner': 'GFT',
+                    'customer': 'not_stated',
+                    'project_name': 'Test',
+                    'funding_type': 'DAF',
+                },
+                item_id='I-001',
+            ),
+            # Second Identity item fills the gap left by 'not_stated'.
+            _identity_item(
+                {
+                    'customer': 'Acme Corp (from second artifact)',
+                    'funding_type': 'PSF',  # ignored — first wins
+                },
+                item_id='I-002',
+            ),
+        ]
+        manifest = _manifest_with_identity({})  # base; replace items
+        manifest['extracted_items'] = items
+
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['manifest']] = manifest
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['requirements']] = _requirements_bundle()
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['delivery_plan']] = _delivery_plan_bundle()
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['scope_boundaries']] = _scope_bundle()
+
+        result = await assemble_sow_payload(
+            stage='content', tool_context=mock_tool_context,
+        )
+
+        assert result['status'] == 'success'
+        sow = result['data']['sow_data']
+        assert sow['customer_name'] == 'Acme Corp (from second artifact)'
+        # First item's DAF wins over second item's PSF.
+        assert sow['funding_type'] == 'DAF'
+
+    async def test_non_identity_items_ignored(self, mock_tool_context):
+        """Primitives from a Briefing / Integrations item must not
+        contaminate the project metadata even if they collide on key
+        names."""
+        items = [
+            _identity_item({
+                'partner': 'GFT',
+                'customer': 'Acme',
+                'project_name': 'Test',
+                'funding_type': 'DAF',
+            }),
+            {
+                'id': 'I-002',
+                'category': 'Briefing',
+                'value': 'Decoy',
+                'value_detail': '',
+                # Briefing items don't use these keys, but if some bug
+                # ever wrote them, the assembler must NOT consult them.
+                'primitives': {
+                    'partner': 'WRONG_PARTNER',
+                    'customer': 'WRONG_CUSTOMER',
+                },
+                'source': [{'artifact_id': 'A-001', 'anchor': 'page 2'}],
+                'confidence': 'stated',
+                'cross_refs': [],
+                'notes': '',
+            },
+        ]
+        manifest = _manifest_with_identity({})
+        manifest['extracted_items'] = items
+
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['manifest']] = manifest
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['requirements']] = _requirements_bundle()
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['delivery_plan']] = _delivery_plan_bundle()
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['scope_boundaries']] = _scope_bundle()
+
+        result = await assemble_sow_payload(
+            stage='content', tool_context=mock_tool_context,
+        )
+
+        assert result['status'] == 'success'
+        sow = result['data']['sow_data']
+        assert sow['partner_name'] == 'GFT'
+        assert sow['customer_name'] == 'Acme'
+
+    async def test_nested_project_dict_still_works_as_fallback(
+        self, mock_tool_context
+    ):
+        """Legacy fallback path: a manifest that DOES carry a
+        ``project`` sub-dict (synthetic, used by older tests) still
+        feeds the assembler. We keep this branch alive on purpose so
+        test fixtures and any future discovery variant continue
+        working without touching the assembler."""
+        manifest = _manifest_nested()  # uses the 'project' sub-dict
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['manifest']] = manifest
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['requirements']] = _requirements_bundle()
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['delivery_plan']] = _delivery_plan_bundle()
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['scope_boundaries']] = _scope_bundle()
+
+        result = await assemble_sow_payload(
+            stage='content', tool_context=mock_tool_context,
+        )
+
+        assert result['status'] == 'success'
+        assert result['data']['sow_data']['partner_name'] == 'GFT Technologies'
+
+    async def test_identity_primitives_win_over_nested_project_dict(
+        self, mock_tool_context
+    ):
+        """Lookup order is canonical first: Identity primitives beat
+        the legacy nested ``project`` sub-dict when both are present.
+        This is the migration-safe order — once production discovery
+        writes Identity primitives, the legacy nested data (probably
+        stale) cannot override it."""
+        manifest = _manifest_nested()  # has nested 'project'
+        # Add an Identity item with DIFFERENT values to detect which
+        # path the extractor chose.
+        manifest['extracted_items'] = [
+            _identity_item({
+                'partner': 'PARTNER_FROM_PRIMITIVES',
+                'customer': 'CUSTOMER_FROM_PRIMITIVES',
+                'project_name': 'TITLE_FROM_PRIMITIVES',
+                'funding_type': 'DAF',
+            }),
+        ]
+
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['manifest']] = manifest
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['requirements']] = _requirements_bundle()
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['delivery_plan']] = _delivery_plan_bundle()
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['scope_boundaries']] = _scope_bundle()
+
+        result = await assemble_sow_payload(
+            stage='content', tool_context=mock_tool_context,
+        )
+
+        assert result['status'] == 'success'
+        sow = result['data']['sow_data']
+        assert sow['partner_name'] == 'PARTNER_FROM_PRIMITIVES'
+        assert sow['customer_name'] == 'CUSTOMER_FROM_PRIMITIVES'
+        assert sow['project_title'] == 'TITLE_FROM_PRIMITIVES'
+
+    async def test_blank_primitive_falls_through_to_legacy_paths(
+        self, mock_tool_context
+    ):
+        """Whitespace-only Identity primitive → fall through to nested
+        project dict if it has the value. Mirrors the discovery
+        contract where ``''`` and whitespace also count as 'unknown'."""
+        manifest = _manifest_nested()
+        manifest['extracted_items'] = [
+            _identity_item({
+                'partner': '   ',  # blank — must fall through
+                'customer': 'Acme Corp',  # wins via primitives
+                'project_name': 'not_stated',  # falls through
+                'funding_type': 'DAF',
+            }),
+        ]
+
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['manifest']] = manifest
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['requirements']] = _requirements_bundle()
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['delivery_plan']] = _delivery_plan_bundle()
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['scope_boundaries']] = _scope_bundle()
+
+        result = await assemble_sow_payload(
+            stage='content', tool_context=mock_tool_context,
+        )
+
+        assert result['status'] == 'success'
+        sow = result['data']['sow_data']
+        # Blank primitive → nested project sub-dict wins.
+        assert sow['partner_name'] == 'GFT Technologies'
+        # Real primitive wins even though nested 'project' had its own value.
+        assert sow['customer_name'] == 'Acme Corp'
+        # not_stated primitive → nested wins.
+        assert sow['project_title'] == 'Data Analytics Platform'

@@ -33,6 +33,23 @@ extraction manifest plus the bundles produced by the prior Phase
 Steps. When any declared input is missing from state, the provider
 overrides the closing instruction with a STOP-and-emit-empty-bundle
 directive so the worker never invents content from training data.
+
+## Patch mode (F-12)
+
+When ``enable_patch_mode=True`` (the default), the factory also
+declares an OPTIONAL input pointing at the section's own ``output_key``
+labelled ``previous_bundle``. On the first run that key is empty in
+state and nothing is injected — the worker generates from scratch as
+usual. On a re-invocation (revision after a review gate, upstream
+cascade) the worker sees its prior output alongside the upstream
+packet and the provider appends a patch-mode footer instructing the
+worker to: preserve every existing id byte-for-byte, carry every
+untouched item from ``previous_bundle`` verbatim, and apply only the
+minimum delta required by the new upstream inputs or the implicit
+edit signal from the orchestrator. This is the structural safeguard
+against the "regenerate-from-scratch on every revision" hazard —
+without it, a targeted user edit like "change NFR-03 to multi-zone"
+would re-roll every other FR/NFR/id in the bundle by coincidence.
 """
 
 from __future__ import annotations
@@ -176,18 +193,65 @@ _INPUTS_PRESENT_FOOTER = (
 )
 
 
+# F-12 — patch-mode footer appended ON TOP OF the present-inputs footer
+# whenever a ``previous_bundle`` was injected. The bundle in question is
+# the section's OWN last output (the same agent has run before in this
+# session). Without this footer the worker would treat every invocation
+# as a first-generation and regenerate the whole section from upstream
+# alone — losing IDs, re-wording untouched items, and amplifying any
+# upstream change into a full cascade. With it, the worker preserves
+# every untouched item and applies only the delta the new inputs
+# (manifest update, upstream bundle change, or user request received
+# via the orchestrator's invocation) demand.
+_PATCH_MODE_FOOTER = (
+    '\n---\n\n'
+    '# Patch mode (binding — `<previous_bundle>` is present)\n\n'
+    'You have already produced this bundle in a prior turn (see '
+    '`<previous_bundle>` above). The orchestrator is re-invoking you '
+    'because either the user requested a targeted change after a review '
+    'gate, or an upstream section was updated and you need to reconcile. '
+    'This is a PATCH, not a regeneration.\n\n'
+    '**Rules (non-negotiable):**\n\n'
+    '1. **Preserve every existing id byte-for-byte** (FR-01, NFR-01, '
+    'WS-01, OOS-01, A-01, …). Never reorder, renumber, swap, or recycle '
+    'ids. Removed items leave a gap in the numeric sequence; new items '
+    'append after the last existing id.\n'
+    '2. **Carry every untouched item from `<previous_bundle>` into your '
+    'new output byte-for-byte** — same id, same wording, same field '
+    'order. The only items whose text may change are the ones the '
+    'requested edit or the upstream reconciliation actually requires.\n'
+    '3. **Identify the minimum delta first**, then apply it. Diff the '
+    'new upstream inputs against `<previous_bundle>` and the implicit '
+    'instruction from the orchestrator; the diff is the patch surface, '
+    'and nothing outside it should move.\n'
+    '4. **Never drop a previous item silently.** Removals are deliberate '
+    'and require an upstream signal (e.g. the manifest no longer carries '
+    'the system the FR named).\n'
+    '5. **Cross-section cascades** (e.g. an NFR target changed → a '
+    'related success criterion needs updating) follow the same minimum-'
+    'change discipline: touch the dependent item, leave its siblings '
+    'alone.\n'
+    '6. The reference loaded for "patching" in your SKILL.md '
+    '(`id-stability-rules.md`) overrides any general "regenerate the '
+    'section" instinct in the rest of the skill. Re-read it before '
+    'emitting your draft.\n'
+)
+
+
 def _make_worker_instruction_provider(
     *,
     skill_body: str,
     output_protocol: str,
     state_inputs: tuple[tuple[str, str], ...],
+    optional_state_inputs: tuple[tuple[str, str], ...] = (),
+    patch_mode_label: str | None = None,
 ):
     """Build the runtime instruction for a section worker.
 
     The provider is invoked by ADK every time the worker runs, so it
     sees the latest state — including any upstream bundle written by a
     prior section agent within the same SOW build. The closure captures
-    only immutable strings + the input tuple; no references to mutable
+    only immutable strings + the input tuples; no references to mutable
     state.
 
     Args:
@@ -197,11 +261,23 @@ def _make_worker_instruction_provider(
             :func:`_build_worker_output_protocol`. Comes pre-built so
             the factory has full control over the example shape that
             shows up in MISSING mode and PRESENT mode alike.
-        state_inputs: Ordered tuple of ``(label, state_key)`` pairs.
-            ``label`` becomes the XML tag in the rendered prompt
+        state_inputs: Ordered tuple of REQUIRED ``(label, state_key)``
+            pairs. ``label`` becomes the XML tag in the rendered prompt
             (``<extraction_manifest>...</extraction_manifest>``) and
             also appears in the MISSING listing so the worker — and the
             user reading logs — sees exactly which dependency is gone.
+        optional_state_inputs: Ordered tuple of OPTIONAL
+            ``(label, state_key)`` pairs. Injected as XML blocks when
+            present in state, silently omitted when absent (does NOT
+            trigger the MISSING-and-emit-empty-bundle path). Use for
+            inputs whose absence on first run is the normal case (the
+            ``previous_bundle`` carrying the section's own prior output
+            is the canonical use).
+        patch_mode_label: When set AND the matching ``optional_state_inputs``
+            label is present in state at provider time, append
+            :data:`_PATCH_MODE_FOOTER` so the worker switches from first-
+            generation to patch discipline. Typically set to
+            ``'previous_bundle'`` for section agents.
 
     Returns:
         A callable accepted by ADK's ``LlmAgent(instruction=...)``.
@@ -223,22 +299,47 @@ def _make_worker_instruction_provider(
 
         base = skill_body + output_protocol
         if missing:
+            # MISSING required inputs always wins — even when an optional
+            # previous_bundle is sitting in state. A bundle without its
+            # upstream packet is no patching target either, since the
+            # upstream change is what would drive the diff.
             footer = _MISSING_INPUTS_FOOTER.format(
                 missing_list='\n'.join(missing)
             )
             return base + footer
 
+        # Optional inputs — collected after the required ones so they
+        # appear AFTER the upstream packet in the prompt (the model
+        # reads top-down; upstream context first, then "here's what
+        # you produced last time").
+        patch_mode_active = False
+        for label, key in optional_state_inputs:
+            value = state.get(key)
+            if not _is_present(value):
+                continue
+            rendered.append(
+                f'<{label}>\n{_serialize_state_value(value)}\n</{label}>'
+            )
+            if patch_mode_label is not None and label == patch_mode_label:
+                patch_mode_active = True
+
         if not rendered:
-            # No declared inputs: nothing to inject. Worker runs with
-            # SKILL.md + output protocol only. Kept explicit so future
-            # readers see this branch is intentional, not a bug.
+            # No declared inputs at all. Worker runs with SKILL.md +
+            # output protocol only. Kept explicit so future readers see
+            # this branch is intentional, not a bug.
             return base
 
-        return base + _INPUTS_PRESENT_FOOTER.format(
+        prompt = base + _INPUTS_PRESENT_FOOTER.format(
             rendered_inputs='\n\n'.join(rendered)
         )
+        if patch_mode_active:
+            prompt += _PATCH_MODE_FOOTER
+        return prompt
 
     return _provider
+
+
+_PREVIOUS_BUNDLE_LABEL = 'previous_bundle'
 
 
 def build_section_agent(
@@ -252,6 +353,8 @@ def build_section_agent(
     extra_tools: list[Any] | None = None,
     extra_skills_for_resources: tuple[str, ...] = ('sow-shared',),
     state_inputs: tuple[tuple[str, str], ...] = (),
+    extra_optional_state_inputs: tuple[tuple[str, str], ...] = (),
+    enable_patch_mode: bool = True,
     model: str | None = None,
     temperature: float | None = None,
     thinking_budget: int | None = None,
@@ -278,18 +381,39 @@ def build_section_agent(
             should be reachable via ``load_skill_resource`` (default:
             ``('sow-shared',)``). The section's own skill is always
             included; duplicates are deduplicated.
-        state_inputs: Ordered tuple of ``(label, state_key)`` pairs to
-            inject into the worker's prompt at every turn. The label
-            becomes the XML tag (``<label>...</label>``) and the value
-            at ``ctx.state[state_key]`` is JSON-serialized into the
-            block. Each section declares ONLY the upstream artifacts
-            it actually needs (e.g. ``requirements_agent`` takes the
-            manifest only; ``narrative_agent`` takes every prior
-            bundle). When any declared input is missing from state,
-            the provider switches to a STOP-and-emit-empty-bundle
-            footer so the worker cannot fabricate content out of
-            training data. See the module docstring "Runtime input
+        state_inputs: Ordered tuple of REQUIRED ``(label, state_key)``
+            pairs to inject into the worker's prompt at every turn. The
+            label becomes the XML tag (``<label>...</label>``) and the
+            value at ``ctx.state[state_key]`` is JSON-serialized into
+            the block. Each section declares ONLY the upstream
+            artifacts it actually needs (e.g. ``requirements_agent``
+            takes the manifest only; ``narrative_agent`` takes every
+            prior bundle). When any required input is missing from
+            state, the provider switches to a STOP-and-emit-empty-
+            bundle footer so the worker cannot fabricate content out
+            of training data. See the module docstring "Runtime input
             contract" for the full rationale.
+        extra_optional_state_inputs: Ordered tuple of optional
+            ``(label, state_key)`` pairs in addition to the auto-
+            injected ``previous_bundle`` (see ``enable_patch_mode``).
+            Optional inputs are silently omitted when missing — they
+            never trigger the MISSING-bundle path. Use for ancillary
+            context whose absence is the normal first-run case.
+        enable_patch_mode: When ``True`` (the default) the factory
+            auto-appends an optional input pointing at the section's
+            OWN ``output_key`` labelled ``"previous_bundle"``. On a
+            re-invocation (revision after a review gate, upstream
+            cascade) the worker sees its prior output and switches to
+            patch discipline — preserving ids, leaving untouched items
+            byte-for-byte, applying only the minimum delta. The
+            instruction provider appends a patch-mode footer
+            (:data:`_PATCH_MODE_FOOTER`) whenever the previous_bundle
+            input is populated at runtime; on first generation (no
+            prior output in state) the footer is omitted and the
+            worker generates from scratch as usual. Set to ``False``
+            only if a section legitimately should always regenerate
+            from upstream (no current section does — the default is
+            what you want).
         model: Override the Gemini model id (defaults to
             ``config.GEMINI_MODEL``).
         temperature: Override generation temperature for the worker.
@@ -323,6 +447,25 @@ def build_section_agent(
 
     effective_model = model or config.GEMINI_MODEL
 
+    # Auto-inject the previous-bundle optional input when patch mode is
+    # enabled. Placing it FIRST in the optional tuple keeps the order
+    # deterministic regardless of what callers pass in
+    # ``extra_optional_state_inputs``; reorder caller-supplied inputs
+    # explicitly if a different order ever matters.
+    optional_inputs: tuple[tuple[str, str], ...] = ()
+    if enable_patch_mode:
+        optional_inputs = ((_PREVIOUS_BUNDLE_LABEL, output_key),)
+    if extra_optional_state_inputs:
+        # De-dupe by state_key so a caller cannot shadow the auto-
+        # injected previous_bundle with the same key under a different
+        # label.
+        seen_keys = {key for _, key in optional_inputs}
+        optional_inputs = optional_inputs + tuple(
+            (label, key)
+            for label, key in extra_optional_state_inputs
+            if key not in seen_keys
+        )
+
     worker = Agent(
         name=f'{section_stem}_worker',
         description=(
@@ -339,6 +482,10 @@ def build_section_agent(
             skill_body=own_skill.instructions,
             output_protocol=_build_worker_output_protocol(output_example),
             state_inputs=state_inputs,
+            optional_state_inputs=optional_inputs,
+            patch_mode_label=(
+                _PREVIOUS_BUNDLE_LABEL if enable_patch_mode else None
+            ),
         ),
         include_contents='none',
         tools=worker_tools,

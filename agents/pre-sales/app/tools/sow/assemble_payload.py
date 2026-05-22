@@ -105,19 +105,89 @@ _REQUIRED_PROJECT_METADATA_KEYS: tuple[str, ...] = (
 )
 
 
+# Mapping ``sow_data`` metadata key -> primitive key inside an
+# ``ExtractedItem`` whose ``category == 'Identity'`` (per
+# ``app/skills/sow-discovery/references/extraction-rules.md`` §1).
+# Discovery writes project metadata into ``primitives`` — NOT into a
+# top-level ``project`` sub-dict — so this is the canonical extraction
+# path. The legacy top-level / nested-``project`` lookups remain as
+# fallbacks so synthetic manifests in tests (and any hypothetical
+# discovery rewrite) keep working without touching the assembler.
+_IDENTITY_PRIMITIVE_ALIASES: dict[str, tuple[str, ...]] = {
+    'partner_name': ('partner',),
+    'customer_name': ('customer',),
+    'project_title': ('project_name',),
+    'funding_type': ('funding_type',),
+    'engagement_type': ('engagement_shape',),
+}
+
+
+def _collect_identity_primitives(
+    manifest: dict[str, Any],
+) -> dict[str, str]:
+    """Merge ``primitives`` from every ``Identity`` extracted item.
+
+    A real manifest typically has one Identity item that carries all
+    project-level primitives in a single dict, but the schema allows
+    multiple Identity items (e.g. one per uploaded artifact). When that
+    happens we coalesce: later items only fill primitives that earlier
+    ones left as ``not_stated`` or missing. This matches the discovery
+    skill's own reconciliation rules — explicit values always win over
+    placeholders.
+    """
+    items = manifest.get('extracted_items')
+    if not isinstance(items, list):
+        return {}
+
+    coalesced: dict[str, str] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if item.get('category') != 'Identity':
+            continue
+        primitives = item.get('primitives')
+        if not isinstance(primitives, dict):
+            continue
+        for key, value in primitives.items():
+            if not isinstance(value, str):
+                continue
+            stripped = value.strip()
+            # ``not_stated`` is the discovery skill's "I looked but
+            # there's nothing here" sentinel — treat as missing so a
+            # later item with a real value can win.
+            if not stripped or stripped.lower() == 'not_stated':
+                continue
+            coalesced.setdefault(key, stripped)
+    return coalesced
+
+
 def _extract_project_metadata(manifest: dict[str, Any]) -> dict[str, Any]:
     """Pull project-level fields from the manifest in a shape-tolerant way.
 
-    The Extraction Manifest may store project metadata either flat at the
-    top level (``manifest['project_title']``) or nested under a
-    ``project`` sub-dict (``manifest['project']['title']``). We accept
-    both and produce the flat shape ``generate_sow_document`` expects.
-    Missing keys are emitted as empty strings rather than dropped, so the
-    docx template never KeyErrors at render time — the validation critic
-    is responsible for catching missing required project fields.
+    The Extraction Manifest in production stores project metadata under
+    ``extracted_items[*].primitives`` for items with
+    ``category == 'Identity'`` — discovery does NOT create a top-level
+    ``project_title`` or a nested ``project`` sub-dict, and the
+    ``ExtractionManifest`` Pydantic schema forbids extra fields at the
+    root (``extra='forbid'`` in ``_extraction_manifest.py``), so flat
+    top-level keys cannot exist either.
+
+    Lookup order:
+        1. ``extracted_items[*].primitives`` for ``category == 'Identity'``
+           (the canonical path).
+        2. Nested ``manifest['project']`` sub-dict with aliases.
+        3. Flat top-level ``manifest[key]``.
+        4. Empty string if nothing found.
+
+    Missing keys are emitted as empty strings rather than dropped so the
+    docx template never KeyErrors at render time. The required-field
+    gate downstream (``assemble_sow_payload`` itself) catches the
+    blanks for the four critical keys.
     """
     project_nested = manifest.get('project') if isinstance(manifest, dict) else None
     project_nested = project_nested if isinstance(project_nested, dict) else {}
+
+    identity_primitives = _collect_identity_primitives(manifest)
 
     nested_aliases: dict[str, tuple[str, ...]] = {
         'project_title': ('title', 'project_title'),
@@ -137,15 +207,33 @@ def _extract_project_metadata(manifest: dict[str, Any]) -> dict[str, Any]:
 
     out: dict[str, Any] = {}
     for key in _PROJECT_METADATA_KEYS:
-        if key in manifest:
-            out[key] = manifest[key]
+        # 1) Canonical: Identity primitives from extracted_items.
+        for primitive_key in _IDENTITY_PRIMITIVE_ALIASES.get(key, ()):
+            if primitive_key in identity_primitives:
+                out[key] = identity_primitives[primitive_key]
+                break
+        if key in out:
             continue
+        # 2) Legacy fallback: nested manifest['project'] sub-dict.
+        matched = False
         for alias in nested_aliases.get(key, ()):
             if alias in project_nested:
-                out[key] = project_nested[alias]
+                value = project_nested[alias]
+                if isinstance(value, str) and not value.strip():
+                    continue
+                out[key] = value
+                matched = True
                 break
-        else:
-            out[key] = ''
+        if matched:
+            continue
+        # 3) Legacy fallback: flat top-level key on the manifest.
+        if key in manifest:
+            value = manifest[key]
+            if not (isinstance(value, str) and not value.strip()):
+                out[key] = value
+                continue
+        # 4) Nothing found.
+        out[key] = ''
     return out
 
 
