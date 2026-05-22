@@ -28,6 +28,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from app.sub_agents.validation.aggregator import (
+    _POLICY_FORCED_AUTO_FIXABLE,
     _calibrate,
     _decide_status,
     validation_aggregator_agent,
@@ -223,13 +224,19 @@ async def test_source_conflict_routes_to_needs_human_review():
 
 @pytest.mark.unit
 async def test_not_fixable_by_agent_routes_to_needs_human_review():
+    """Use a non-policy category so the resolution_mode is preserved.
+    ``(coverage, manifest_item_uncovered)`` is now in the policy table
+    and gets force-calibrated to ``auto_fixable``; the test's intent —
+    "the mode itself routes correctly" — is exercised on a pair the
+    aggregator must NOT override.
+    """
     state = _state_with(
         {
-            'coverage': [
+            'contradictions': [
                 _finding(
-                    fid='coverage-001',
-                    skill='coverage',
-                    category='manifest_item_uncovered',
+                    fid='contradictions-001',
+                    skill='contradictions',
+                    category='fr_vs_nfr',
                     severity='MAJOR',
                     resolution_mode='not_fixable_by_agent',
                     requires_human_review=True,
@@ -655,6 +662,256 @@ async def test_invented_quantitative_commitment_must_be_decision_required():
 # ---------------------------------------------------------------------------
 # 10. Mixed batch — one decision_required is enough to escalate, but the
 #     rest of the auto-fixable BLOCKERs must still be tracked in the report.
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Policy table — (skill, category) pairs forced to ``auto_fixable``.
+# These categories are mechanical fixes the revision_agent has finding-map
+# entries for; the LLM occasionally emits stricter modes (probabilistic)
+# and the aggregator MUST override so the loop can patch instead of
+# surfacing a user question. Mirrors the reviewer-approved policy list
+# in ``aggregator._POLICY_FORCED_AUTO_FIXABLE``.
+# ---------------------------------------------------------------------------
+
+
+# Expected pairs by skill — encoded here so a drift between aggregator and
+# tests fails loudly. If the policy table changes, this list must change
+# in lockstep AND a code review must justify the move.
+_EXPECTED_POLICY_PAIRS: tuple[tuple[str, str], ...] = (
+    ('coverage', 'manifest_item_uncovered'),
+    ('contradictions', 'scope_vs_oos'),
+    ('contradictions', 'timeline_vs_deliverables'),
+    ('contradictions', 'activities_vs_deliverables'),
+    ('contractual_exposure', 'missing_consequence_clause'),
+    ('contractual_exposure', 'missing_change_request_gate'),
+    ('contractual_exposure', 'missing_handover_boundary'),
+    ('contractual_exposure', 'incomplete_parent_contract_reference'),
+    ('disclosures', 'missing_ai_nondeterminism_disclosure'),
+    ('disclosures', 'missing_external_api_dependency_disclosure'),
+    ('disclosures', 'missing_pii_responsibility_disclosure'),
+    ('disclosures', 'missing_production_handover_disclosure'),
+    ('disclosures', 'missing_customer_infra_dependency_disclosure'),
+    ('disclosures', 'missing_multi_region_authority_disclosure'),
+    ('semantic_quality', 'naming_drift'),
+)
+
+
+@pytest.mark.unit
+def test_policy_table_matches_expected_pairs():
+    """Tripwire — the aggregator's policy table is exactly the
+    reviewer-approved set. Any addition or removal must update both this
+    list and the aggregator constant in the same change.
+    """
+    assert _POLICY_FORCED_AUTO_FIXABLE == frozenset(_EXPECTED_POLICY_PAIRS)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('skill,category', _EXPECTED_POLICY_PAIRS)
+def test_policy_forces_auto_fixable_over_decision_required(
+    skill: str, category: str
+):
+    """Every policy pair: even when the LLM emits ``decision_required``,
+    the aggregator must force ``auto_fixable`` so the gate becomes
+    ``blocked`` (not ``needs_human_review``).
+    """
+    raw = Finding(
+        **_finding(
+            fid=f'{skill}-001',
+            skill=skill,
+            category=category,
+            severity='MAJOR',
+            confidence=0.85,
+            resolution_mode='decision_required',
+            requires_human_review=True,  # stale True from the LLM
+        )
+    )
+
+    calibrated = _calibrate([raw])
+
+    assert calibrated[0].resolution_mode == 'auto_fixable'
+    assert calibrated[0].requires_human_review is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('skill,category', _EXPECTED_POLICY_PAIRS)
+def test_policy_forces_auto_fixable_over_not_fixable_by_agent(
+    skill: str, category: str
+):
+    """Symmetric to the previous test for the other escalation mode the
+    LLM might mis-emit on a manifest-silent-but-inferable gap.
+    """
+    raw = Finding(
+        **_finding(
+            fid=f'{skill}-002',
+            skill=skill,
+            category=category,
+            severity='MAJOR',
+            confidence=0.85,
+            resolution_mode='not_fixable_by_agent',
+            requires_human_review=True,
+        )
+    )
+
+    calibrated = _calibrate([raw])
+
+    assert calibrated[0].resolution_mode == 'auto_fixable'
+    assert calibrated[0].requires_human_review is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('skill,category', _EXPECTED_POLICY_PAIRS)
+async def test_policy_forced_pair_routes_to_blocked_end_to_end(
+    skill: str, category: str
+):
+    """End-to-end: a single finding from a policy pair, emitted with
+    ``decision_required``, must produce ``overall_status == 'blocked'``
+    after the aggregator runs the full pipeline.
+    """
+    state = _state_with(
+        {
+            skill: [
+                _finding(
+                    fid=f'{skill}-001',
+                    skill=skill,
+                    category=category,
+                    severity='MAJOR',
+                    confidence=0.85,
+                    resolution_mode='decision_required',
+                    requires_human_review=True,
+                ),
+            ]
+        }
+    )
+    report = await _run(state)
+
+    assert report.overall_status == 'blocked'
+    assert report.requires_human_review is False
+    assert report.findings[0].resolution_mode == 'auto_fixable'
+
+
+@pytest.mark.unit
+def test_policy_preserves_auto_fixable_when_already_emitted():
+    """No-op invariant: when the LLM already emitted ``auto_fixable`` on
+    a policy pair, calibration must not touch the mode (only severity
+    and the legacy flag are subject to other steps).
+    """
+    raw = Finding(
+        **_finding(
+            fid='coverage-001',
+            skill='coverage',
+            category='manifest_item_uncovered',
+            severity='MAJOR',
+            confidence=0.9,
+            resolution_mode='auto_fixable',
+            requires_human_review=False,
+        )
+    )
+
+    calibrated = _calibrate([raw])
+
+    assert calibrated[0].resolution_mode == 'auto_fixable'
+    assert calibrated[0].requires_human_review is False
+    # Severity / confidence preserved verbatim.
+    assert calibrated[0].severity == 'MAJOR'
+    assert calibrated[0].confidence == 0.9
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    'skill,category',
+    [
+        # Real trade-off categories — must keep LLM discretion. None of
+        # these appear in _POLICY_FORCED_AUTO_FIXABLE.
+        ('contractual_exposure', 'subjective_nfr_target'),
+        ('contractual_exposure', 'missing_timing_anchor'),
+        ('contractual_exposure', 'schedule_graph_misalignment'),
+        ('contradictions', 'fr_vs_nfr'),
+        ('contradictions', 'architecture_vs_stack'),
+        ('contradictions', 'assumptions_vs_risks'),
+    ],
+)
+def test_non_policy_categories_preserve_decision_required(
+    skill: str, category: str
+):
+    """Inverse guardrail: categories outside the policy table must NOT
+    be forced. A genuine trade-off / source-conflict / unresolvable gap
+    has to remain escalatable to ``needs_human_review``.
+    """
+    raw = Finding(
+        **_finding(
+            fid=f'{skill}-003',
+            skill=skill,
+            category=category,
+            severity='MAJOR',
+            confidence=0.85,
+            resolution_mode='decision_required',
+            requires_human_review=True,
+        )
+    )
+
+    calibrated = _calibrate([raw])
+
+    assert calibrated[0].resolution_mode == 'decision_required'
+    assert calibrated[0].requires_human_review is True
+
+
+@pytest.mark.unit
+async def test_unknown_category_passes_through_unchanged():
+    """A future skill emission with a category not in the policy table
+    (and not in the trade-off list either) must pass through verbatim.
+    The aggregator never invents resolution modes for unknown pairs.
+    """
+    state = _state_with(
+        {
+            'semantic_quality': [
+                _finding(
+                    fid='semantic_quality-999',
+                    skill='semantic_quality',
+                    category='future_unknown_category',
+                    severity='MAJOR',
+                    confidence=0.85,
+                    resolution_mode='decision_required',
+                    requires_human_review=True,
+                ),
+            ]
+        }
+    )
+    report = await _run(state)
+
+    assert report.overall_status == 'needs_human_review'
+    assert report.findings[0].resolution_mode == 'decision_required'
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('skill,category', _EXPECTED_POLICY_PAIRS)
+def test_policy_does_not_break_severity_downgrade(
+    skill: str, category: str
+):
+    """The policy override applies BEFORE severity calibration; a low-
+    confidence BLOCKER on a policy pair still drops to MAJOR via the
+    existing confidence + anchor rules.
+    """
+    raw = Finding(
+        **_finding(
+            fid=f'{skill}-004',
+            skill=skill,
+            category=category,
+            severity='BLOCKER',
+            confidence=0.5,  # below the 0.7 floor
+            evidence='Single weak anchor only',  # < 2 anchors
+            resolution_mode='decision_required',
+        )
+    )
+
+    calibrated = _calibrate([raw])
+
+    # Severity downgraded because confidence / anchors fail the BLOCKER bar.
+    assert calibrated[0].severity == 'MAJOR'
+    # Mode forced regardless.
+    assert calibrated[0].resolution_mode == 'auto_fixable'
+
+
 # ---------------------------------------------------------------------------
 
 

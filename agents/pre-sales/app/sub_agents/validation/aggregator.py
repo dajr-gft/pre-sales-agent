@@ -8,6 +8,11 @@ severity, decides ``overall_status``, and writes a partial
 produced here — it only fills the two text fields.
 
 Severity calibration rules (executed in order, all deterministic):
+- ``(skill, category)`` in policy table           → force
+                                                    ``resolution_mode = auto_fixable``
+                                                    (mechanical-fix categories
+                                                    cannot escalate even if the
+                                                    LLM emitted a stricter mode).
 - BLOCKER with `confidence < 0.7`                 → downgrade to MAJOR.
 - BLOCKER without ≥ 2 quoted anchors in evidence  → downgrade to MAJOR.
 - ``resolution_mode == auto_fixable``             → force
@@ -81,6 +86,58 @@ _HUMAN_REVIEW_MODES: frozenset[str] = frozenset(
     {'decision_required', 'source_conflict', 'not_fixable_by_agent'},
 )
 
+# Policy table: (skill, category) pairs whose ``resolution_mode`` is
+# forced to ``auto_fixable`` regardless of what the LLM emitted. These
+# are defects whose remedy is mechanical — restore a manifest anchor,
+# insert a canonical contractual clause, disambiguate a scope phrase,
+# remove out-of-source drift, link a deliverable to its phase — and
+# every category here has a corresponding mapping in
+# ``sow-revision/references/finding-map.md`` so the revision_agent has
+# a reference to load before patching.
+#
+# Why force, not trust: the per-skill SKILL.md prompts already instruct
+# the LLM to default to ``auto_fixable`` for these categories, but
+# probabilistic outputs occasionally emit ``decision_required`` or
+# ``not_fixable_by_agent`` and the aggregator used to trust them
+# verbatim — single-finding over-escalation could surface a user
+# question that the revision_agent had every input to resolve
+# automatically. Forcing the mode here turns "expected behavior" into a
+# determinism the rest of the pipeline can rely on.
+#
+# Severity remains independent. A BLOCKER in this table still routes
+# to ``blocked`` so the quality loop can patch; severity is calibrated
+# separately by the existing confidence + anchor checks.
+#
+# Categories deliberately NOT in this table keep LLM discretion because
+# their fix can be a real commercial / scope / trade-off decision (e.g.
+# ``contractual_exposure/subjective_nfr_target`` — quantifying an NFR
+# from the manifest is auto-fixable, but choosing whether to relax the
+# target to fit a cost envelope is ``decision_required``).
+_POLICY_FORCED_AUTO_FIXABLE: frozenset[tuple[str, str]] = frozenset(
+    {
+        # Coverage gaps — restore the manifest anchor.
+        ('coverage', 'manifest_item_uncovered'),
+        # Mechanical contradictions — disambiguate / link / reconcile.
+        ('contradictions', 'scope_vs_oos'),
+        ('contradictions', 'timeline_vs_deliverables'),
+        ('contradictions', 'activities_vs_deliverables'),
+        # Standard contractual hardening — insert the canonical clause.
+        ('contractual_exposure', 'missing_consequence_clause'),
+        ('contractual_exposure', 'missing_change_request_gate'),
+        ('contractual_exposure', 'missing_handover_boundary'),
+        ('contractual_exposure', 'incomplete_parent_contract_reference'),
+        # All required disclosures — insert the canonical sentence.
+        ('disclosures', 'missing_ai_nondeterminism_disclosure'),
+        ('disclosures', 'missing_external_api_dependency_disclosure'),
+        ('disclosures', 'missing_pii_responsibility_disclosure'),
+        ('disclosures', 'missing_production_handover_disclosure'),
+        ('disclosures', 'missing_customer_infra_dependency_disclosure'),
+        ('disclosures', 'missing_multi_region_authority_disclosure'),
+        # Out-of-source drift / hallucination — remove the ungrounded item.
+        ('semantic_quality', 'naming_drift'),
+    }
+)
+
 
 def _fingerprint(f: Finding) -> str:
     """Stable identity used to deduplicate findings across rounds/skills."""
@@ -122,19 +179,31 @@ def _normalize_findings(raw: Iterable[dict] | None) -> list[Finding]:
 
 
 def _calibrate(findings: list[Finding]) -> list[Finding]:
-    """Apply severity downgrades + reconcile resolution_mode/human-review flag.
+    """Apply policy override + severity downgrade + flag reconciliation.
 
-    Two independent calibrations applied in a single pass so the rest of
-    the pipeline (gate, score, persistence tracking) can trust both the
-    severity label and the human-review signal:
+    Three independent calibrations applied in a single pass so the rest
+    of the pipeline (gate, score, persistence tracking) can trust the
+    severity label, the resolution mode, AND the legacy human-review
+    flag simultaneously:
 
-    1. **Severity downgrade.** A BLOCKER without enough confidence (≥ 0.7)
-       or without two quoted anchors in the evidence drops to MAJOR. This
-       protects against costly false positives — a confidently-quoted
-       BLOCKER is a real blocker; anything weaker is at most a MAJOR.
+    1. **Policy override.** When ``(skill, category)`` is in
+       :data:`_POLICY_FORCED_AUTO_FIXABLE`, ``resolution_mode`` is
+       forced to ``auto_fixable`` even if the LLM emitted something
+       stricter. These are categories whose fix is mechanical (canonical
+       clause insertion, manifest-anchor restore, drift removal, phase
+       linking) and that the revision_agent has a finding-map entry
+       for. Forcing here turns "the prompt usually defaults to
+       auto_fixable" into a deterministic guarantee. See the policy
+       table's module-level docstring for the rationale.
 
-    2. **resolution_mode / requires_human_review reconciliation.**
-       ``resolution_mode`` is the authoritative signal:
+    2. **Severity downgrade.** A BLOCKER without enough confidence
+       (≥ 0.7) or without two quoted anchors in the evidence drops to
+       MAJOR. This protects against costly false positives — a
+       confidently-quoted BLOCKER is a real blocker; anything weaker is
+       at most a MAJOR.
+
+    3. **resolution_mode / requires_human_review reconciliation.**
+       After steps 1 and 2, ``resolution_mode`` is authoritative:
 
        - ``auto_fixable`` → force ``requires_human_review=False``. The
          revision_agent can apply the fix from the recommendation alone;
@@ -150,15 +219,26 @@ def _calibrate(findings: list[Finding]) -> list[Finding]:
     calibrated: list[Finding] = []
     for f in findings:
         update: dict = {}
+        # Step 1 — policy override. Compute the effective mode locally
+        # so the reconciliation in step 3 sees the post-override value
+        # without depending on the order Pydantic applies model_copy
+        # updates.
+        if (f.skill, f.category) in _POLICY_FORCED_AUTO_FIXABLE:
+            if f.resolution_mode != 'auto_fixable':
+                update['resolution_mode'] = 'auto_fixable'
+        effective_mode = update.get('resolution_mode', f.resolution_mode)
+        # Step 2 — severity downgrade.
         if f.severity == 'BLOCKER':
             if f.confidence < _BLOCKER_CONFIDENCE_FLOOR or not _has_two_anchors(
                 f.evidence
             ):
                 update['severity'] = 'MAJOR'
-        if f.resolution_mode == 'auto_fixable':
+        # Step 3 — reconcile the legacy human-review flag against the
+        # (possibly-forced) mode.
+        if effective_mode == 'auto_fixable':
             if f.requires_human_review:
                 update['requires_human_review'] = False
-        elif f.resolution_mode in _HUMAN_REVIEW_MODES:
+        elif effective_mode in _HUMAN_REVIEW_MODES:
             if not f.requires_human_review:
                 update['requires_human_review'] = True
         if update:
