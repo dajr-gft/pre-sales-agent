@@ -5,25 +5,25 @@ description: >
   (`architecture_description`, `technology_stack`, `architecture_components`,
   `architecture_integrations`, `customer_primary_domain` — domain only when
   set by a sibling skill, never by this one) and renders the architecture
-  PNG via `generate_architecture_diagram`. Loaded by `sow-orchestrator`
-  during Phase 2 Step D, AFTER requirements (Step A), delivery plan (Step B)
-  and scope boundaries (Step C) snapshots are already in `sow_data`. NOT
-  responsible for Partner Overview, Customer Overview, or Executive
-  Summary — those belong to `sow-narrative`. NOT responsible for the user
-  review presentation — the orchestrator owns that.
+  PNG via `generate_architecture_diagram`. Invoked by the root SOW
+  orchestrator agent during Phase 2 Step D, AFTER requirements (Step A),
+  delivery plan (Step B) and scope boundaries (Step C) snapshots are
+  already in `sow_data`. NOT responsible for Partner Overview, Customer
+  Overview, or Executive Summary — those belong to `sow-narrative`. NOT
+  responsible for the user review presentation — the root orchestrator
+  owns that.
 metadata:
   pattern: reasoning-chain + tool-call
   produces: architecture_description, technology_stack, architecture_components, architecture_integrations, diagram_png
   inputs: extraction_manifest, sow_data snapshot (requirements + delivery + scope)
-  upstream-skill: sow-orchestrator
   references-skill: sow-shared
 ---
 
 # SOW Architecture
 
 Architecture artifacts only — five sub-steps (1a–1e) executed in order,
-each with a completion gate. No user review here; the orchestrator presents
-after this skill returns.
+each with a completion gate. No user review here; the root orchestrator
+presents after this skill returns.
 
 References below are binding — they override any paraphrase here. Depth
 and structure follow the references; "brief" and "concise" apply to
@@ -34,7 +34,7 @@ orchestration messages only.
 via `load_skill_resource`:
 
 - `sow-shared` / `references/style-guide.md` — quality contract + paragraph-break rule.
-- `sow-shared` / `references/scope-examples/architecture.md` — architecture quality floor (tech stack rows + description shape).
+- `sow-shared` / `references/scope-examples-architecture.md` — architecture quality floor (tech stack rows + description shape).
 - `sow-architecture` / `references/reasoning-rules.md` — reasoning Steps 1-5 (must complete before any output).
 - `sow-architecture` / `references/diagram-spec.md` — clusters, nodes, edges, labels, layout, checklist, anti-patterns.
 - `sow-architecture` / `references/tech-stack-table-rules.md` — table + three-way invariant.
@@ -48,6 +48,8 @@ When patching: also `sow-shared` / `references/id-stability-rules.md`. Untouched
 - Current `sow_data` snapshot with FRs, NFRs, delivery plan, and scope boundaries already populated.
 
 If the Manifest captured a system, data source, or GCP service that does not appear in the FRs, it must still be evaluated for inclusion in the architecture.
+
+> **Coverage scope.** Per-item manifest coverage (walking `extracted_items` exhaustively) is the validation critic's `coverage` skill responsibility, not this skill's. Do not duplicate that walk here; produce content grounded in the inputs above and let the critic flag uncovered items in a later round.
 
 ## Sub-steps (mandatory order)
 

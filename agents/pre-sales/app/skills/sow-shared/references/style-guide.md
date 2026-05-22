@@ -84,15 +84,15 @@ a break.
 **Apply to:** narrative fields covering multiple topics — Executive Summary,
 Partner Overview, Customer Overview, Architecture Description.
 
-**Calibration** (anchored to `scope-examples/`):
+**Calibration** (anchored to the `scope-examples-*.md` reference files):
 
-- **Executive Summary** — when its skill defines a required content order, each item is a candidate paragraph boundary. Merge adjacent items only when they share a single line of reasoning. The Template-compliant example in `scope-examples/executive-summary.md` shows ~5 paragraphs for 250-450 words; the required opening sentence and required Google funding sentence are never collapsed into surrounding prose.
+- **Executive Summary** — when its skill defines a required content order, each item is a candidate paragraph boundary. Merge adjacent items only when they share a single line of reasoning. The Template-compliant example in `scope-examples-executive-summary.md` shows ~5 paragraphs for 250-450 words; the required opening sentence and required Google funding sentence are never collapsed into surrounding prose.
 - **Architecture Description** — typically 2-3 paragraphs: primary data flow → key service justifications → cross-cutting concerns.
 - **Partner / Customer Overview** — 1-2 paragraphs (4-6 lines per `sow-narrative/references/overview-rules.md`); split only on a clear topical shift.
 
 **Do NOT apply to:** single-sentence fields (individual FRs, NFRs, deliverables, tasks, success criteria, role responsibilities), tabular content already split into rows, list items already split into entries, or short labels and names.
 
-**Anti-pattern (rejected):** a long-form narrative field delivered as one uninterrupted block, even if every sentence individually flows. Correct treatment: apply `\n\n` between the required content items, matching the Template-compliant example in `scope-examples/executive-summary.md`.
+**Anti-pattern (rejected):** a long-form narrative field delivered as one uninterrupted block, even if every sentence individually flows. Correct treatment: apply `\n\n` between the required content items, matching the Template-compliant example in `scope-examples-executive-summary.md`.
 
 ---
 

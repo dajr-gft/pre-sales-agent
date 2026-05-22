@@ -6,14 +6,13 @@ description: >
   `customer_roles`, `objectives`, `project_start_date`, `project_end_date` —
   as a single coherent plan. The five sections are generated TOGETHER
   because their cross-validation (Activities ↔ Deliverables ↔ Success
-  Criteria ↔ Timeline ↔ Roles) cannot be evaluated piecewise. Loaded by
-  `sow-orchestrator` during Phase 2 Step B, AFTER `sow-requirements`
-  populates the FR/NFR snapshot the plan must cover.
+  Criteria ↔ Timeline ↔ Roles) cannot be evaluated piecewise. Invoked
+  by the root SOW orchestrator agent during Phase 2 Step B, AFTER
+  `sow-requirements` populates the FR/NFR snapshot the plan must cover.
 metadata:
   pattern: tight-cluster + cross-validation
   produces: activity_phases, deliverables, success_criteria, timeline, partner_roles, customer_roles, objectives, project_start_date, project_end_date
   inputs: extraction_manifest, sow_data snapshot (functional_requirements, non_functional_requirements)
-  upstream-skill: sow-orchestrator
   references-skill: sow-shared
 ---
 
@@ -34,7 +33,7 @@ Depth, structure, minimums, and required wording follow the references;
 via `load_skill_resource`:
 
 - `sow-shared` / `references/style-guide.md` — quality contract.
-- `sow-shared` / `references/scope-examples/delivery.md` — quality floor for Activities + Deliverables.
+- `sow-shared` / `references/scope-examples-delivery.md` — quality floor for Activities + Deliverables.
 - `sow-shared` / `references/language-rules.md` — language hygiene.
 - `sow-delivery-plan` / `references/workstream-structure.md` — Activities + Deliverables + Success Criteria contract.
 - `sow-delivery-plan` / `references/timeline-rules.md` — Timeline contract + invariant.
@@ -47,6 +46,8 @@ When patching: also `sow-shared` / `references/id-stability-rules.md`. Workstrea
 
 - `manifest.extracted_items` for `[Timeline, Briefing, Constraints]` + resolved `manifest.gaps`.
 - Current `sow_data` snapshot with `functional_requirements` + `non_functional_requirements` populated by `sow-requirements`.
+
+> **Coverage scope.** Per-item manifest coverage (walking `extracted_items` exhaustively) is the validation critic's `coverage` skill responsibility, not this skill's. Do not duplicate that walk here; produce content grounded in the inputs above and let the critic flag uncovered items in a later round.
 
 ## Generate (one turn)
 

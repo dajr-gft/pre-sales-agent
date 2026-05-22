@@ -26,6 +26,6 @@ Each risk is an object:
 
 ## Calibration
 
-Quality anchor: `sow-shared/references/scope-examples/risks.md`. Match the
+Quality anchor: `sow-shared/references/scope-examples-risks.md`. Match the
 depth shown there — each risk names the specific system, the failure mode,
 and a concrete mitigation the partner controls.

@@ -6,19 +6,19 @@ description: >
   — by synthesizing the snapshots produced by the upstream section
   skills (requirements, delivery, scope, architecture). Runs the four
   web search queries for partner/customer enrichment and the customer
-  homepage. Loaded by `sow-orchestrator` LAST in Phase 2 (Step E), so
-  the Executive Summary has every other section to synthesize from.
+  homepage. Invoked by the root SOW orchestrator agent LAST in Phase 2
+  (Step E), so the Executive Summary has every other section to
+  synthesize from.
 metadata:
   pattern: synthesis + web-search-enrichment
   produces: executive_summary, partner_overview, customer_overview, customer_primary_domain
   inputs: extraction_manifest, sow_data snapshot (all other sections), web search tool
-  upstream-skill: sow-orchestrator
   references-skill: sow-shared
 ---
 
 # SOW Narrative
 
-The three narrative fields + `customer_primary_domain`. Loaded LAST in
+The three narrative fields + `customer_primary_domain`. Invoked LAST in
 Phase 2 because the Executive Summary synthesizes every other section.
 
 References below are binding — they override any paraphrase here. Depth
@@ -30,7 +30,7 @@ apply to orchestration messages only.
 via `load_skill_resource`:
 
 - `sow-shared` / `references/style-guide.md` — quality contract + paragraph-break rule.
-- `sow-shared` / `references/scope-examples/executive-summary.md` — Template-compliant Executive Summary calibration.
+- `sow-shared` / `references/scope-examples-executive-summary.md` — Template-compliant Executive Summary calibration.
 - `sow-shared` / `references/language-rules.md` — final `.docx` is English; user-facing review localizes meaning.
 - `sow-narrative` / `references/exec-summary-template.md` — exact English template wording, depth, 7-item content order.
 - `sow-narrative` / `references/overview-rules.md` — Partner/Customer rules + the 4 web search queries.
@@ -41,6 +41,8 @@ When patching: also `sow-shared` / `references/id-stability-rules.md`. The exact
 
 - Manifest `extracted_items` for `[Identity, Briefing]`.
 - Current `sow_data` snapshot with every other section already populated.
+
+> **Coverage scope.** Per-item manifest coverage (walking `extracted_items` exhaustively) is the validation critic's `coverage` skill responsibility, not this skill's. Do not duplicate that walk here; produce content grounded in the inputs above and let the critic flag uncovered items in a later round.
 
 ## Generate (one turn)
 

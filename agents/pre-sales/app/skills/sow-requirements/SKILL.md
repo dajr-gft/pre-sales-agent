@@ -5,8 +5,9 @@ description: >
   `functional_requirements` and `non_functional_requirements` — with
   cross-validation between the two lists so `fr_vs_nfr` contradictions and
   `subjective_nfr_target` defects are caught BEFORE the validation critic
-  ever sees them. Loaded by `sow-orchestrator` during Phase 2 Step A,
-  BEFORE delivery plan, scope boundaries, architecture, or narrative.
+  ever sees them. Invoked by the root SOW orchestrator agent during
+  Phase 2 Step A, BEFORE delivery plan, scope boundaries, architecture,
+  or narrative.
   Production-grade NFR Reliability rules (anti-uptime / anti-SLA) are
   enforced in this skill; downstream skills inherit the assumption that
   Reliability is already correctly phrased.
@@ -14,7 +15,6 @@ metadata:
   pattern: paired-generation + cross-validation
   produces: functional_requirements, non_functional_requirements
   inputs: extraction_manifest
-  upstream-skill: sow-orchestrator
   references-skill: sow-shared
 ---
 
@@ -33,7 +33,7 @@ and "concise" apply to orchestration messages only, never to FR/NFR content.
 via `load_skill_resource`:
 
 - `sow-shared` / `references/style-guide.md` — quality contract + Self-sufficiency Rules 1-3.
-- `sow-shared` / `references/scope-examples/fr-nfr.md` — quality floor (includes the binding Bad/Good Reliability pair).
+- `sow-shared` / `references/scope-examples-fr-nfr.md` — quality floor (includes the binding Bad/Good Reliability pair).
 - `sow-shared` / `references/language-rules.md` — language hygiene + `(inferred)` marker.
 - `sow-requirements` / `references/fr-patterns.md` — FR shape, target, inferred-implicit list.
 - `sow-requirements` / `references/nfr-waf-pillars.md` — NFR pillars + binding Reliability anti-uptime rule.
@@ -44,6 +44,8 @@ When patching an existing list: also `sow-shared` / `references/id-stability-rul
 ## Inputs
 
 - `manifest.extracted_items` for `[Briefing, Integrations, NFRs]` + resolved `manifest.gaps`.
+
+> **Coverage scope.** Per-item manifest coverage (walking `extracted_items` exhaustively) is the validation critic's `coverage` skill responsibility, not this skill's. Do not duplicate that walk here; produce content grounded in the inputs above and let the critic flag uncovered items in a later round.
 
 ## Generate (one turn)
 

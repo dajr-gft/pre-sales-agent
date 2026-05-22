@@ -2,21 +2,23 @@
 name: sow-revision
 description: >
   **Surgical patching of an existing `sow_data` payload after the
-  validation critic returns `blocked`.** Loaded by the root agent
-  (NOT by `sow-orchestrator`) when
+  validation critic returns `blocked`.** Baked into the instruction of
+  `revision_agent`, the surgical-patcher sub-agent invoked by
+  `sow_quality_loop` (the QualityLoopAgent) when
   `state['app:validation_result'].overall_status == 'blocked'`. Reads
   `state['app:sow:current']` (current sow_data) plus
   `state['app:validation_result']` (ValidationReport), applies minimum
-  patches per finding, calls `stage_sow` with the patched payload, then
-  the root re-invokes `validation_critic`. This skill exists to BREAK
-  the loop pattern observed when `sow-generator` was reused for
-  post-validation correction — it has no generation workflow and three
-  binding anti-regeneration contracts.
+  patches per finding, calls `stage_sow` with the patched payload; then
+  `sow_quality_loop` re-invokes `validation_critic` for the next round.
+  This skill exists to BREAK the loop pattern observed when the
+  monolithic SOW generator was reused for post-validation correction —
+  it has no generation workflow and three binding anti-regeneration
+  contracts.
 metadata:
   pattern: surgical-patcher + dynamic-reference-loading
   produces: patched sow_data (written via stage_sow), state['app:sow:revision_log']
-  inputs: state[app:sow:current], state[app:validation_result], state[app:language]
-  upstream: root_agent
+  inputs: state[app:sow:current], state[app:validation_result]
+  upstream: sow_quality_loop (QualityLoopAgent)
   references-skill: sow-shared (for ID stability and style)
   references-other: sow-architecture, sow-requirements, sow-delivery-plan, sow-scope-boundaries, sow-narrative (dynamic, per finding)
 ---
@@ -92,7 +94,6 @@ Section-specific references are loaded dynamically per finding (Contract 3) — 
 
 - `state['app:sow:current']` — current `sow_data` payload (the base of every patch).
 - `state['app:validation_result']` — `ValidationReport` from the most recent critic run. Read `findings`, `overall_status`, `round_count`, `persistent_blocking_finding_count`.
-- `state['app:language']` — conversation language (used by the root's Revision Note later; the patches go into `sow_data`, which is English).
 
 ## Workflow
 
@@ -140,8 +141,8 @@ After every finding in every group is processed:
 2. Write the per-finding revision entries to
    `state['app:sow:revision_log']` via
    `record_revision_log_entries(entries=[...])`. Append-only across
-   rounds. The root reads this state key to compose the user-facing
-   Revision Note after re-validation.
+   rounds. The root orchestrator agent reads this state key after the
+   loop terminates to compose the user-facing Revision Note in Phase 3.
 
 **Zero-patch rounds (noop):** if a round legitimately produces no
 patches — every finding fell under `decision_required`/`source_conflict`
@@ -152,7 +153,7 @@ round_label="round-<N>")` so the log records evidence the round ran.
 Calling with `entries=[]` and no `noop_reason` is rejected: silent
 empty rounds mask bugs where the patcher ran but did nothing.
 
-After this skill returns, the root re-invokes `validation_critic`.
+After this skill returns, `sow_quality_loop` re-invokes `validation_critic` for the next round (or terminates if the round budget is exhausted).
 
 ## Before staging (workflow gate)
 
@@ -170,7 +171,7 @@ If any check fails, do NOT call `stage_sow`. Re-anchor on the pre-patch payload 
 ## Out of scope (critical boundaries)
 
 - **MUST NOT regenerate any section.** Rewriting fields outside `finding.fields` for a single finding is a Contract 1 violation.
-- Does not re-validate. The root re-invokes `validation_critic` after `stage_sow`.
-- Does not call `confirm_phase_completion`. Phase gating belongs to the orchestrator; revision rounds happen within a phase.
-- Does not present the Revision Note to the user. The root composes the localized Revision Note after re-validation.
+- Does not re-validate. `sow_quality_loop` re-invokes `validation_critic` after `stage_sow`.
+- Does not call `confirm_phase_completion`. Phase gating belongs to the root orchestrator agent; revision rounds happen within a phase.
+- Does not present the Revision Note to the user. The root orchestrator composes the localized Revision Note after the loop terminates.
 - Does not adjust user-approved content preferences. If the user has approved an item, replace the offending phrasing only — preserve the user's intent.

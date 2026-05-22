@@ -7,14 +7,13 @@ description: >
   produced together because every assumption needs an OOS
   counter-anchor, every handover statement needs a matching NFR /
   Reliability phrasing, and the AI/ML non-determinism disclosure must
-  reconcile across assumptions, OOS, and handover. Loaded by
-  `sow-orchestrator` during Phase 2 Step C, AFTER delivery plan
+  reconcile across assumptions, OOS, and handover. Invoked by the root
+  SOW orchestrator agent during Phase 2 Step C, AFTER delivery plan
   (Step B) so deliverables are available as counter-anchors.
 metadata:
   pattern: contractual-cluster + counter-anchor validation
   produces: assumptions, out_of_scope, change_request_policy_text, handover_disclaimers, risks
   inputs: extraction_manifest, sow_data snapshot (FR/NFR + delivery plan)
-  upstream-skill: sow-orchestrator
   references-skill: sow-shared
 ---
 
@@ -35,8 +34,8 @@ orchestration messages only, never to content.
 via `load_skill_resource`:
 
 - `sow-shared` / `references/style-guide.md` — quality contract.
-- `sow-shared` / `references/scope-examples/scope-contractual.md` — quality floor for OOS + Assumptions + CR Policy.
-- `sow-shared` / `references/scope-examples/risks.md` — quality floor for Risks.
+- `sow-shared` / `references/scope-examples-scope-contractual.md` — quality floor for OOS + Assumptions + CR Policy.
+- `sow-shared` / `references/scope-examples-risks.md` — quality floor for Risks.
 - `sow-shared` / `references/language-rules.md` — language hygiene.
 - `sow-scope-boundaries` / `references/oos-categories.md` — 17-category contract + mandatory Category 17.
 - `sow-scope-boundaries` / `references/assumption-patterns.md` — consequence-clause pattern + 15 categories.
@@ -50,6 +49,8 @@ When patching: also `sow-shared` / `references/id-stability-rules.md`. OOS / ass
 
 - `manifest.extracted_items` for `[Constraints, Decisions, Briefing]` + `manifest.gaps.pending_decisions`.
 - Current `sow_data` snapshot with FRs, NFRs, deliverables, and activity_phases already populated. Deliverables supply OOS counter-anchors and assumption phase-deadline references.
+
+> **Coverage scope.** Per-item manifest coverage (walking `extracted_items` exhaustively) is the validation critic's `coverage` skill responsibility, not this skill's. Do not duplicate that walk here; produce content grounded in the inputs above and let the critic flag uncovered items in a later round.
 
 ## Generate (one turn)
 
@@ -65,7 +66,7 @@ When patching: also `sow-shared` / `references/id-stability-rules.md`. OOS / ass
    - Production-availability handover statement is present AND the upstream Reliability NFR uses the architectural-pattern phrasing.
    - If AI/ML is in scope, non-determinism disclosure is in `handover_disclaimers` AND mirrored as Category 12 in `assumptions`.
 
-   Fix in place. If a Reliability NFR upstream carries a forbidden uptime/SLA percentage, STOP and signal the orchestrator to reload `sow-requirements` and correct that NFR before continuing — never silently rewrite an upstream NFR from this skill (see Out of scope).
+   Fix in place. If a Reliability NFR upstream carries a forbidden uptime/SLA percentage, do NOT silently rewrite it from this skill (see Out of scope). Emit the bundle as-is, leaving the upstream NFR untouched; the `contractual_exposure` critic will flag the forbidden phrasing as `production_availability_commitment` and the `revision_agent` will patch the NFR in a later round using `sow-requirements` / `references/nfr-waf-pillars.md`.
 
 ## Before returning (workflow gate)
 
@@ -78,6 +79,6 @@ When patching: also `sow-shared` / `references/id-stability-rules.md`. OOS / ass
 
 ## Out of scope
 
-- Does not rewrite FRs/NFRs. A Reliability NFR with a forbidden uptime/SLA percentage is an upstream defect — stop and instruct the orchestrator to reload `sow-requirements` to correct that field. Never silently patch an upstream NFR from this skill.
+- Does not rewrite FRs/NFRs. A Reliability NFR with a forbidden uptime/SLA percentage is an upstream defect — emit the bundle without altering the upstream NFR and rely on the validation critic + `revision_agent` to patch the NFR in a later round.
 - Does not produce architecture / narrative / delivery-plan fields.
 - Does not call `stage_sow` or `confirm_phase_completion`.
