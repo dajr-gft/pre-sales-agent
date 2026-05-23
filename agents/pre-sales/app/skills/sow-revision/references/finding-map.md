@@ -33,22 +33,30 @@ the field-dependent table at the bottom of this file.
 | `contradictions` | `architecture_vs_stack` | `sow-architecture` | `references/tech-stack-table-rules.md` |
 | `contradictions` | `timeline_vs_deliverables` | `sow-delivery-plan` | `references/timeline-rules.md` |
 | `contradictions` | `activities_vs_deliverables` | `sow-delivery-plan` | `references/workstream-structure.md` |
+| `contradictions` | `assumptions_vs_risks` | `sow-scope-boundaries` | `references/assumption-patterns.md` |
 | `contractual_exposure` | `missing_consequence_clause` | `sow-scope-boundaries` | `references/assumption-patterns.md` |
 | `contractual_exposure` | `missing_timing_anchor` | `sow-scope-boundaries` | `references/assumption-patterns.md` |
 | `contractual_exposure` | `missing_handover_boundary` | `sow-scope-boundaries` | `references/handover-rules.md` |
 | `contractual_exposure` | `missing_change_request_gate` | `sow-scope-boundaries` | `references/cr-policy-template.md` |
+| `contractual_exposure` | `incomplete_parent_contract_reference` | `sow-scope-boundaries` | `references/cr-policy-template.md` |
+| `contractual_exposure` | `schedule_graph_misalignment` | `sow-delivery-plan` | `references/timeline-rules.md` |
 | `contractual_exposure` | `subjective_nfr_target` | `sow-requirements` | `references/anti-patterns.md` |
 | `contractual_exposure` | `production_availability_commitment` | `sow-requirements` | `references/nfr-waf-pillars.md` |
 | `disclosures` | `missing_ai_nondeterminism_disclosure` | `sow-scope-boundaries` | `references/handover-rules.md` |
+| `disclosures` | `missing_external_api_dependency_disclosure` | `sow-scope-boundaries` | `references/handover-rules.md` |
 | `disclosures` | `missing_pii_responsibility_disclosure` | `sow-scope-boundaries` | `references/handover-rules.md` |
+| `disclosures` | `missing_production_handover_disclosure` | `sow-scope-boundaries` | `references/handover-rules.md` |
+| `disclosures` | `missing_customer_infra_dependency_disclosure` | `sow-scope-boundaries` | `references/handover-rules.md` |
 | `disclosures` | `missing_multi_region_authority_disclosure` | `sow-scope-boundaries` | `references/handover-rules.md` |
 | `semantic_quality` | `generic_architecture_labels` | `sow-architecture` | `references/audit-rules.md` |
 | `semantic_quality` | `generic_capability` | `sow-requirements` | `references/fr-patterns.md` |
 | `semantic_quality` | `compound_fr` | `sow-requirements` | `references/fr-patterns.md` |
 | `semantic_quality` | `vague_phrasing_outside_nfr` | field-dependent | see field-dependent table; default `sow-shared` / `references/style-guide.md` → "General writing rules" |
 | `semantic_quality` | `naming_drift` | `sow-shared` | `references/style-guide.md` |
-| `self_sufficiency` | `self_sufficiency_break` | `sow-shared` | `references/style-guide.md` → "Self-sufficiency contract" |
-| `language_hygiene` | `*` (any category) | `sow-shared` | `references/language-rules.md` |
+| `semantic_quality` | `self_sufficiency_break` | `sow-shared` | `references/style-guide.md` → "Self-sufficiency contract" |
+| `semantic_quality` | `redundant_or_overlapping_items` | field-dependent | see field-dependent table; default `sow-shared` / `references/style-guide.md` |
+| `semantic_quality` | `language_hygiene` | `sow-shared` | `references/language-rules.md` |
+| `semantic_quality` | `style_pattern_omission` | `sow-shared` | `references/style-guide.md` |
 
 ## Field-dependent mapping
 
