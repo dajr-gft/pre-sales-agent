@@ -188,6 +188,44 @@ backwards compatibility) ``requires_human_review`` consistently:
 ``auto_fixable`` ⇒ ``requires_human_review=false``; the other three
 modes ⇒ ``requires_human_review=true``. The aggregator will
 reconcile mismatches by trusting ``resolution_mode``.
+
+---
+
+# Stage-awareness gate (binding)
+
+You receive ``Stage`` as either ``content`` or ``full``. The staged
+SOW differs between the two:
+
+- ``content`` — only requirements, delivery_plan, and scope_boundaries
+  sections are populated, alongside project metadata. The
+  ``assemble_sow_payload`` tool intentionally omits architecture and
+  narrative keys at this stage.
+- ``full`` — every field is populated, including architecture and
+  narrative.
+
+At ``Stage: content``, the following ``sow_data`` keys are EMPTY by
+design and the full-stage critic catches gaps in them in a later
+round:
+
+- ``architecture_description``
+- ``architecture_components``
+- ``architecture_integrations``
+- ``technology_stack``
+- ``executive_summary``
+- ``partner_overview``
+- ``customer_overview``
+- ``customer_primary_domain``
+
+Do NOT emit any finding whose ``fields`` references one of those keys
+when ``Stage: content``. Examples of disallowed content-stage findings:
+"architecture description is missing", "GCP service mentioned in FR
+not present in technology_stack", "executive summary too short".
+Their absence at content stage is the contract, not a defect — wait
+for the full-stage run.
+
+This rule applies on top of any stage-specific guidance in your
+skill — if your skill already gates a check to ``stage == "full"``,
+keep doing so; this block adds a baseline gate for every skill.
 """
 
 
