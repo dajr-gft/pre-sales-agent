@@ -57,6 +57,12 @@ class FakeCritic(BaseAgent):
     calls: int = 0
     blocker_counts: List[int] = []
     major_counts: List[int] = []
+    # Per-round churn scripted by tests that exercise the no_progress
+    # detector. Defaults to 0 so all pre-existing tests stay unaffected
+    # (round-1 reports always carry zero churn by the aggregator's
+    # construction, so 0 is also the production default).
+    new_blocking_counts: List[int] = []
+    resolved_blocking_counts: List[int] = []
 
     async def run_async(self, ctx) -> AsyncGenerator[Event, None]:  # type: ignore[override]
         idx = min(self.calls, len(self.statuses) - 1) if self.statuses else 0
@@ -74,6 +80,17 @@ class FakeCritic(BaseAgent):
             if self.major_counts and idx < len(self.major_counts)
             else 0
         )
+        new_blocking = (
+            self.new_blocking_counts[idx]
+            if self.new_blocking_counts and idx < len(self.new_blocking_counts)
+            else 0
+        )
+        resolved_blocking = (
+            self.resolved_blocking_counts[idx]
+            if self.resolved_blocking_counts
+            and idx < len(self.resolved_blocking_counts)
+            else 0
+        )
         self.calls += 1
 
         ctx.session.state[STATE_VALIDATION_RESULT] = {
@@ -83,6 +100,8 @@ class FakeCritic(BaseAgent):
             'findings': [],
             'blocker_count': blocker,
             'major_count': major,
+            'new_blocking_finding_count': new_blocking,
+            'resolved_blocking_finding_count': resolved_blocking,
         }
         if False:  # pragma: no cover — keep this an async generator
             yield  # type: ignore[unreachable]
@@ -117,12 +136,16 @@ def _build_loop(
     max_rounds: int = 5,
     blocker_counts: List[int] | None = None,
     major_counts: List[int] | None = None,
+    new_blocking_counts: List[int] | None = None,
+    resolved_blocking_counts: List[int] | None = None,
 ) -> tuple[QualityLoopAgent, FakeCritic, FakeReviser]:
     critic = FakeCritic(
         name='fake_critic',
         statuses=critic_statuses,
         blocker_counts=blocker_counts or [],
         major_counts=major_counts or [],
+        new_blocking_counts=new_blocking_counts or [],
+        resolved_blocking_counts=resolved_blocking_counts or [],
     )
     reviser = FakeReviser(name='fake_reviser')
     loop = QualityLoopAgent(
@@ -366,6 +389,170 @@ class TestExhausted:
         assert critic.calls == 1
         assert reviser.calls == 0
         assert ctx.session.state[QUALITY_LOOP_RESULT_KEY]['status'] == 'exhausted'
+
+
+# ---------------------------------------------------------------------------
+# Path 5b: no-progress detection — diagnostic stop when reviser churns
+#
+# The aggregator publishes ``new_blocking_finding_count`` and
+# ``resolved_blocking_finding_count`` per round. When ``new >= resolved``
+# for ``NO_PROGRESS_WINDOW`` consecutive rounds (currently 2), the loop
+# stops with the TECHNICAL ``no_progress`` status — distinct from
+# ``needs_human_review`` so the root prompt can frame it as automatic
+# non-convergence rather than dumping every churned finding on the user.
+#
+# Round 1 reports always carry zero churn (by the aggregator's
+# construction — no prior round to diff against), so the detector skips
+# round 1 and only starts comparing from round 2 onwards. Tests below
+# pin both halves of that contract.
+# ---------------------------------------------------------------------------
+
+
+class TestNoProgressDetection:
+    @staticmethod
+    def _envelope_body(events: list[Event]) -> dict:
+        import json as _json
+        terminal = _terminal_event(events)
+        return _json.loads(terminal.content.parts[0].text)
+
+    async def test_two_consecutive_non_progress_rounds_trigger_stop(self):
+        """Round 1: 0/0 (skipped). Round 2: new=3, resolved=1 → counter=1.
+        Round 3: new=2, resolved=2 → counter=2 → no_progress fires."""
+        loop, critic, reviser = _build_loop(
+            critic_statuses=['blocked', 'blocked', 'blocked', 'blocked'],
+            max_rounds=5,
+            # Round 1 churn is meaningless (no prior round), but the
+            # aggregator emits zeros in production — mirror that here.
+            new_blocking_counts=[0, 3, 2, 0],
+            resolved_blocking_counts=[0, 1, 2, 0],
+        )
+        ctx = _fake_ctx()
+
+        await _run_loop(loop, ctx)
+
+        result = ctx.session.state[QUALITY_LOOP_RESULT_KEY]
+        assert result['status'] == 'no_progress'
+        # The loop stopped at round 3 (the second consecutive non-progress
+        # round). Reviser ran twice (after rounds 1 and 2); the round-3
+        # critic exposed the second non-progress signal, so revision
+        # MUST NOT run a third time.
+        assert critic.calls == 3
+        assert reviser.calls == 2
+        assert result['rounds_used'] == 3
+
+    async def test_progress_in_between_resets_the_counter(self):
+        """Counter must track *consecutive* non-progress, not lifetime.
+        Round 2 churns (counter=1) but round 3 makes real progress
+        (counter resets to 0). The next two churned rounds would be
+        needed to trigger no_progress — exhaustion happens first."""
+        loop, critic, _ = _build_loop(
+            # Round 1: blocked, churn=0/0 (skipped)
+            # Round 2: blocked, new=3, resolved=1 → counter=1
+            # Round 3: blocked, new=1, resolved=3 → counter RESET to 0
+            # Round 4: blocked, new=2, resolved=0 → counter=1
+            # Round 5: blocked AND last round → exhausted wins
+            critic_statuses=['blocked'] * 5,
+            max_rounds=5,
+            new_blocking_counts=[0, 3, 1, 2, 1],
+            resolved_blocking_counts=[0, 1, 3, 0, 0],
+        )
+        ctx = _fake_ctx()
+
+        await _run_loop(loop, ctx)
+
+        result = ctx.session.state[QUALITY_LOOP_RESULT_KEY]
+        # Exhausted, not no_progress — the counter reset on round 3
+        # prevented the window from closing.
+        assert result['status'] == 'exhausted'
+        assert critic.calls == 5
+
+    async def test_round_one_alone_cannot_trigger_no_progress(self):
+        """Even when round 1 *technically* satisfies ``new >= resolved``
+        (a counter-intuitive 0 >= 0), the detector must NOT increment on
+        round 1. Otherwise a single blocked round could close the window
+        on round 2 — too aggressive."""
+        loop, critic, reviser = _build_loop(
+            critic_statuses=['blocked', 'passed'],
+            max_rounds=5,
+            new_blocking_counts=[0, 0],
+            resolved_blocking_counts=[0, 5],
+        )
+        ctx = _fake_ctx()
+
+        await _run_loop(loop, ctx)
+
+        result = ctx.session.state[QUALITY_LOOP_RESULT_KEY]
+        # Round 1 blocked → reviser runs → round 2 passed → done. No
+        # no_progress firing because round 1 churn never counts.
+        assert result['status'] == 'passed'
+        assert critic.calls == 2
+        assert reviser.calls == 1
+
+    async def test_no_progress_status_is_distinct_from_needs_human_review(self):
+        """The status must surface as the literal ``'no_progress'`` so
+        the root prompt's distinct branch fires. Mapping it to
+        ``needs_human_review`` would re-introduce the over-escalation
+        pattern this commit was designed to kill."""
+        loop, _, _ = _build_loop(
+            critic_statuses=['blocked'] * 4,
+            max_rounds=5,
+            new_blocking_counts=[0, 4, 3, 0],
+            resolved_blocking_counts=[0, 2, 1, 0],
+        )
+        ctx = _fake_ctx()
+
+        await _run_loop(loop, ctx)
+
+        result = ctx.session.state[QUALITY_LOOP_RESULT_KEY]
+        assert result['status'] == 'no_progress'
+        assert result['status'] != 'needs_human_review', (
+            'no_progress must remain a distinct technical status; '
+            'collapsing it into needs_human_review re-introduces the '
+            'over-escalation pattern.'
+        )
+
+    async def test_no_progress_envelope_carries_diagnostic_message(self):
+        """The user-visible message must frame the stop as a technical
+        non-convergence, not a user decision. The literal substring is
+        the anchor the root prompt's branch keys on."""
+        loop, _, _ = _build_loop(
+            critic_statuses=['blocked'] * 3,
+            max_rounds=5,
+            new_blocking_counts=[0, 5, 4],
+            resolved_blocking_counts=[0, 3, 2],
+        )
+        ctx = _fake_ctx()
+
+        events = await _run_loop(loop, ctx)
+        body = self._envelope_body(events)
+
+        assert body['status'] == 'no_progress'
+        # The compact envelope must carry a ``message`` so the root sees
+        # the diagnostic without having to read full state.
+        assert 'message' in body
+        assert 'non-convergence' in body['message'].lower() or 'converge' in body['message'].lower()
+
+    async def test_first_signal_alone_does_not_trigger(self):
+        """A single non-progress round (round 2) must not close the
+        window — we require TWO consecutive rounds. This guards against
+        a single round whose patch exposes a previously masked defect
+        from being misread as systemic churn."""
+        loop, critic, reviser = _build_loop(
+            critic_statuses=['blocked', 'blocked', 'passed'],
+            max_rounds=5,
+            new_blocking_counts=[0, 2, 0],
+            resolved_blocking_counts=[0, 1, 2],
+        )
+        ctx = _fake_ctx()
+
+        await _run_loop(loop, ctx)
+
+        result = ctx.session.state[QUALITY_LOOP_RESULT_KEY]
+        # Round 2 ticked the counter to 1, round 3 passed → loop ended
+        # cleanly. No no_progress because the window needs 2 consecutive
+        # signals and round 3 was not blocked at all.
+        assert result['status'] == 'passed'
+        assert critic.calls == 3
 
 
 # ---------------------------------------------------------------------------

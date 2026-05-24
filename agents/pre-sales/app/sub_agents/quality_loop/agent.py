@@ -19,6 +19,8 @@ This agent encodes the branching explicitly:
             blocked AND last    -> emit "exhausted" with last validated
                                    report, return  (do NOT patch without
                                    a follow-up critic run)
+            blocked AND
+              no-progress (2x)  -> emit "no_progress", return
             blocked             -> run revision_agent, continue
             anything else       -> emit unexpected-status result, return
 
@@ -27,6 +29,18 @@ on the final round would leave the SOW in ``state['app:sow:current']``
 in a modified-but-unvalidated state, while ``final_report`` would still
 reflect the pre-patch document. Skipping revision on the last round
 preserves the invariant "every patch is followed by a critic run".
+
+The "no_progress" branch is the diagnostic stop. The aggregator already
+counts ``new_blocking_finding_count`` and ``resolved_blocking_finding_count``
+per round; when those satisfy ``new >= resolved`` for two consecutive
+rounds, the reviser is swapping problems for other problems rather than
+shrinking the residue. Burning the rest of the round budget would just
+accumulate more drift, so the loop stops with a TECHNICAL status — NOT
+``needs_human_review`` — so the root prompt explains the non-convergence
+honestly instead of asking the user to decide every finding the loop
+churned through. The two-round window avoids one-off noise from a
+single round that happened to introduce new defects while resolving
+none.
 
 The final outcome is written to ``state['app:sow:quality_loop_result']``
 via ``EventActions.state_delta`` so the root can read it after the
@@ -74,8 +88,17 @@ STATE_LAST_LOOP_HASH = 'app:sow:last_loop_hash'
 # via the constructor when needed.
 DEFAULT_MAX_ROUNDS = 5
 
+# Number of consecutive rounds whose blocking-finding churn must satisfy
+# ``new >= resolved`` before the loop declares ``no_progress``. A single
+# round can legitimately show ``new > resolved`` (a refactor exposing a
+# previously masked defect, or a patch that cascades into a sibling
+# section), so we require the pattern to repeat. Two rounds is the
+# smallest window that excludes single-round noise while still detecting
+# churn before the whole budget burns.
+NO_PROGRESS_WINDOW = 2
+
 LoopStatus = str  # one of: 'passed', 'needs_human_review', 'blocked',
-# 'exhausted', 'unexpected_status'
+# 'exhausted', 'no_progress', 'unexpected_status'
 
 
 class QualityLoopAgent(BaseAgent):
@@ -120,6 +143,12 @@ class QualityLoopAgent(BaseAgent):
         # ----------------------------------------------------------------
 
         last_status: Optional[str] = None
+        # Number of consecutive ``blocked`` rounds whose churn satisfied
+        # ``new_blocking_finding_count >= resolved_blocking_finding_count``.
+        # Reset to 0 the moment a round shows real progress (``resolved >
+        # new``) — we want consecutive non-progress, not lifetime counts.
+        # Compared against ``NO_PROGRESS_WINDOW`` after each blocked round.
+        consecutive_no_progress_rounds = 0
         for round_idx in range(self.max_rounds):
             round_number = round_idx + 1
             logger.info(
@@ -192,6 +221,59 @@ class QualityLoopAgent(BaseAgent):
                     ),
                 )
                 return
+
+            # ----- no-progress detection (diagnostic stop) ----------------
+            # The aggregator publishes ``new_blocking_finding_count`` and
+            # ``resolved_blocking_finding_count`` per round. On round 1
+            # both are 0 by construction (no prior round to diff against),
+            # so the check is skipped — we only detect churn once there
+            # is a real history.
+            #
+            # ``new >= resolved`` means the reviser is at best running in
+            # place (= net zero) and at worst swapping problems for new
+            # ones (> resolved). After ``NO_PROGRESS_WINDOW`` consecutive
+            # such rounds, burning the rest of the round budget would
+            # accumulate drift without converging — stop with a TECHNICAL
+            # status so the root prompt can explain the non-convergence
+            # honestly instead of surfacing every churned finding to the
+            # user as if they needed to decide it.
+            if round_number >= 2:
+                new_blocking = int(report.get('new_blocking_finding_count') or 0)
+                resolved_blocking = int(
+                    report.get('resolved_blocking_finding_count') or 0
+                )
+                if new_blocking >= resolved_blocking:
+                    consecutive_no_progress_rounds += 1
+                else:
+                    consecutive_no_progress_rounds = 0
+
+                if consecutive_no_progress_rounds >= NO_PROGRESS_WINDOW:
+                    logger.info(
+                        'quality_loop_no_progress_detected',
+                        round=round_number,
+                        consecutive_rounds=consecutive_no_progress_rounds,
+                        new_blocking=new_blocking,
+                        resolved_blocking=resolved_blocking,
+                    )
+                    yield self._emit_result(
+                        ctx,
+                        status='no_progress',
+                        rounds_used=round_number,
+                        final_report=report,
+                        message=(
+                            f'Quality loop halted at round {round_number} '
+                            f'after {consecutive_no_progress_rounds} '
+                            'consecutive rounds where the reviser introduced '
+                            'as many new blocking findings as it resolved. '
+                            'This is a technical non-convergence — the '
+                            'revision_agent is swapping problems rather '
+                            'than reducing the residue. The staged SOW '
+                            'matches the report you see (no patch was '
+                            'applied this round).'
+                        ),
+                    )
+                    return
+            # ---------------------------------------------------------------
 
             logger.info(
                 'quality_loop_invoking_revision',
