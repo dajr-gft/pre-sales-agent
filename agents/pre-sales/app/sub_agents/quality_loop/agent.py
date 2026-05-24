@@ -312,11 +312,29 @@ class QualityLoopAgent(BaseAgent):
 
         # Compact summary for the AgentTool response — full report stays
         # in state to avoid burning tokens on the root's context.
+        #
+        # Severity surface: the gate in :func:`_decide_status` treats
+        # BOTH ``BLOCKER`` and ``MAJOR`` as blocking (see
+        # ``_is_blocking_finding``). The old envelope only surfaced
+        # ``blocker_count`` under a misleading name (``blocking_findings``);
+        # an envelope showing ``0`` while ``summary`` mentioned ten MAJOR
+        # findings was the bug. Expose all three so the root can read the
+        # number that matters without re-deriving anything:
+        #
+        # - ``blocker_count``  — count of BLOCKER findings (post-calibration).
+        # - ``major_count``    — count of MAJOR findings (post-calibration).
+        # - ``blocking_total`` — what the gate actually used, the sum of the
+        #   two above. Matches ``len([f for f in findings if
+        #   _is_blocking_finding(f, det)])`` in the aggregator.
+        final_blocker_count = (final_report or {}).get('blocker_count', 0)
+        final_major_count = (final_report or {}).get('major_count', 0)
         content_payload = {
             'status': status,
             'rounds_used': rounds_used,
             'summary': (final_report or {}).get('summary', ''),
-            'blocking_findings': (final_report or {}).get('blocker_count', 0),
+            'blocker_count': final_blocker_count,
+            'major_count': final_major_count,
+            'blocking_total': final_blocker_count + final_major_count,
             'state_key': QUALITY_LOOP_RESULT_KEY,
         }
         if observed_status is not None:
@@ -357,15 +375,20 @@ class QualityLoopAgent(BaseAgent):
         / session service to re-persist the result the caller is about
         to consume.
         """
+        # Mirror the severity surface produced by ``_emit_result`` so the
+        # cached envelope is structurally indistinguishable from a fresh
+        # run (apart from the ``cached: True`` marker). See the rationale
+        # comment in ``_emit_result``.
+        cached_report = cached_payload.get('final_report') or {}
+        cached_blocker_count = cached_report.get('blocker_count', 0)
+        cached_major_count = cached_report.get('major_count', 0)
         text_envelope = {
             'status': cached_payload.get('status'),
             'rounds_used': cached_payload.get('rounds_used'),
-            'summary': (cached_payload.get('final_report') or {}).get(
-                'summary', ''
-            ),
-            'blocking_findings': (
-                cached_payload.get('final_report') or {}
-            ).get('blocker_count', 0),
+            'summary': cached_report.get('summary', ''),
+            'blocker_count': cached_blocker_count,
+            'major_count': cached_major_count,
+            'blocking_total': cached_blocker_count + cached_major_count,
             'state_key': QUALITY_LOOP_RESULT_KEY,
             'cached': True,
         }

@@ -55,10 +55,25 @@ class FakeCritic(BaseAgent):
 
     statuses: List[str] = []
     calls: int = 0
+    blocker_counts: List[int] = []
+    major_counts: List[int] = []
 
     async def run_async(self, ctx) -> AsyncGenerator[Event, None]:  # type: ignore[override]
         idx = min(self.calls, len(self.statuses) - 1) if self.statuses else 0
         status = self.statuses[idx] if self.statuses else 'passed'
+        # Per-round severity counts default to 0 when not scripted so
+        # existing tests that ignore the envelope severity surface stay
+        # unaffected.
+        blocker = (
+            self.blocker_counts[idx]
+            if self.blocker_counts and idx < len(self.blocker_counts)
+            else 0
+        )
+        major = (
+            self.major_counts[idx]
+            if self.major_counts and idx < len(self.major_counts)
+            else 0
+        )
         self.calls += 1
 
         ctx.session.state[STATE_VALIDATION_RESULT] = {
@@ -66,6 +81,8 @@ class FakeCritic(BaseAgent):
             'summary': f'round {self.calls} produced {status}',
             'next_action': '...',
             'findings': [],
+            'blocker_count': blocker,
+            'major_count': major,
         }
         if False:  # pragma: no cover — keep this an async generator
             yield  # type: ignore[unreachable]
@@ -98,8 +115,15 @@ def _build_loop(
     *,
     critic_statuses: List[str],
     max_rounds: int = 5,
+    blocker_counts: List[int] | None = None,
+    major_counts: List[int] | None = None,
 ) -> tuple[QualityLoopAgent, FakeCritic, FakeReviser]:
-    critic = FakeCritic(name='fake_critic', statuses=critic_statuses)
+    critic = FakeCritic(
+        name='fake_critic',
+        statuses=critic_statuses,
+        blocker_counts=blocker_counts or [],
+        major_counts=major_counts or [],
+    )
     reviser = FakeReviser(name='fake_reviser')
     loop = QualityLoopAgent(
         name='sow_quality_loop',
@@ -568,6 +592,123 @@ class TestApplyStateDeltaHelper:
 
 
 # ---------------------------------------------------------------------------
+# Envelope severity surface — blocker_count + major_count + blocking_total
+#
+# Production incident: the QualityLoopAgent's compact JSON envelope used
+# to expose ``blocking_findings`` populated from ``final_report.blocker_count``.
+# The aggregator's gate, however, treats BOTH ``BLOCKER`` and ``MAJOR``
+# as blocking (see ``_is_blocking_finding``). So a report with ten MAJOR
+# findings and zero BLOCKERs surfaced as ``blocking_findings: 0`` while
+# the summary text mentioned the ten MAJORs — the root LLM had no
+# reliable single number to branch on.
+#
+# The envelope now exposes the three numbers the root might need:
+# ``blocker_count``, ``major_count``, and the explicit
+# ``blocking_total = blocker_count + major_count`` (the number the gate
+# actually used). These tests pin both the names AND the math so a future
+# rename or arithmetic mistake regresses loudly.
+# ---------------------------------------------------------------------------
+
+
+class TestEnvelopeSeveritySurface:
+    """The JSON in ``terminal.content.parts[0].text`` is the AgentTool's
+    response back to the root — every field it carries must be both
+    well-named and arithmetically correct."""
+
+    @staticmethod
+    def _body(events: list[Event]) -> dict:
+        import json as _json
+        terminal = _terminal_event(events)
+        return _json.loads(terminal.content.parts[0].text)
+
+    async def test_passed_envelope_exposes_three_severity_keys(self):
+        loop, _, _ = _build_loop(
+            critic_statuses=['passed'],
+            blocker_counts=[0],
+            major_counts=[0],
+        )
+        ctx = _fake_ctx()
+
+        events = await _run_loop(loop, ctx)
+        body = self._body(events)
+
+        # All three keys present, even when the run is clean — the root
+        # branch logic should never have to defaulting.
+        assert body['blocker_count'] == 0
+        assert body['major_count'] == 0
+        assert body['blocking_total'] == 0
+
+    async def test_exhausted_envelope_sums_blocker_and_major(self):
+        """The original failure mode: 10 MAJORs, 0 BLOCKERs.
+        ``blocking_total`` must equal 10, not 0."""
+        loop, _, _ = _build_loop(
+            critic_statuses=['blocked'] * 3,
+            max_rounds=3,
+            blocker_counts=[0, 0, 0],
+            major_counts=[8, 9, 10],
+        )
+        ctx = _fake_ctx()
+
+        events = await _run_loop(loop, ctx)
+        body = self._body(events)
+
+        assert body['status'] == 'exhausted'
+        assert body['blocker_count'] == 0
+        assert body['major_count'] == 10
+        assert body['blocking_total'] == 10, (
+            'blocking_total must reflect what the gate actually used '
+            '(BLOCKER + MAJOR), not just BLOCKER. Surfacing 0 here while '
+            'the summary mentions 10 MAJORs is the production bug this '
+            'commit kills.'
+        )
+
+    @pytest.mark.parametrize(
+        ('blockers', 'majors', 'expected_total'),
+        [
+            (3, 5, 8),
+            (1, 0, 1),
+            (0, 1, 1),
+            (7, 2, 9),
+        ],
+    )
+    async def test_blocking_total_is_blocker_plus_major(
+        self, blockers, majors, expected_total
+    ):
+        loop, _, _ = _build_loop(
+            critic_statuses=['needs_human_review'],
+            blocker_counts=[blockers],
+            major_counts=[majors],
+        )
+        ctx = _fake_ctx()
+
+        events = await _run_loop(loop, ctx)
+        body = self._body(events)
+
+        assert body['blocker_count'] == blockers
+        assert body['major_count'] == majors
+        assert body['blocking_total'] == expected_total
+
+    async def test_envelope_does_not_carry_legacy_blocking_findings_name(self):
+        """The old key ``blocking_findings`` is dropped — keeping it as
+        an alias would invite a future reader to read the wrong number."""
+        loop, _, _ = _build_loop(
+            critic_statuses=['blocked'],
+            max_rounds=1,
+            blocker_counts=[0],
+            major_counts=[4],
+        )
+        ctx = _fake_ctx()
+
+        events = await _run_loop(loop, ctx)
+        body = self._body(events)
+
+        assert 'blocking_findings' not in body, (
+            'Legacy name must be removed; readers should consume the '
+            'three replacement keys.'
+        )
+
+
+# ---------------------------------------------------------------------------
 # F-05 — anti-thrashing cache via SOW hash
 #
 # The loop short-circuits when the staged SOW hash matches the hash
@@ -632,6 +773,15 @@ class TestAntiThrashingCache:
         body = _json.loads(terminal.content.parts[0].text)
         assert body['cached'] is True
         assert body['status'] == 'passed'
+        # The cached envelope must match the fresh-run severity surface
+        # so the root LLM cannot tell whether a tool result was cached
+        # apart from the explicit ``cached`` flag. Surfacing different
+        # keys on cache hits vs misses would force the root to branch
+        # twice on every loop result — a regression we deliberately avoid.
+        assert 'blocker_count' in body
+        assert 'major_count' in body
+        assert 'blocking_total' in body
+        assert 'blocking_findings' not in body
 
     async def test_sow_change_invalidates_cache(self):
         loop, critic, _ = _build_loop(
