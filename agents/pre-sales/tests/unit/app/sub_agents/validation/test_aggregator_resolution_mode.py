@@ -683,6 +683,7 @@ _EXPECTED_POLICY_PAIRS: tuple[tuple[str, str], ...] = (
     ('contradictions', 'scope_vs_oos'),
     ('contradictions', 'timeline_vs_deliverables'),
     ('contradictions', 'activities_vs_deliverables'),
+    ('contradictions', 'assumptions_vs_risks'),
     ('contractual_exposure', 'missing_consequence_clause'),
     ('contractual_exposure', 'missing_change_request_gate'),
     ('contractual_exposure', 'missing_handover_boundary'),
@@ -828,7 +829,12 @@ def test_policy_preserves_auto_fixable_when_already_emitted():
         ('contractual_exposure', 'schedule_graph_misalignment'),
         ('contradictions', 'fr_vs_nfr'),
         ('contradictions', 'architecture_vs_stack'),
-        ('contradictions', 'assumptions_vs_risks'),
+        # ``semantic_quality/self_sufficiency_break`` deliberately stays
+        # off the policy table per reviewer guardrail #4: when the SOW
+        # implicitly references an external doc that genuinely cannot be
+        # inferred (real missing data, not standard practice), the LLM
+        # must retain the ability to escalate.
+        ('semantic_quality', 'self_sufficiency_break'),
     ],
 )
 def test_non_policy_categories_preserve_decision_required(

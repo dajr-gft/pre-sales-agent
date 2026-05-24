@@ -138,6 +138,14 @@ _POLICY_FORCED_AUTO_FIXABLE: frozenset[tuple[str, str]] = frozenset(
         ('contradictions', 'scope_vs_oos'),
         ('contradictions', 'timeline_vs_deliverables'),
         ('contradictions', 'activities_vs_deliverables'),
+        # Internal contradictions between assumptions and risks — both
+        # sides live in the same SOW, so the fix is always refinement
+        # of one item to align with the other (no external dependency).
+        # Unlike ``self_sufficiency_break`` (external doc reference)
+        # which is intentionally kept off the policy table because the
+        # gap can be genuinely external, this pair has no external
+        # dependency and is safe to force.
+        ('contradictions', 'assumptions_vs_risks'),
         # Standard contractual hardening — insert the canonical clause.
         ('contractual_exposure', 'missing_consequence_clause'),
         ('contractual_exposure', 'missing_change_request_gate'),

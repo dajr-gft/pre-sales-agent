@@ -167,3 +167,91 @@ def test_resolution_mode_guide_routes_unapproved_placeholders_to_auto_fixable():
     guide = _load_guide()
     assert 'UNAPPROVED placeholders' in guide
     assert 'auto_fixable' in guide
+
+
+# ---------------------------------------------------------------------------
+# Inference patterns block — class-level rules so the LLM knows when a
+# finding is auto_fixable by safe inference vs when it genuinely needs
+# external decision. Each pattern carries an explicit escape hatch
+# (guardrail #4: never mask a real external-data need or trade-off).
+# ---------------------------------------------------------------------------
+
+
+def test_resolution_mode_guide_contains_inference_patterns_heading():
+    """The block anchor — the LLM needs a discoverable heading to find
+    the pattern rules when scanning the prompt."""
+    guide = _load_guide()
+    assert 'Inference patterns (binding)' in guide
+
+
+@pytest.mark.parametrize(
+    'pattern_marker',
+    [
+        # All three pattern headings present so the LLM has the full
+        # taxonomy. Renaming or dropping one regresses the failure-class
+        # coverage that the audit identified.
+        'Pattern A — Responsibility ambiguity',
+        'Pattern B — External Customer artifact',
+        'Pattern C — Identifying information about Customer participants',
+    ],
+)
+def test_resolution_mode_guide_lists_inference_pattern(pattern_marker: str):
+    guide = _load_guide()
+    assert pattern_marker in guide, (
+        f"Inference pattern {pattern_marker!r} missing from the guide. "
+        'Each pattern documents an entire failure CLASS the LLM was '
+        'over-escalating; dropping one re-opens that class.'
+    )
+
+
+def test_inference_patterns_each_carry_an_escape_hatch():
+    """Guardrail #4 in code: every pattern that forces ``auto_fixable``
+    must document an escape hatch where the LLM may legitimately
+    escalate. Without the hatch, the rule becomes a blanket override
+    that can mask real commercial / scope decisions.
+    """
+    guide = _load_guide()
+    # We require at least three escape-hatch sentences — one per pattern.
+    occurrences = guide.lower().count('escape hatch')
+    assert occurrences >= 3, (
+        f'Found {occurrences} escape-hatch references in the inference '
+        'patterns block — expected at least three (one per pattern). '
+        'A pattern without an escape hatch becomes a blanket override '
+        'and can mask cases that genuinely need user decision.'
+    )
+
+
+def test_inference_patterns_do_not_bake_in_case_specific_identifiers():
+    """Class-level rules vs incident-specific patches: the failure
+    classes the audit identified came from real production incidents,
+    but the inference patterns must stay abstract. Specific vendor /
+    customer / system names baked into the prompt would teach the LLM
+    to recognise THOSE specific incidents only, missing every variant.
+
+    The list below is the set of incident-specific tokens that have
+    appeared in audit conversations. None of them belongs in the
+    shipped prompt — the patterns must read in terms of categories
+    (Partner / Customer / SOW / manifest / role) only.
+    """
+    guide = _load_guide()
+    forbidden_tokens = (
+        'Apigee',
+        'Pub/Sub',
+        'Santander',
+        'BTG',
+        'JBS',
+        'Salesforce',
+        'Acme',
+        'OneTrust',
+        'Confluence',
+        'Vertex AI',  # specific product name; pattern should say "AI service"
+        'GCP',  # cloud-specific; pattern should say "platform" / "delivery surface"
+    )
+    found = [tok for tok in forbidden_tokens if tok in guide]
+    assert not found, (
+        f'Inference patterns reference incident-specific tokens '
+        f'{found!r}. Replace each with the generic class identifier '
+        '(Partner / Customer / SOW / manifest / role / engagement '
+        'scope) — the rule must apply to every project shape, not '
+        'the triggering incident only.'
+    )

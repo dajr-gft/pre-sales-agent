@@ -226,7 +226,7 @@ round:
 
 Do NOT emit any finding whose ``fields`` references one of those keys
 when ``Stage: content``. Examples of disallowed content-stage findings:
-"architecture description is missing", "GCP service mentioned in FR
+"architecture description is missing", "a service named in an FR is
 not present in technology_stack", "executive summary too short".
 Their absence at content stage is the contract, not a defect — wait
 for the full-stage run.
@@ -271,6 +271,83 @@ the underlying gap. NEVER set ``decision_required`` on an unapproved
 placeholder — the fix is mechanical (populate or remove); only the
 underlying coverage gap might be decision-required, and the coverage
 skill emits that finding separately.
+
+---
+
+# Inference patterns (binding)
+
+The following patterns describe classes of findings — not specific
+incidents — where the resolution is inferable from sources already in
+the SOW, the manifest, or standard consulting practice. When a finding
+matches one of these classes, set ``resolution_mode: "auto_fixable"``
+and let the revision_agent apply the canonical fix. The escape
+hatches at the end of each pattern preserve genuine escalation when
+the inference is unsafe (guardrail #4 of the audit: never mask a real
+external-data need or a real trade-off).
+
+## Pattern A — Responsibility ambiguity resolved by adjacent scope
+
+Trigger: a contradiction or ambiguity about which party (Partner or
+Customer) is responsible for an action, AND the SOW already contains
+at least one assumption, OOS item, or scope statement that names one
+party's responsibility for adjacent work.
+
+Resolution: refine the contradicting item to follow the canonical
+split implied by the engagement scope — the Partner is responsible
+for the artifacts and systems being delivered under this SOW; the
+Customer is responsible for their own environment, owned systems, and
+any artifacts they bring to the engagement that the Partner is
+consuming or integrating with. Mirror the language already used by
+the adjacent assumption / scope statement.
+
+Resolution mode: ``auto_fixable``.
+
+Escape hatch — escalate to ``decision_required`` ONLY when no adjacent
+assumption or scope statement names either party, AND the choice
+between the two parties has clear commercial consequences (different
+cost envelope, different timeline, different liability surface).
+
+## Pattern B — External Customer artifact referenced without attachment
+
+Trigger: a SOW item references an external artifact owned by the
+Customer (a standard, template, document, policy, capability matrix,
+integration spec, governance framework, etc.) that is not in the
+manifest's inventory and is not attached to the SOW.
+
+Resolution: the SOW does not need to contain the external artifact
+itself. Insert the canonical consulting pattern: (1) an assumption
+stating the Customer must provide the artifact by a defined milestone
+(kickoff or the start of the relevant phase), and (2) a Change
+Request clause stating that any post-delivery changes to the artifact
+require a CR with potential timeline / cost impact.
+
+Resolution mode: ``auto_fixable``.
+
+Escape hatch — escalate to ``decision_required`` ONLY when the
+artifact's content would materially change the engagement's scope
+(e.g. it might mandate a technology choice that conflicts with the
+current architecture, or expand responsibility beyond the Partner's
+delivery surface).
+
+## Pattern C — Identifying information about Customer participants
+
+Trigger: the SOW lists Customer roles by function (Sponsor, SME,
+Engineer, etc.) but specific names are not in the manifest and not
+in the conversation history.
+
+Resolution: keep the role + responsibility text as authored. Specific
+names belong in a placeholder field per the "Approved placeholders"
+rule above; the downstream signature workflow fills them. Do not
+remove the role and do not ask the user to supply the names during
+validation.
+
+Resolution mode: ``auto_fixable``.
+
+Escape hatch — escalate to ``decision_required`` ONLY when the
+manifest's ``gaps.hard_gaps`` explicitly flagged the missing name
+with ``blocks_sow_generation: true`` (signalling that discovery
+already escalated the gap and the SOW cannot proceed without
+resolution).
 """
 
 
