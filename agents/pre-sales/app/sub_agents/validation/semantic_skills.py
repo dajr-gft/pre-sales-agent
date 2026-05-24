@@ -22,6 +22,7 @@ from google.adk.models import Gemini
 from google.genai import types
 
 from ...config import config
+from ...shared.placeholders import collect_approved_deferrals
 from .schema import (
     SKILL_NAMES,
     STATE_MANIFEST_RESIDUAL,
@@ -30,6 +31,13 @@ from .schema import (
     SkillFindings,
     skill_findings_state_key,
 )
+
+# Manifest is written to state by ``load_extraction_manifest`` under
+# this key (see ``app.tools.sow.manifest_tools``). Reading the raw
+# manifest — not just the prefiltered residual — gives the validator
+# access to ``gaps.to_be_defined`` and the non-blocking ``hard_gaps``
+# entries that authorise specific placeholder fields in the SOW.
+_MANIFEST_STATE_KEY = 'extraction_manifest'
 
 logger = structlog.get_logger()
 
@@ -226,6 +234,43 @@ for the full-stage run.
 This rule applies on top of any stage-specific guidance in your
 skill — if your skill already gates a check to ``stage == "full"``,
 keep doing so; this block adds a baseline gate for every skill.
+
+---
+
+# Approved placeholders (binding)
+
+A SOW field may legitimately carry a placeholder literal such as
+``[TO BE DEFINED]``, ``[TBD]``, ``[A DEFINIR]``, ``[A SER DEFINIDO]``,
+``[POR DEFINIR]``, or ``[INSERT X]``. Placeholders are *approved* when:
+
+- The runtime payload's ``<approved_deferrals>`` block lists a
+  description that matches the field's topic — these come from
+  ``manifest.gaps.to_be_defined`` and from ``manifest.gaps.hard_gaps``
+  with ``blocks_sow_generation: false``, i.e. the discovery agent or
+  the user explicitly recorded the field as deferred.
+- The placeholder appears in a contractual field the SOW template
+  treats as fill-on-signature (MSA / parent contract reference,
+  governing law, customer counterpart, sponsor names).
+
+For approved placeholders: do NOT emit a finding asking the user to
+fill the field. The deferral is sanctioned; the value will be supplied
+in a later phase or at signature time. The only time you flag an
+approved placeholder is when it creates a downstream inconsistency
+(e.g. another SOW field asserts a concrete value that contradicts the
+deferral).
+
+For UNAPPROVED placeholders (the placeholder marker is present but no
+``<approved_deferrals>`` entry covers the field, AND it is not one of
+the contractual fill-on-signature fields): emit one finding with
+``resolution_mode: "auto_fixable"`` recommending the revision_agent
+either populate the field from manifest evidence or remove the field
+if no manifest evidence exists. This catches a model that drops a
+placeholder into a non-deferred field to hide a real coverage gap —
+the revision_agent will replace it with grounded content or surface
+the underlying gap. NEVER set ``decision_required`` on an unapproved
+placeholder — the fix is mechanical (populate or remove); only the
+underlying coverage gap might be decision-required, and the coverage
+skill emits that finding separately.
 """
 
 
@@ -238,6 +283,17 @@ def _make_instruction_provider(skill_name: str, skill_body: str):
         residual = _trim_manifest(state.get(STATE_MANIFEST_RESIDUAL) or [])
         stage = state.get(STATE_STAGE) or 'full'
 
+        # Approved placeholders block — sourced from manifest.gaps so
+        # the LLM has a concrete list of deferral descriptions to
+        # match against any ``[TO BE DEFINED]`` / ``[A DEFINIR]``
+        # literal it finds in the SOW. Empty list is fine: when no
+        # deferrals are approved, every placeholder in the SOW is by
+        # definition unapproved (and the "Approved placeholders" block
+        # in the GUIDE tells the skill to emit an auto_fixable finding
+        # asking the revision_agent to populate or remove the field).
+        manifest = state.get(_MANIFEST_STATE_KEY) or {}
+        approved_deferrals = collect_approved_deferrals(manifest)
+
         payload = (
             '\n\n---\n\n'
             '# Runtime payload\n\n'
@@ -248,6 +304,9 @@ def _make_instruction_provider(skill_name: str, skill_body: str):
             '<manifest_residual>\n'
             f'{json.dumps(residual, ensure_ascii=False, indent=2)}\n'
             '</manifest_residual>\n\n'
+            '<approved_deferrals>\n'
+            f'{json.dumps(approved_deferrals, ensure_ascii=False, indent=2)}\n'
+            '</approved_deferrals>\n\n'
             'Return ONLY a JSON object matching the schema: '
             f'`{{"findings": [Finding, ...]}}` with `skill="{skill_name}"` '
             'on every finding. Each finding MUST include a '

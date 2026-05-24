@@ -22,6 +22,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Literal
 
+from .placeholders import contains_placeholder, is_placeholder, strip_placeholders
+
 
 class Severity(str, Enum):
     ERROR = 'error'
@@ -164,12 +166,24 @@ class ContentValidator:
                     )
                 )
             desc = fr.get('description', '')
-            if len(desc) < 20:
+            # Skip the length check when the description is — or contains
+            # — an approved placeholder. ``[A DEFINIR]`` is 11 chars but
+            # is the user-approved deferral marker, not a defect. For
+            # fields that mix prose with a placeholder, gauge length on
+            # the prose alone via strip_placeholders.
+            if is_placeholder(desc):
+                continue
+            effective_len = (
+                len(strip_placeholders(desc))
+                if contains_placeholder(desc)
+                else len(desc)
+            )
+            if effective_len < 20:
                 result.issues.append(
                     ValidationIssue(
                         severity='warning',
                         field='functional_requirements',
-                        message=f'{num}: description too short ({len(desc)} chars).',
+                        message=f'{num}: description too short ({effective_len} chars).',
                         suggestion='Each FR should be a complete sentence with technical context.',
                     )
                 )
@@ -201,12 +215,23 @@ class ContentValidator:
             for role in roles:
                 desc = role.get('responsibilities', '')
                 role_name = role.get('role', '?')
-                if len(desc) < 100:
+                # Same placeholder-aware logic as FR descriptions: a
+                # role responsibility that is the placeholder marker
+                # (or one that mixes prose with a placeholder) gets the
+                # length check against the prose only.
+                if is_placeholder(desc):
+                    continue
+                effective_len = (
+                    len(strip_placeholders(desc))
+                    if contains_placeholder(desc)
+                    else len(desc)
+                )
+                if effective_len < 100:
                     result.issues.append(
                         ValidationIssue(
                             severity='warning',
                             field=field_name,
-                            message=f"'{role_name}': description too short ({len(desc)} chars).",
+                            message=f"'{role_name}': description too short ({effective_len} chars).",
                             suggestion='Each role needs 2-3 sentences of concrete responsibilities (min 100 chars).',
                         )
                     )
@@ -230,21 +255,29 @@ class ContentValidator:
         self, data: dict, result: ValidationResult
     ) -> None:
         assumptions = data.get('assumptions', [])
+        # Placeholder assumptions are intentional deferrals — the user
+        # approved leaving them as ``[A DEFINIR]`` / ``[TO BE DEFINED]``
+        # and a "missing consequence clause" warning on a placeholder is
+        # noise. Count only assumptions that carry substantive prose.
+        scoreable = [
+            a for a in assumptions
+            if isinstance(a, str) and a.strip() and not is_placeholder(a)
+        ]
         missing_consequence = 0
-        for assumption in assumptions:
-            text = assumption.lower() if isinstance(assumption, str) else ''
+        for assumption in scoreable:
+            text = strip_placeholders(assumption).lower()
             has_consequence = any(kw in text for kw in _CONSEQUENCE_KEYWORDS)
             if not has_consequence:
                 missing_consequence += 1
 
-        if missing_consequence > 0 and len(assumptions) > 0:
-            pct = missing_consequence / len(assumptions) * 100
+        if missing_consequence > 0 and len(scoreable) > 0:
+            pct = missing_consequence / len(scoreable) * 100
             if pct > 40:
                 result.issues.append(
                     ValidationIssue(
                         severity='warning',
                         field='assumptions',
-                        message=f'{missing_consequence}/{len(assumptions)} assumptions ({pct:.0f}%) lack consequence clauses.',
+                        message=f'{missing_consequence}/{len(scoreable)} assumptions ({pct:.0f}%) lack consequence clauses.',
                         suggestion="Pattern: '[Customer] must [obligation]. [Consequence if not met].'",
                     )
                 )

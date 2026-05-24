@@ -113,3 +113,57 @@ def test_resolution_mode_guide_keeps_resolution_taxonomy():
             'skill needs all four documented for the LLM to choose '
             'correctly.'
         )
+
+
+# ---------------------------------------------------------------------------
+# Approved placeholders block — extends the guide so the validator does
+# not flag user-approved ``[TO BE DEFINED]`` / ``[A DEFINIR]`` literals.
+# ---------------------------------------------------------------------------
+
+
+def test_resolution_mode_guide_contains_approved_placeholders_heading():
+    """The heading anchors the block — without it the LLM cannot find
+    the rule when scanning the prompt for placeholder guidance."""
+    guide = _load_guide()
+    assert 'Approved placeholders (binding)' in guide
+
+
+@pytest.mark.parametrize(
+    'marker',
+    [
+        '[TO BE DEFINED]',
+        '[TBD]',
+        '[A DEFINIR]',
+        '[A SER DEFINIDO]',
+        '[POR DEFINIR]',
+        '[INSERT X]',
+    ],
+)
+def test_resolution_mode_guide_lists_known_placeholder_marker(marker: str):
+    """Every placeholder form the canonical pattern accepts must appear
+    in the prose so the LLM has a concrete enumeration to recognise."""
+    guide = _load_guide()
+    assert marker in guide, (
+        f"Placeholder marker {marker!r} missing from the guide — the "
+        'LLM may fail to recognise it as a sanctioned deferral and '
+        'emit a finding asking the user to fill the field.'
+    )
+
+
+def test_resolution_mode_guide_links_to_approved_deferrals_payload():
+    """The block must point the LLM at the ``<approved_deferrals>``
+    runtime payload section that the instruction provider injects;
+    without that reference the LLM has no way to distinguish approved
+    from unapproved placeholders at run time."""
+    guide = _load_guide()
+    assert '<approved_deferrals>' in guide
+
+
+def test_resolution_mode_guide_routes_unapproved_placeholders_to_auto_fixable():
+    """Guardrail #3: unapproved placeholders must not escalate. The
+    rule explicitly says ``auto_fixable`` for unapproved cases so the
+    revision_agent either populates or removes the offending field —
+    never a user question."""
+    guide = _load_guide()
+    assert 'UNAPPROVED placeholders' in guide
+    assert 'auto_fixable' in guide
