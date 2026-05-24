@@ -75,7 +75,15 @@ _INPUTS_PRESENT_FOOTER = (
     'a content-stage SOW to full mid-loop resets the QualityLoopAgent '
     'round counters and re-introduces the architecture / narrative '
     'findings that the content-stage validation correctly suppressed — '
-    'the loop will never converge if you change the stage here.\n'
+    'the loop will never converge if you change the stage here.\n\n'
+    '**Per-round budget (binding).** Patch at most 5 significant findings '
+    '(BLOCKER / MAJOR) this round, prioritised by the selection order in '
+    'workflow step (1a): persistent BLOCKERs first, then new BLOCKERs, '
+    'then persistent MAJORs, then new MAJORs. Skip any finding whose '
+    '`resolution_mode` is not `auto_fixable` — the QualityLoopAgent will '
+    'surface those to the user once no auto-fixable findings remain. '
+    'Trying to do everything in one round drifts the SOW and forces the '
+    'critic to flag new defects faster than you resolve old ones.\n'
 )
 
 

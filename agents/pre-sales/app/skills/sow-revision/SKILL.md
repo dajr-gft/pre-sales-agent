@@ -97,12 +97,25 @@ Section-specific references are loaded dynamically per finding (Contract 3) — 
 
 ## Workflow
 
-### (1a) Group findings, severity-descending
+### (1a) Group findings, severity-descending — and respect the per-round budget
 
 Walk `findings`. Group by `finding.fields[0]` (primary field). Within each
 group, sort `BLOCKER → MAJOR → MINOR`. `finding.persistent == True` items
 lead within their severity group (already survived one round; need
 stronger attention).
+
+**Per-round patch budget (binding).** Process at most **5 significant findings** (severity `BLOCKER` or `MAJOR`) per round. Any other significant findings in the report are deferred to the next round; the QualityLoopAgent will re-run `validation_critic` and then call the revision_agent again with the next report, so the deferred findings reach you next round. `MINOR` findings are cosmetic and never block status — process them only if they share a `fields[0]` with a significant finding you are already patching this round.
+
+Selection order (apply in sequence; first 5 win):
+
+1. `severity == BLOCKER` and `persistent == True`.
+2. `severity == BLOCKER` and `persistent == False`.
+3. `severity == MAJOR` and `persistent == True`.
+4. `severity == MAJOR` and `persistent == False`.
+
+**Why a cap.** Rewriting more than ~5 top-level fields in a single round drifts the SOW: the LLM loses anchor on which fields are being touched and which are not, Contract 1 violations multiply, and the critic on the next round flags as many *new* findings as the reviser resolved. The result is a loop that exhausts its round budget while reading like real progress in the revision log. A small batch each round keeps each patch traceable and lets the critic discriminate signal from drift.
+
+**Resolution mode filter (binding).** Skip any finding whose `resolution_mode` is not `auto_fixable`. Those are `decision_required`, `source_conflict`, or `not_fixable_by_agent` — the QualityLoopAgent's gate routes them straight to `needs_human_review` once no auto-fixable findings remain. Trying to patch them here either invents data (Contract 3 violation, since the reference cannot supply what only the user can decide) or churns the SOW without resolving the underlying ambiguity. If, after the filter and the budget cap, you have **zero** findings to patch, call `record_revision_log_entries(entries=[], noop_reason="all-remaining-findings-need-human-decision", round_label="round-<N>")` and return; the loop's next critic run will flip `overall_status` to `needs_human_review`.
 
 ### (1b) For each finding: map → load → patch
 
