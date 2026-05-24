@@ -24,25 +24,42 @@ Severity calibration rules (executed in order, all deterministic):
                                                     so the report stays
                                                     internally consistent.
 
-Gate rules (strict, order matters):
+Gate rules (per-finding routing, order matters):
 - Critical skill failed                           → `needs_human_review`.
-- Any finding with ``resolution_mode`` in
+- Any auto_fixable finding present (or any
+  deterministic error)                            → `blocked`.
+- No auto_fixable findings remain AND at least one
+  finding has ``resolution_mode`` in
   {decision_required, source_conflict,
   not_fixable_by_agent}                           → `needs_human_review`.
-- Any deterministic error                         → `blocked`.
-- Any BLOCKER (post-calibration)                  → `blocked`.
-- Any MAJOR (post-calibration)                    → `blocked`.
+- Any BLOCKER or MAJOR not classified above       → `blocked`
+                                                    (defensive — calibration
+                                                    should have settled mode).
 - Otherwise                                       → `passed`.
+
+Per-finding routing is the central invariant: a mixed batch of
+``auto_fixable`` and ``decision_required`` findings ALWAYS resolves to
+``blocked`` first so the revision_agent gets to patch the auto-fixable
+ones. Only when the next round's critic returns a report whose only
+remaining findings are escalations does the gate flip to
+``needs_human_review``. This prevents a single escalated finding from
+contaminating an entire batch and bypassing automatic corrections the
+revision_agent could have applied — the failure mode observed when
+``coverage/manifest_item_uncovered`` (auto_fixable) rode alongside a
+single ``contradictions/assumptions_vs_risks`` (decision_required) into
+the user-facing question.
 
 Severity is intentionally NOT a trigger for `needs_human_review`: a
 BLOCKER with ``resolution_mode == auto_fixable`` resolves to `blocked`
 so the QualityLoopAgent can invoke the revision_agent. Human review is
 reserved for findings whose resolution requires a decision the agent
-cannot make from the SOW, manifest, and references alone.
+cannot make from the SOW, manifest, and references alone — AND only
+after every auto-fixable finding in the same report has been processed.
 
 `blocked` means the root/reviser may attempt an automatic correction.
-`needs_human_review` means the system should not decide or correct without
-human guidance.
+`needs_human_review` means every auto-fixable finding has already been
+addressed (or the report had none to begin with) and the remaining
+findings require external guidance.
 """
 
 from __future__ import annotations
@@ -284,27 +301,70 @@ def _decide_status(
 ) -> tuple[Status, bool]:
     """Return (overall_status, requires_human_review). LLM never touches this.
 
-    Order matters: human-review conditions are evaluated before blocked,
-    because ``blocked`` invites automated correction while
-    ``needs_human_review`` means the system should stop and ask for
-    guidance.
+    Per-finding routing: ``auto_fixable`` findings ALWAYS get the first
+    word. The status only flips to ``needs_human_review`` when the
+    report contains zero auto-fixable findings AND zero deterministic
+    errors AND at least one finding whose ``resolution_mode`` requires
+    external guidance. Mixed batches (some auto, some escalating)
+    resolve to ``blocked`` so the revision_agent processes the auto-
+    fixable ones first; the next critic round either drops them (fixed)
+    or marks them ``persistent``, and only when the round contains
+    nothing patchable does the gate ask the user.
 
-    Human-review is driven by ``resolution_mode``, never by severity. A
-    BLOCKER with ``resolution_mode == auto_fixable`` is intentionally
-    routed to ``blocked`` so the revision_agent can run; the previous
-    behaviour (where ``requires_human_review=True`` from the LLM was
-    enough to short-circuit the loop) over-escalated standard fixes the
-    agent already has context to apply.
+    Why: the previous policy escalated the whole batch the moment any
+    finding carried ``decision_required``. A common production pattern —
+    a manifest-anchor gap (auto_fixable) alongside a doc-reference
+    contradiction (decision_required) — surfaced both to the user and
+    the auto-fixable one was never patched, even though the policy
+    table guarantees its resolution_mode. Per-finding routing eliminates
+    that contamination.
+
+    Severity does NOT trigger ``needs_human_review`` independently of
+    ``resolution_mode``. A BLOCKER + auto_fixable still routes to
+    ``blocked``; the defensive severity branch at the bottom catches
+    findings that survived calibration without a clear mode (should not
+    happen, kept for safety).
     """
     if skills_failed_critical:
         return 'needs_human_review', True
-    if any(f.resolution_mode in _HUMAN_REVIEW_MODES for f in findings):
+
+    has_det_error = det.error_count > 0
+
+    # Routing is restricted to *significant* findings — BLOCKER and
+    # MAJOR. MINOR findings are cosmetic (style, wording, label
+    # consistency); running a full revision round to fix one MINOR is
+    # bad ROI, and routinely escalating cosmetic issues to the user is
+    # the over-escalation behaviour we are killing. MINOR findings stay
+    # visible in the report (telemetry, optional voluntary fix during
+    # the user review) but never gate ``overall_status``.
+    significant = [
+        f for f in findings if f.severity in ('BLOCKER', 'MAJOR')
+    ]
+    has_auto_significant = any(
+        f.resolution_mode == 'auto_fixable' for f in significant
+    )
+    has_escalate_significant = any(
+        f.resolution_mode in _HUMAN_REVIEW_MODES for f in significant
+    )
+
+    # Anything patchable that matters? Defer escalation, let the
+    # revision_agent take its turn. Once the auto-fixable findings clear
+    # (or hit max rounds and become persistent), the next iteration's
+    # report flows through the escalation branch below.
+    if has_auto_significant or has_det_error:
+        return 'blocked', False
+
+    # No auto-fixable significant findings remain. If escalations are
+    # still here, they are now the sole reason the report is not
+    # ``passed`` — surface them to the user.
+    if has_escalate_significant:
         return 'needs_human_review', True
-    if det.error_count > 0:
-        return 'blocked', False
-    if any(f.severity == 'BLOCKER' for f in findings):
-        return 'blocked', False
-    if any(f.severity == 'MAJOR' for f in findings):
+
+    # Defensive: a significant finding that survived calibration without
+    # a clear resolution mode still blocks (rather than silently pass)
+    # so the loop keeps iterating instead of declaring victory on a
+    # broken report.
+    if significant:
         return 'blocked', False
     return 'passed', False
 

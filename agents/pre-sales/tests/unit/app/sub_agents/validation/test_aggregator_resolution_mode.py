@@ -915,8 +915,27 @@ def test_policy_does_not_break_severity_downgrade(
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Per-finding routing: a mixed batch (auto_fixable + decision_required)
+# resolves to ``blocked`` so the revision_agent can patch the auto-fixable
+# findings first. Only when the next critic round has zero auto-fixable
+# findings remaining does the gate flip to ``needs_human_review`` (covered
+# by the dedicated post-revision test below).
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.unit
-async def test_mixed_batch_escalates_but_preserves_auto_fixable_findings():
+async def test_mixed_batch_defers_to_blocked_so_revision_can_patch_first():
+    """Per-finding routing invariant: when both auto_fixable and
+    decision_required findings exist in the same report, the gate must
+    return ``blocked`` so the revision_agent gets to patch the auto-
+    fixable ones before the user is asked anything.
+
+    Pre-routing behaviour escalated the whole batch — the auto_fixable
+    finding was visible in the report but never patched because the
+    loop terminated immediately on ``needs_human_review``. Per-finding
+    routing closes that contamination path.
+    """
     state = _state_with(
         {
             'contradictions': [
@@ -941,12 +960,42 @@ async def test_mixed_batch_escalates_but_preserves_auto_fixable_findings():
     )
     report = await _run(state)
 
-    # The single decision_required finding wins the gate decision...
+    # Mixed batch ⇒ blocked. revision_agent will run on the next loop
+    # iteration; its SKILL.md tells it to no-op on the decision_required
+    # finding and patch the auto_fixable one.
+    assert report.overall_status == 'blocked'
+    # ``requires_human_review`` follows the gate, not the finding count.
+    assert report.requires_human_review is False
+    # Both findings still appear in the report for telemetry and so
+    # the revision_agent can iterate over the full list.
+    assert {f.id for f in report.findings} == {
+        'contradictions-001',
+        'contractual_exposure-001',
+    }
+
+
+@pytest.mark.unit
+async def test_only_escalating_findings_route_to_needs_human_review():
+    """Sibling assertion: when every remaining finding is non-auto_fixable
+    AND no deterministic error is present, the gate finally escalates.
+    This is the state the loop reaches after the revision_agent has
+    patched away every auto_fixable finding.
+    """
+    state = _state_with(
+        {
+            'contractual_exposure': [
+                _finding(
+                    fid='contractual_exposure-001',
+                    skill='contractual_exposure',
+                    category='subjective_nfr_target',
+                    severity='MAJOR',
+                    resolution_mode='decision_required',
+                    requires_human_review=True,
+                ),
+            ],
+        }
+    )
+    report = await _run(state)
+
     assert report.overall_status == 'needs_human_review'
-    # ...but the auto_fixable BLOCKER still appears in the findings list
-    # so the user can see the full picture.
-    auto_fixable = [
-        f for f in report.findings if f.resolution_mode == 'auto_fixable'
-    ]
-    assert len(auto_fixable) == 1
-    assert auto_fixable[0].severity == 'BLOCKER'
+    assert report.requires_human_review is True
