@@ -38,10 +38,13 @@ logger = structlog.get_logger()
 _LANGUAGE_STATE_KEY = 'app:language'
 
 
+_VALID_STAGES: frozenset[str] = frozenset({'content', 'full'})
+
+
 @safe_tool
 async def stage_sow(
     sow_data: dict[str, Any],
-    stage: str = 'full',
+    stage: str,
     language: str = '',
     tool_context: ToolContext = None,
 ) -> dict[str, Any]:
@@ -58,9 +61,15 @@ async def stage_sow(
         sow_data: SOW payload dict in the schema accepted by
             ``generate_sow_document``. Pass the ``sow_data`` field returned
             by ``assemble_sow_payload``.
-        stage: "content" for the Phase 2 content stage (architecture and
-            narrative still absent) or "full" for the complete payload.
-            Defaults to "full".
+        stage: ``"content"`` for the Phase 2 content stage (architecture
+            and narrative still absent) or ``"full"`` for the complete
+            payload. **Required** — there is no safe default. The previous
+            behaviour silently fell back to ``"full"`` when the argument
+            was missing or invalid, which let the revision_agent promote a
+            content-stage SOW to full mid-loop. That reset
+            ``STATE_ROUND_COUNT`` / ``STATE_PRIOR_BLOCKING_FINGERPRINTS``
+            and re-introduced architecture / narrative findings that the
+            content-stage validation correctly ignored.
         language: Optional language tag (e.g. "pt-BR", "en") so the
             validation summary matches the conversation language.
 
@@ -93,9 +102,26 @@ async def stage_sow(
             ),
         )
 
-    stage_normalized = (stage or 'full').strip().lower()
-    if stage_normalized not in ('content', 'full'):
-        stage_normalized = 'full'
+    stage_normalized = (stage or '').strip().lower()
+    if stage_normalized not in _VALID_STAGES:
+        previous_stage = tool_context.state.get(STATE_STAGE)
+        return ToolError(
+            status='error',
+            error=(
+                f"'stage' must be 'content' or 'full', got {stage!r}."
+            ),
+            retryable=False,
+            tool='stage_sow',
+            suggestion=(
+                'Pass the stage explicitly. The revision_agent must copy '
+                f"the current stage value (currently {previous_stage!r}) "
+                'from `<current_stage>` in its prompt; the orchestrator '
+                'passes `content` during Phase 2 content review and `full` '
+                'for the architecture review and Phase 3. There is no '
+                'safe default — silently promoting the stage resets the '
+                "QualityLoopAgent's round tracking."
+            ),
+        )
 
     # Detect stage transitions BEFORE writing the new stage. The aggregator
     # increments STATE_ROUND_COUNT monotonically across critic runs within a

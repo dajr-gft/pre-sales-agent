@@ -33,7 +33,7 @@ from google.genai import types
 from ...config import config
 from ...shared.safety import build_safety_settings
 from ...tools.sow.stage_sow import stage_sow
-from ..validation.schema import STATE_SOW, STATE_VALIDATION_RESULT
+from ..validation.schema import STATE_SOW, STATE_STAGE, STATE_VALIDATION_RESULT
 from .log_tools import REVISION_LOG_STATE_KEY, record_revision_log_entries
 from .tools import load_sow_reference
 
@@ -68,7 +68,22 @@ _INPUTS_PRESENT_FOOTER = (
     '`finding.fields`; preserve every untouched field byte-for-byte; '
     'preserve every existing id. Persist patches via `stage_sow` and '
     'append one entry per processed finding via '
-    '`record_revision_log_entries`.\n'
+    '`record_revision_log_entries`.\n\n'
+    '**Stage preservation (binding).** When you call `stage_sow`, pass '
+    '`stage=<value inside <current_stage>>` verbatim. Never substitute '
+    "`'full'` (or any other value) for the stage shown there. Promoting "
+    'a content-stage SOW to full mid-loop resets the QualityLoopAgent '
+    'round counters and re-introduces the architecture / narrative '
+    'findings that the content-stage validation correctly suppressed — '
+    'the loop will never converge if you change the stage here.\n'
+)
+
+
+_MISSING_STAGE_FOOTER_FRAGMENT = (
+    '\n\n**ATTENTION — `<current_stage>` is missing from runtime state.** '
+    'You MUST refuse to call `stage_sow` until the orchestrator re-stages '
+    "the SOW with a valid stage. Reply with a short diagnostic naming "
+    "the missing key (`{state_stage_key}`) and stop. Do NOT guess a stage."
 )
 
 
@@ -119,6 +134,7 @@ def _make_revision_instruction_provider(skill_body: str):
         state = ctx.state
         sow = state.get(STATE_SOW)
         report = state.get(STATE_VALIDATION_RESULT)
+        stage = state.get(STATE_STAGE)
         # revision_log is optional — round 1 starts with an empty log and
         # that is the correct initial state, not a missing input.
         revision_log = state.get(REVISION_LOG_STATE_KEY) or []
@@ -138,16 +154,33 @@ def _make_revision_instruction_provider(skill_body: str):
                 missing_list='\n'.join(missing)
             )
 
+        # Stage is technically optional for the LLM's prose, but the
+        # SKILL.md contract requires it for the `stage_sow` call. Render
+        # the block either way so the LLM can quote a literal value, and
+        # append a refuse-to-stage warning when it is absent so silent
+        # promotion to ``'full'`` is impossible.
+        rendered_stage = (
+            f'<current_stage>{stage}</current_stage>'
+            if isinstance(stage, str) and stage
+            else '<current_stage>__MISSING__</current_stage>'
+        )
+
         rendered = (
             f'<staged_sow>\n{_serialize_state_value(sow)}\n</staged_sow>\n\n'
             f'<validation_report>\n{_serialize_state_value(report)}\n'
             '</validation_report>\n\n'
+            f'{rendered_stage}\n\n'
             f'<revision_log>\n{_serialize_state_value(revision_log)}\n'
             '</revision_log>'
         )
-        return skill_body + _INPUTS_PRESENT_FOOTER.format(
+        body = skill_body + _INPUTS_PRESENT_FOOTER.format(
             rendered_inputs=rendered
         )
+        if not (isinstance(stage, str) and stage):
+            body += _MISSING_STAGE_FOOTER_FRAGMENT.format(
+                state_stage_key=STATE_STAGE,
+            )
+        return body
 
     return _provider
 

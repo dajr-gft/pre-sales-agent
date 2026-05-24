@@ -136,8 +136,8 @@ to the pre-patch snapshot.
 
 After every finding in every group is processed:
 
-1. `stage_sow(patched_sow_data)` — writes to `state['app:sow:current']`.
-   The only place this skill mutates the document state directly.
+1. `stage_sow(sow_data=patched_sow_data, stage=<value of <current_stage>>)` — writes to `state['app:sow:current']`.
+   The only place this skill mutates the document state directly. **Stage preservation is binding**: copy the literal value inside `<current_stage>` from the runtime inputs block above and pass it as `stage=`. NEVER substitute `"full"` (or any other value) for the stage shown there. Promoting a content-stage SOW to full mid-loop resets the QualityLoopAgent round counters and re-introduces architecture / narrative findings that the content-stage validation correctly suppressed — the loop will then never converge. If `<current_stage>` is `__MISSING__` you MUST stop and refuse to stage; see the runtime footer for the diagnostic to emit.
 2. Write the per-finding revision entries to
    `state['app:sow:revision_log']` via
    `record_revision_log_entries(entries=[...])`. Append-only across
@@ -171,6 +171,7 @@ If any check fails, do NOT call `stage_sow`. Re-anchor on the pre-patch payload 
 ## Out of scope (critical boundaries)
 
 - **MUST NOT regenerate any section.** Rewriting fields outside `finding.fields` for a single finding is a Contract 1 violation.
+- **MUST NOT change the validation stage.** The orchestrator owns the stage transition (`content` → `full`) between Phase 2 review gates. This agent always passes `stage=<current_stage>` verbatim to `stage_sow`; the QualityLoopAgent round counters and the prior-blocking-fingerprint set depend on the stage staying constant within a loop run.
 - Does not re-validate. `sow_quality_loop` re-invokes `validation_critic` after `stage_sow`.
 - Does not call `confirm_phase_completion`. Phase gating belongs to the root orchestrator agent; revision rounds happen within a phase.
 - Does not present the Revision Note to the user. The root orchestrator composes the localized Revision Note after the loop terminates.

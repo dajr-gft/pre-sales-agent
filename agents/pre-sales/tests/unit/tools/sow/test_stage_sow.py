@@ -52,18 +52,54 @@ async def test_records_language_when_provided(mock_tool_context):
     assert mock_tool_context.state['app:language'] == 'pt-BR'
 
 
-async def test_invalid_stage_falls_back_to_full(mock_tool_context):
-    await stage_sow(
+# ---------------------------------------------------------------------------
+# Error paths — invalid stage MUST be rejected, not silently coerced.
+#
+# History: the old behaviour fell back to ``'full'`` whenever the input
+# was unrecognised (or omitted altogether). The revision_agent's SKILL.md
+# called ``stage_sow(patched_sow_data)`` without the keyword, the default
+# ``stage='full'`` kicked in, and a content-stage validation got promoted
+# to full mid-loop. That reset STATE_ROUND_COUNT /
+# STATE_PRIOR_BLOCKING_FINGERPRINTS and re-introduced architecture /
+# narrative findings the content-stage validation correctly suppressed.
+# These tests pin the new strict-rejection behaviour so any future
+# loosening surfaces immediately.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    'bad_stage',
+    [
+        'garbage',
+        '',
+        '  ',
+        'partial',
+        # The literal sentinel the revision provider renders when the
+        # stage is absent from state — if the LLM ever echoed it back as
+        # the stage argument, we want the tool to reject loudly instead
+        # of staging anything.
+        '__MISSING__',
+    ],
+)
+async def test_rejects_invalid_stage(mock_tool_context, bad_stage):
+    """Anything that does not normalise to ``'content'`` or ``'full'`` is
+    rejected. Upper-case / surrounding whitespace IS tolerated because
+    ``.strip().lower()`` runs first — so ``'FULL '`` normalises to
+    ``'full'`` and stages successfully (covered by the happy-path
+    parametrisation if needed). The cases pinned here are values that
+    cannot survive that normalisation and therefore must surface as
+    errors instead of silently falling back to ``'full'``."""
+    result = await stage_sow(
         sow_data={'project_title': 'P'},
-        stage='garbage',
+        stage=bad_stage,
         tool_context=mock_tool_context,
     )
-    assert mock_tool_context.state[STATE_STAGE] == 'full'
-
-
-# ---------------------------------------------------------------------------
-# Error paths
-# ---------------------------------------------------------------------------
+    assert result['status'] == 'error'
+    assert 'content' in result['error'] and 'full' in result['error']
+    # State must NOT have been written — the caller has to retry with a
+    # valid stage. Silent fallback is the failure mode we are killing.
+    assert STATE_SOW not in mock_tool_context.state
+    assert STATE_STAGE not in mock_tool_context.state
 
 
 async def test_rejects_missing_tool_context():

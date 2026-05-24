@@ -23,6 +23,7 @@ from app.sub_agents.revision.agent import (
 from app.sub_agents.revision.log_tools import REVISION_LOG_STATE_KEY
 from app.sub_agents.validation.schema import (
     STATE_SOW,
+    STATE_STAGE,
     STATE_VALIDATION_RESULT,
 )
 
@@ -175,6 +176,7 @@ class TestProviderPresentBranch:
         sow: dict | None = None,
         report: dict | None = None,
         revision_log: list | None = None,
+        stage: str | None = 'full',
     ) -> dict:
         out: dict = {}
         out[STATE_SOW] = sow or {
@@ -197,6 +199,15 @@ class TestProviderPresentBranch:
         }
         if revision_log is not None:
             out[REVISION_LOG_STATE_KEY] = revision_log
+        # Production always seeds STATE_STAGE before this provider runs
+        # (the orchestrator's stage_sow call writes it). Tests default to
+        # ``'full'`` so existing assertions about the present branch
+        # don't accidentally trigger the missing-stage warning footer.
+        # Pass ``stage=None`` explicitly to exercise the missing-stage
+        # path; the dedicated TestProviderCurrentStageInjection suite
+        # below uses its own builder for that case.
+        if stage is not None:
+            out[STATE_STAGE] = stage
         return out
 
     def test_emits_all_three_xml_blocks_in_order(self):
@@ -278,6 +289,89 @@ class TestProviderPresentBranch:
         result = provider(_ctx(self._state_with_inputs()))
 
         assert result.startswith(body)
+
+
+# ---------------------------------------------------------------------------
+# Provider — <current_stage> injection (stage preservation contract)
+#
+# The QualityLoopAgent's round counters (STATE_ROUND_COUNT,
+# STATE_PRIOR_BLOCKING_FINGERPRINTS) are reset by ``stage_sow`` whenever
+# the stage value changes. Before this contract existed, the revision
+# agent silently called ``stage_sow(patched_sow_data)`` without the
+# ``stage`` keyword and fell into the old default of ``'full'``, which
+# meant any content-stage validation got promoted to full mid-loop —
+# resetting the counters and re-introducing architecture / narrative
+# findings the content-stage validation had correctly suppressed. The
+# block + footer rules pinned below are how we kill that failure mode.
+# ---------------------------------------------------------------------------
+
+
+class TestProviderCurrentStageInjection:
+    def _baseline_state(self, *, stage: str | None) -> dict:
+        out: dict = {
+            STATE_SOW: {'project_title': 'P'},
+            STATE_VALIDATION_RESULT: {
+                'overall_status': 'blocked',
+                'findings': [{'id': 'x', 'severity': 'MAJOR'}],
+            },
+        }
+        if stage is not None:
+            out[STATE_STAGE] = stage
+        return out
+
+    @pytest.mark.parametrize('stage', ['content', 'full'])
+    def test_emits_current_stage_block_with_literal_value(self, stage):
+        """The literal stage from ``state[STATE_STAGE]`` must appear in
+        the rendered block so the LLM can copy it verbatim into the
+        ``stage_sow`` call."""
+        provider = _make_revision_instruction_provider(_SKILL_BODY)
+        result = provider(_ctx(self._baseline_state(stage=stage)))
+
+        assert f'<current_stage>{stage}</current_stage>' in result
+
+    def test_footer_pins_stage_preservation_rule(self):
+        """The instruction footer must remind the LLM never to substitute
+        a different stage value — the contract is enforced in prompt, not
+        just in SKILL.md, so a future refactor that drops the SKILL line
+        still has the inline rule."""
+        provider = _make_revision_instruction_provider(_SKILL_BODY)
+        result = provider(_ctx(self._baseline_state(stage='content')))
+
+        assert 'stage_sow' in result
+        # Both "preservation" framings appear in the footer + missing-
+        # state warning. We pin the one the LLM is most likely to scan for.
+        assert 'Stage preservation' in result
+        # And the explicit anti-promotion sentence so the LLM cannot
+        # rationalise a stage upgrade.
+        assert 'content-stage' in result.lower() or 'promot' in result.lower()
+
+    def test_missing_stage_renders_sentinel_and_warning(self):
+        """When ``state[STATE_STAGE]`` is absent (would have triggered
+        the old silent fallback to ``'full'``), the block must render a
+        ``__MISSING__`` sentinel AND the provider must append an explicit
+        refuse-to-stage warning so the LLM cannot silently pick a value."""
+        provider = _make_revision_instruction_provider(_SKILL_BODY)
+        result = provider(_ctx(self._baseline_state(stage=None)))
+
+        assert '<current_stage>__MISSING__</current_stage>' in result
+        # The warning footer must name the missing state key and tell
+        # the LLM to refuse staging — this is the inline safety net.
+        assert STATE_STAGE in result
+        assert 'refuse' in result.lower() or 'MUST refuse' in result
+        # And it MUST forbid guessing, the failure mode that motivated
+        # the whole contract.
+        assert 'guess' in result.lower() or 'silently' in result.lower()
+
+    def test_empty_string_stage_treated_as_missing(self):
+        """An empty string in state is structurally indistinguishable
+        from a missing key for the LLM — both must trip the sentinel +
+        warning path so the patcher cannot stage with ``stage=''`` and
+        watch the tool reject it after the patch is already drafted."""
+        provider = _make_revision_instruction_provider(_SKILL_BODY)
+        result = provider(_ctx(self._baseline_state(stage='')))
+
+        assert '<current_stage>__MISSING__</current_stage>' in result
+        assert STATE_STAGE in result
 
 
 # ---------------------------------------------------------------------------
