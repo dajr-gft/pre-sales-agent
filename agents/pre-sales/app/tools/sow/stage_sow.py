@@ -147,8 +147,23 @@ async def stage_sow(
             previous_stage=previous_stage,
             new_stage=stage_normalized,
         )
+    # Language is owned by the orchestrator (the root sets it from the
+    # user's first turn) — sub-agents that re-stage during the quality
+    # loop must NOT clobber it. Production incident: the revision_agent
+    # called stage_sow(..., language='en') between rounds and overrode
+    # the user's 'pt-BR', flipping the root's subsequent responses to
+    # English. The rule: set only when the slot is empty; ignore any
+    # non-empty argument that disagrees with the value already in state.
     if language:
-        tool_context.state[_LANGUAGE_STATE_KEY] = language
+        existing_language = tool_context.state.get(_LANGUAGE_STATE_KEY)
+        if not existing_language:
+            tool_context.state[_LANGUAGE_STATE_KEY] = language
+        elif existing_language != language:
+            logger.info(
+                'stage_sow_language_override_ignored',
+                existing_language=existing_language,
+                attempted_language=language,
+            )
 
     # Stable serialization for the hash regardless of dict ordering.
     sow_hash = sow_data_hash(

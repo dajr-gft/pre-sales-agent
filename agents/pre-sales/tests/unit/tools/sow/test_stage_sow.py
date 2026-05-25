@@ -53,6 +53,85 @@ async def test_records_language_when_provided(mock_tool_context):
 
 
 # ---------------------------------------------------------------------------
+# Language preservation — the orchestrator owns ``app:language``; sub-
+# agents that re-stage during the quality loop must NOT clobber it.
+#
+# Production incident: revision_agent called ``stage_sow(..., language='en')``
+# between rounds and overrode the user's 'pt-BR', flipping the root's
+# subsequent responses to English. The rule: set only when the slot is
+# empty; ignore any non-empty argument that disagrees with the value
+# already in state.
+# ---------------------------------------------------------------------------
+
+
+class TestLanguagePreservation:
+    async def test_existing_language_is_not_overwritten_by_a_different_value(
+        self, mock_tool_context
+    ):
+        """The exact production scenario — root staged 'pt-BR' first,
+        reviser tried to re-stage with 'en' a round later."""
+        mock_tool_context.state['app:language'] = 'pt-BR'
+
+        await stage_sow(
+            sow_data={'project_title': 'P'},
+            stage='content',
+            language='en',
+            tool_context=mock_tool_context,
+        )
+
+        assert mock_tool_context.state['app:language'] == 'pt-BR', (
+            "Language was overridden by a re-staging call — the root's "
+            'conversation language must survive sub-agent re-stages.'
+        )
+
+    async def test_existing_language_is_kept_when_attempt_matches(
+        self, mock_tool_context
+    ):
+        """When the new value equals what is already in state, the no-op
+        path is silent — no warning, no rewrite needed."""
+        mock_tool_context.state['app:language'] = 'pt-BR'
+
+        await stage_sow(
+            sow_data={'project_title': 'P'},
+            stage='content',
+            language='pt-BR',
+            tool_context=mock_tool_context,
+        )
+
+        assert mock_tool_context.state['app:language'] == 'pt-BR'
+
+    async def test_empty_language_argument_never_overrides(
+        self, mock_tool_context
+    ):
+        """The reviser typically omits ``language=`` (default ''). That
+        must NOT clear an existing setting — the only writer is the
+        first non-empty caller."""
+        mock_tool_context.state['app:language'] = 'pt-BR'
+
+        await stage_sow(
+            sow_data={'project_title': 'P'},
+            stage='content',
+            tool_context=mock_tool_context,
+        )
+
+        assert mock_tool_context.state['app:language'] == 'pt-BR'
+
+    async def test_first_writer_seeds_language(self, mock_tool_context):
+        """When state has no language yet, a non-empty value is accepted
+        — this is the root's first stage at the start of the session."""
+        assert 'app:language' not in mock_tool_context.state
+
+        await stage_sow(
+            sow_data={'project_title': 'P'},
+            stage='content',
+            language='pt-BR',
+            tool_context=mock_tool_context,
+        )
+
+        assert mock_tool_context.state['app:language'] == 'pt-BR'
+
+
+# ---------------------------------------------------------------------------
 # Error paths — invalid stage MUST be rejected, not silently coerced.
 #
 # History: the old behaviour fell back to ``'full'`` whenever the input
