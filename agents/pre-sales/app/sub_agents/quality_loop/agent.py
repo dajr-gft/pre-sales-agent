@@ -70,7 +70,17 @@ from pydantic import ConfigDict, Field
 
 from ...tools.sow._sow_helpers import apply_sow_assembly_to_state, sow_data_hash
 from ...tools.sow.assemble_payload import AssemblyError
+# Section agents are imported directly from their ``agent.py`` modules
+# rather than via ``..__init__`` so the cycle that would arise from
+# ``app/sub_agents/__init__.py`` importing both ``quality_loop`` and
+# the sections is avoided — direct imports bypass the parent package's
+# mid-init attribute lookup.
+from ..architecture.agent import architecture_agent
+from ..delivery_plan.agent import delivery_plan_agent
+from ..narrative.agent import narrative_agent
+from ..requirements.agent import requirements_agent
 from ..revision import revision_agent
+from ..scope_boundaries.agent import scope_boundaries_agent
 from .._section_agent import STATE_REPAIR_FINDINGS
 from ..validation import validation_critic
 from ..validation.schema import STATE_SOW, STATE_STAGE, STATE_VALIDATION_RESULT
@@ -702,4 +712,19 @@ sow_quality_loop = QualityLoopAgent(
         '`state[app:sow:quality_loop_result]`.'
     ),
     sub_agents=[validation_critic, revision_agent],
+    # Cross-section repair routes (commit 6). Each entry maps a section
+    # name (the bundle key, NOT the ``_agent`` suffix) to the section
+    # agent that owns the corresponding bundle. The keys must match the
+    # values in :data:`_CROSS_SECTION_REPAIR_ROUTES` — the partition
+    # logic and this wiring are coupled by section name. Adding a new
+    # section means adding entries to BOTH (the routing table tells the
+    # loop which findings belong here; this map tells it which agent to
+    # invoke).
+    repair_section_agents={
+        'requirements': requirements_agent,
+        'delivery_plan': delivery_plan_agent,
+        'scope_boundaries': scope_boundaries_agent,
+        'architecture': architecture_agent,
+        'narrative': narrative_agent,
+    },
 )

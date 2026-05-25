@@ -1290,6 +1290,69 @@ class TestRepairRoutingWithinLoop:
         assert result['status'] in ('passed', 'exhausted', 'no_progress', 'blocked')
 
 
+class TestProductionSingletonWiring:
+    """The exported ``sow_quality_loop`` instance must carry every
+    section agent in its ``repair_section_agents`` mapping, with keys
+    matching the canonical section names used by
+    :data:`_CROSS_SECTION_REPAIR_ROUTES`. Without this, a route to
+    'requirements' (for example) would silently fall back to the
+    reviser at production runtime — defeating the structural fix.
+    """
+
+    def test_singleton_has_all_five_section_agents_wired(self):
+        from app.sub_agents.quality_loop.agent import sow_quality_loop
+
+        # The mapping is a frozen-ish view but we treat it as dict-like.
+        wired = dict(sow_quality_loop.repair_section_agents)
+        assert set(wired.keys()) == {
+            'requirements',
+            'delivery_plan',
+            'scope_boundaries',
+            'architecture',
+            'narrative',
+        }, (
+            'Production singleton is missing one or more section agents — '
+            'the loop will silently fall back to the reviser for findings '
+            'routed to the absent section.'
+        )
+
+    def test_each_wired_agent_matches_the_canonical_section_module(self):
+        from app.sub_agents.architecture import architecture_agent
+        from app.sub_agents.delivery_plan import delivery_plan_agent
+        from app.sub_agents.narrative import narrative_agent
+        from app.sub_agents.quality_loop.agent import sow_quality_loop
+        from app.sub_agents.requirements import requirements_agent
+        from app.sub_agents.scope_boundaries import scope_boundaries_agent
+
+        wired = sow_quality_loop.repair_section_agents
+        assert wired['requirements'] is requirements_agent
+        assert wired['delivery_plan'] is delivery_plan_agent
+        assert wired['scope_boundaries'] is scope_boundaries_agent
+        assert wired['architecture'] is architecture_agent
+        assert wired['narrative'] is narrative_agent
+
+    def test_every_route_section_is_in_the_wiring(self):
+        """Coupling guard: ``_CROSS_SECTION_REPAIR_ROUTES`` and the
+        ``repair_section_agents`` map are kept in sync by section name.
+        A finding routed to a section that isn't wired falls back to the
+        reviser (handled by ``_partition_findings``), which is safe but
+        defeats the structural fix — this test fails loudly so the gap
+        gets closed before production sees it."""
+        from app.sub_agents.quality_loop.agent import (
+            _CROSS_SECTION_REPAIR_ROUTES,
+            sow_quality_loop,
+        )
+
+        wired_keys = set(sow_quality_loop.repair_section_agents.keys())
+        for (skill, category), section in _CROSS_SECTION_REPAIR_ROUTES.items():
+            assert section in wired_keys, (
+                f'Route ({skill}, {category}) -> {section!r} but no '
+                f'agent for {section!r} is wired into sow_quality_loop. '
+                'Add it to repair_section_agents (or remove the route '
+                'if the section is intentionally unsupported).'
+            )
+
+
 class TestApplyStateDeltaHelper:
     """Direct coverage of the helper so the contract is testable in
     isolation, independent of the critic/reviser stubs."""
