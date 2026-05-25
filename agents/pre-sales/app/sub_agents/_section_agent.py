@@ -264,6 +264,25 @@ _PATCH_MODE_FOOTER = (
 )
 
 
+# Legacy bundle-regenerate repair footer (Phase 5 status: SAFETY NET).
+#
+# After the Phase 3 rollout, every entry in the QualityLoopAgent's
+# ``repair_section_agents`` mapping is a tool-based ``Agent`` built by
+# :func:`build_section_repair_agent`. The loop NEVER injects
+# ``STATE_REPAIR_FINDINGS`` into a first-gen ``SequentialAgent``
+# anymore, so the code path that appends this footer
+# (``_make_worker_instruction_provider`` with ``repair_mode_label`` set)
+# is dead in production.
+#
+# The footer is preserved deliberately as a regression net: if a future
+# refactor accidentally wires a first-gen agent into the loop's repair
+# map, the footer keeps the bundle-regenerate flow under the
+# patch-mode contracts (preserve ids, carry untouched items verbatim)
+# instead of producing an unconstrained rewrite. The
+# ``quality_loop_repair_mechanism_used`` event (also Phase 5) makes
+# that regression observable in the log; pinning
+# ``legacy_regenerate=0`` in production runs is how we monitor it.
+#
 # Layered ON TOP OF the patch-mode footer when ``<repair_findings>`` is
 # present. The findings are the specific defects the validation critic
 # flagged in THIS section and that the QualityLoopAgent routed here for

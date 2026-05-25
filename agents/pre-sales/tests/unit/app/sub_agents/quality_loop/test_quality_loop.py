@@ -1723,6 +1723,162 @@ class TestProductionSingletonWiring:
             )
 
 
+class TestRepairMechanismTelemetry:
+    """Phase 5 — the loop emits ``quality_loop_repair_mechanism_used``
+    once per round summarising whether each invoked section repair was
+    tool-based (``Agent``) or legacy regenerate (``SequentialAgent``).
+    Pinning ``legacy_regenerate=0`` in production logs is the
+    anti-regression signal called for by the plan.
+    """
+
+    def _build_loop_with_sections(
+        self,
+        *,
+        critic,
+        sections: dict[str, BaseAgent],
+        max_rounds: int = 2,
+    ) -> tuple[QualityLoopAgent, FakeReviser]:
+        reviser = FakeReviser(name='fake_reviser')
+        loop = QualityLoopAgent(
+            name='sow_quality_loop',
+            description='test',
+            sub_agents=[critic, reviser],
+            max_rounds=max_rounds,
+            repair_section_agents=sections,
+        )
+        return loop, reviser
+
+    async def test_tool_based_section_emits_mechanism_event(
+        self, monkeypatch,
+    ):
+        """Default ``FakeSectionAgent`` extends BaseAgent (not
+        SequentialAgent), so the loop must classify it as ``tool_based``
+        and emit the summary event accordingly."""
+        from app.sub_agents.quality_loop import agent as quality_loop_module
+
+        delivery = FakeSectionAgent(
+            name='delivery_plan_agent',
+            output_key='app:sow:delivery_plan',
+            repair_payload_per_call=[],
+        )
+        critic = _critic_emitting([
+            {
+                'id': 'c-1',
+                'skill': 'contradictions',
+                'category': 'activities_vs_deliverables',
+                'severity': 'MAJOR',
+                'fields': ['activity_phases'],
+                'evidence': 'x',
+                'recommendation': 'y',
+            },
+        ])
+        loop, _ = self._build_loop_with_sections(
+            critic=critic, sections={'delivery_plan': delivery},
+        )
+
+        # Capture logger.info call_args so we can assert on the
+        # structured event we just added.
+        captured: list[tuple[str, dict]] = []
+        original_info = quality_loop_module.logger.info
+
+        def _capturing_info(event_name, **kwargs):
+            captured.append((event_name, kwargs))
+            return original_info(event_name, **kwargs)
+
+        monkeypatch.setattr(quality_loop_module.logger, 'info', _capturing_info)
+
+        ctx = _fake_ctx()
+        _seed_assembly_state(ctx.session.state)
+
+        await _run_loop(loop, ctx)
+
+        mechanism_events = [
+            kwargs for (name, kwargs) in captured
+            if name == 'quality_loop_repair_mechanism_used'
+        ]
+        assert mechanism_events, (
+            'quality_loop_repair_mechanism_used must be emitted at least '
+            'once when a section repair runs.'
+        )
+        first = mechanism_events[0]
+        assert first['tool_based'] == 1
+        assert first['legacy_regenerate'] == 0
+        assert first['by_section'] == {'delivery_plan': 'tool_based'}
+        assert first['round'] == 1
+
+    def test_production_repair_agents_are_all_classified_as_tool_based(self):
+        """Pin the classification expression the loop relies on:
+        every wired ``repair_section_agents`` entry in the production
+        singleton is an ``Agent`` (LlmAgent), not a ``SequentialAgent``.
+
+        The loop uses ``isinstance(section_agent, SequentialAgent)``
+        to discriminate the mechanism. If a future change accidentally
+        wires a first-gen agent into the repair map, this test fails
+        with the offending section named — same signal the runtime
+        ``quality_loop_repair_mechanism_used`` log would emit, but
+        caught at import time."""
+        from google.adk.agents import SequentialAgent
+        from app.sub_agents.quality_loop.agent import sow_quality_loop
+
+        offending = {
+            name: type(agent).__name__
+            for name, agent in sow_quality_loop.repair_section_agents.items()
+            if isinstance(agent, SequentialAgent)
+        }
+        assert not offending, (
+            f'These sections are wired to a SequentialAgent (legacy '
+            f'regenerate flow): {offending}. They must be the section '
+            "repair agent (built by build_section_repair_agent), not "
+            'the first-gen agent.'
+        )
+
+    async def test_no_event_emitted_when_no_section_dispatched(
+        self, monkeypatch,
+    ):
+        """If a round has no section repairs (e.g. only mechanical
+        residue), the summary event must NOT fire — emitting an empty
+        summary every round would dilute the signal."""
+        from app.sub_agents.quality_loop import agent as quality_loop_module
+
+        critic = _critic_emitting([
+            {
+                # No structural ``fields``; routes to the reviser only.
+                'id': 'm-1',
+                'skill': 'semantic_quality',
+                'category': 'vague_phrasing',
+                'severity': 'MINOR',
+                'fields': [],
+                'evidence': 'x',
+                'recommendation': 'y',
+            },
+        ])
+        loop, _ = self._build_loop_with_sections(
+            critic=critic, sections={},
+        )
+
+        captured: list[tuple[str, dict]] = []
+        original_info = quality_loop_module.logger.info
+
+        def _capturing_info(event_name, **kwargs):
+            captured.append((event_name, kwargs))
+            return original_info(event_name, **kwargs)
+
+        monkeypatch.setattr(quality_loop_module.logger, 'info', _capturing_info)
+
+        ctx = _fake_ctx()
+        _seed_assembly_state(ctx.session.state)
+
+        await _run_loop(loop, ctx)
+
+        mechanism_events = [
+            kwargs for (name, kwargs) in captured
+            if name == 'quality_loop_repair_mechanism_used'
+        ]
+        assert not mechanism_events, (
+            'mechanism event must only fire when ≥1 section repair runs.'
+        )
+
+
 class TestApplyStateDeltaHelper:
     """Direct coverage of the helper so the contract is testable in
     isolation, independent of the critic/reviser stubs."""

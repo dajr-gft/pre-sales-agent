@@ -61,7 +61,7 @@ import json
 from typing import Any, AsyncGenerator, ClassVar, Mapping, Optional
 
 import structlog
-from google.adk.agents import BaseAgent
+from google.adk.agents import BaseAgent, SequentialAgent
 from google.adk.agents.base_agent_config import BaseAgentConfig
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event, EventActions
@@ -632,6 +632,18 @@ class QualityLoopAgent(BaseAgent):
 
             current_stage = ctx.session.state.get(STATE_STAGE) or 'content'
             section_repaired_count = 0
+            # Phase 5 telemetry — per-round mechanism counters. After
+            # Phase 3 every wired ``repair_section_agents`` entry is a
+            # tool-based ``Agent`` (the section's ``*_repair_agent``); a
+            # non-zero ``legacy_regenerate`` count means a future change
+            # accidentally wired back a first-gen ``SequentialAgent`` and
+            # the loop is regenerating bundles again. Pinning this to
+            # zero in production logs is the anti-regression signal the
+            # plan calls for.
+            mechanism_counts: dict[str, int] = {
+                'tool_based': 0, 'legacy_regenerate': 0,
+            }
+            mechanism_by_section: dict[str, str] = {}
             for section_name in _SECTION_ORDER:
                 section_findings = by_section.get(section_name)
                 if not section_findings:
@@ -642,6 +654,18 @@ class QualityLoopAgent(BaseAgent):
                     # against ``available_sections``; this branch only
                     # fires if the mapping mutated between check and use.
                     continue
+                # Discriminate by ADK agent type: the tool-based repair
+                # builder returns a single ``Agent`` (LlmAgent); the
+                # first-gen builder returns a ``SequentialAgent``. This
+                # is the same classification ``test_quality_loop`` pins,
+                # so the metric and the test stay coupled by construction.
+                mechanism = (
+                    'legacy_regenerate'
+                    if isinstance(section_agent, SequentialAgent)
+                    else 'tool_based'
+                )
+                mechanism_counts[mechanism] += 1
+                mechanism_by_section[section_name] = mechanism
 
                 # Hand the section its repair packet via the canonical
                 # state slot ``STATE_REPAIR_FINDINGS``. The factory wired
@@ -715,6 +739,7 @@ class QualityLoopAgent(BaseAgent):
                     pre_hash=pre_bundle_hash,
                     post_hash=post_bundle_hash,
                     changed=pre_bundle_hash != post_bundle_hash,
+                    mechanism=mechanism,
                 )
 
                 # D1 — anchor-drop detection. Compare the set of stable
@@ -769,6 +794,23 @@ class QualityLoopAgent(BaseAgent):
                         missing_keys=err.missing_keys,
                         sentinel_keys=err.sentinel_keys,
                     )
+
+            # Phase 5 — emit one summary per round naming the mechanism
+            # each section used to repair. After Phase 3,
+            # ``legacy_regenerate`` should always be zero in production.
+            # Grep query for the anti-regression check:
+            #   grep quality_loop_repair_mechanism_used logs/agent.log \
+            #     | jq 'select(.legacy_regenerate > 0)'
+            # An empty result means no section regenerated a bundle this
+            # run; any hit is a regression to investigate.
+            if mechanism_by_section:
+                logger.info(
+                    'quality_loop_repair_mechanism_used',
+                    round=round_number,
+                    tool_based=mechanism_counts['tool_based'],
+                    legacy_regenerate=mechanism_counts['legacy_regenerate'],
+                    by_section=mechanism_by_section,
+                )
 
             # ----- mechanical residue → reviser ----------------------------
             # If section repairs ran AND there is no mechanical residue,
