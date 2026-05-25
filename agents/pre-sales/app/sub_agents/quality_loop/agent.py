@@ -165,11 +165,120 @@ _SECTION_ORDER: tuple[str, ...] = (
 )
 
 
+# Map every top-level ``sow_data`` field to its owning section. Used by
+# :func:`_sections_for_finding` to derive cross-bundle targets from
+# ``Finding.fields`` — a finding whose fields cross sections needs every
+# involved section to patch its own side. Keys are the exact field names
+# the section agents emit in their bundles (see
+# ``app.sub_agents.schemas``); adding a new SOW field means adding a
+# row here. The lint table at the bottom of this module's test file
+# pins the coverage so a future schema change cannot silently drop a
+# field out of routing.
+_FIELD_TO_SECTION: dict[str, str] = {
+    # requirements bundle
+    'functional_requirements': 'requirements',
+    'non_functional_requirements': 'requirements',
+    # delivery_plan bundle
+    'activity_phases': 'delivery_plan',
+    'deliverables': 'delivery_plan',
+    'timeline': 'delivery_plan',
+    'partner_roles': 'delivery_plan',
+    'customer_roles': 'delivery_plan',
+    'success_criteria': 'delivery_plan',
+    'objectives': 'delivery_plan',
+    # scope_boundaries bundle
+    'assumptions': 'scope_boundaries',
+    'out_of_scope': 'scope_boundaries',
+    'risks': 'scope_boundaries',
+    'handover_disclaimers': 'scope_boundaries',
+    'change_request_policy_text': 'scope_boundaries',
+    # architecture bundle
+    'architecture_description': 'architecture',
+    'architecture_components': 'architecture',
+    'architecture_integrations': 'architecture',
+    'technology_stack': 'architecture',
+    # narrative bundle
+    'executive_summary': 'narrative',
+    'partner_overview': 'narrative',
+    'customer_overview': 'narrative',
+    'customer_primary_domain': 'narrative',
+}
+
+
+def _sections_for_finding(
+    finding: dict, available_sections: set[str],
+) -> list[str]:
+    """Sections that should repair this finding, in Phase Step order.
+
+    The contract: a finding whose ``(skill, category)`` is in
+    :data:`_CROSS_SECTION_REPAIR_ROUTES` gets section repair. The TARGET
+    sections come from ``Finding.fields`` — every distinct section
+    whose owned field appears in the list. A finding with
+    ``fields=['out_of_scope', 'deliverables']`` returns
+    ``['delivery_plan', 'scope_boundaries']`` (Phase Step order); each
+    section gets a copy of the finding so it can patch its own side
+    while the order guarantees the downstream section sees the patched
+    upstream bundle on the next re-assembly.
+
+    Why fields drive the routing instead of just the (skill, category)
+    default: a `contradictions/scope_vs_oos` finding with
+    `fields=['out_of_scope', 'deliverables']` is cross-bundle in
+    reality — scope_boundaries patching alone leaves the deliverables
+    side untouched. Production logs showed contradictions oscillating
+    3 -> 4 -> 4 -> 5 across rounds even after commit 5 routed them to
+    a single owner; routing to ALL involved sections lets each one
+    reconcile its own surface in a coordinated way.
+
+    Args:
+        finding: Validation finding as a dict (the loop reads them
+            from ``state[STATE_VALIDATION_RESULT].findings``).
+        available_sections: Section names the loop actually has agents
+            for. Sections in the derived list but missing from this
+            set are dropped — the partition function then falls the
+            whole finding back to mechanical if NO sections survive.
+
+    Returns:
+        Empty list when the finding is mechanical (its (skill,
+        category) is not a section-repair route). Single-element list
+        when only one section's fields are involved. Multi-element
+        list in :data:`_SECTION_ORDER` for cross-bundle findings.
+    """
+    skill = finding.get('skill')
+    category = finding.get('category')
+    if (skill, category) not in _CROSS_SECTION_REPAIR_ROUTES:
+        return []
+
+    fields = finding.get('fields') or []
+    sections: set[str] = set()
+    for field in fields:
+        section = _FIELD_TO_SECTION.get(field)
+        if section is not None and section in available_sections:
+            sections.add(section)
+
+    # Fallback: the finding's fields are empty or none of them map to a
+    # known section. Use the legacy single-section route from the
+    # routing table so the finding still gets a target instead of
+    # falling back to the reviser by accident.
+    if not sections:
+        default_section = _CROSS_SECTION_REPAIR_ROUTES.get((skill, category))
+        if default_section is not None and default_section in available_sections:
+            sections.add(default_section)
+
+    return [s for s in _SECTION_ORDER if s in sections]
+
+
 def _partition_findings(
     findings: list[dict],
     available_sections: set[str],
 ) -> tuple[dict[str, list[dict]], list[dict]]:
     """Split findings into per-section repair groups + mechanical residue.
+
+    A single finding can appear in MULTIPLE ``by_section`` lists when
+    its ``fields`` cross sections (see :func:`_sections_for_finding`).
+    Each section that owns one of the touched fields gets a copy of the
+    same finding payload; the loop invokes them in Phase Step order so
+    the downstream section sees the upstream patches via the
+    cumulative-visibility mechanism the section agents already have.
 
     Args:
         findings: ``ValidationReport.findings`` as dicts (the loop sees
@@ -183,21 +292,21 @@ def _partition_findings(
         ``(by_section, mechanical)`` where ``by_section`` keys are
         section names from :data:`_CROSS_SECTION_REPAIR_ROUTES` and
         each value is the list of findings routed to that section in
-        original report order. ``mechanical`` holds everything else,
-        also in original order.
+        original report order. The SAME finding may appear under
+        multiple section keys (cross-bundle routing). ``mechanical``
+        holds findings with no section route, also in original order.
     """
     by_section: dict[str, list[dict]] = {}
     mechanical: list[dict] = []
     for finding in findings:
         if not isinstance(finding, dict):
             continue
-        skill = finding.get('skill')
-        category = finding.get('category')
-        section = _CROSS_SECTION_REPAIR_ROUTES.get((skill, category))
-        if section is not None and section in available_sections:
-            by_section.setdefault(section, []).append(finding)
-        else:
+        sections = _sections_for_finding(finding, available_sections)
+        if not sections:
             mechanical.append(finding)
+            continue
+        for section in sections:
+            by_section.setdefault(section, []).append(finding)
     return by_section, mechanical
 
 
@@ -399,6 +508,46 @@ class QualityLoopAgent(BaseAgent):
             available_sections = set(self.repair_section_agents.keys())
             by_section, mechanical = _partition_findings(
                 all_findings, available_sections
+            )
+
+            # Telemetry: surface the partition decision per round so we
+            # can measure whether cross-bundle routing actually helps
+            # contradictions converge (the metric the reviewer asked for
+            # when approving Opção 4). Track:
+            # - per-section counts (how many findings each agent will
+            #   patch this round)
+            # - distinct findings (de-duplicated — same finding routed
+            #   to N sections counts once here, vs N times in the
+            #   per-section sum)
+            # - cross-bundle count (how many distinct findings touched
+            #   >1 section, the population whose convergence was the
+            #   motivation for Opção 4)
+            distinct_routed_ids: set[str] = set()
+            cross_bundle_count = 0
+            for finding in all_findings:
+                if not isinstance(finding, dict):
+                    continue
+                sections = _sections_for_finding(finding, available_sections)
+                if not sections:
+                    continue
+                # Use id when present; fall back to identity hash so
+                # the count is meaningful even on synthetic findings
+                # without an id field.
+                fid = finding.get('id') or f'<no-id:{id(finding)}>'
+                distinct_routed_ids.add(fid)
+                if len(sections) > 1:
+                    cross_bundle_count += 1
+            logger.info(
+                'quality_loop_partition_summary',
+                round=round_number,
+                total_findings=len(all_findings),
+                distinct_routed_findings=len(distinct_routed_ids),
+                cross_bundle_findings=cross_bundle_count,
+                mechanical_count=len(mechanical),
+                by_section_counts={
+                    name: len(findings)
+                    for name, findings in by_section.items()
+                },
             )
 
             current_stage = ctx.session.state.get(STATE_STAGE) or 'content'

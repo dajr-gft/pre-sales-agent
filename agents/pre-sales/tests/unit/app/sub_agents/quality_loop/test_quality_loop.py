@@ -739,8 +739,10 @@ class TestStateDeltaOnlyCritic:
 
 from app.sub_agents.quality_loop.agent import (
     _CROSS_SECTION_REPAIR_ROUTES,
+    _FIELD_TO_SECTION,
     _SECTION_ORDER,
     _partition_findings,
+    _sections_for_finding,
 )
 from app.sub_agents._section_agent import STATE_REPAIR_FINDINGS
 from app.sub_agents.validation.schema import STATE_STAGE
@@ -838,6 +840,288 @@ class TestPartitionFindings:
                 f'Route ({skill}, {category}) -> {section!r} but '
                 f'{section!r} is not in _SECTION_ORDER {_SECTION_ORDER}.'
             )
+
+
+# ---------------------------------------------------------------------------
+# _sections_for_finding — derives target sections from Finding.fields
+#
+# Opção 4 of the convergence work: a single finding whose ``fields``
+# cross multiple sections must be routed to ALL involved sections (in
+# Phase Step order) so each one can patch its own side. Without this,
+# a contradictions/scope_vs_oos finding with
+# ``fields=['out_of_scope', 'deliverables']`` only got patched on the
+# scope_boundaries side, leaving deliverables stale and reopening the
+# contradiction in the next critic round (the production behaviour the
+# reviewer flagged as oscillating 4 → 3 → 5).
+# ---------------------------------------------------------------------------
+
+
+_ALL_SECTIONS = set(_SECTION_ORDER)
+
+
+class TestSectionsForFinding:
+    def test_mechanical_finding_returns_empty(self):
+        """A finding whose (skill, category) is not in the routing
+        table is mechanical regardless of its fields — the reviser
+        owns coverage, contractual_exposure, disclosures, etc."""
+        f = {
+            'skill': 'coverage',
+            'category': 'manifest_item_uncovered',
+            'fields': ['functional_requirements'],
+        }
+        assert _sections_for_finding(f, _ALL_SECTIONS) == []
+
+    def test_single_section_finding_returns_single_section(self):
+        """When all the finding's fields belong to one section, only
+        that section runs (no point invoking siblings with nothing to
+        patch)."""
+        f = {
+            'skill': 'contradictions',
+            'category': 'activities_vs_deliverables',
+            'fields': ['activity_phases', 'deliverables'],
+        }
+        assert _sections_for_finding(f, _ALL_SECTIONS) == ['delivery_plan']
+
+    def test_cross_bundle_finding_returns_multiple_sections_in_phase_order(self):
+        """The motivating case for Opção 4: a contradictions finding
+        whose fields cross sections returns ALL involved sections in
+        Phase Step order so the downstream section sees the upstream
+        patches on the next re-assembly."""
+        f = {
+            'skill': 'contradictions',
+            'category': 'scope_vs_oos',
+            'fields': ['out_of_scope', 'deliverables'],
+        }
+        # delivery_plan is upstream of scope_boundaries in _SECTION_ORDER.
+        assert _sections_for_finding(f, _ALL_SECTIONS) == [
+            'delivery_plan',
+            'scope_boundaries',
+        ]
+
+    def test_cross_bundle_order_is_phase_step_not_fields_order(self):
+        """Field order in the finding must not affect routing order —
+        Phase Step ordering wins so upstream always runs first."""
+        # Same fields as the previous test, listed in reverse order.
+        f = {
+            'skill': 'contradictions',
+            'category': 'scope_vs_oos',
+            'fields': ['deliverables', 'out_of_scope'],
+        }
+        assert _sections_for_finding(f, _ALL_SECTIONS) == [
+            'delivery_plan',
+            'scope_boundaries',
+        ]
+
+    def test_three_section_cross_bundle(self):
+        """Defensive case: a single finding can touch 3+ sections; all
+        of them appear in Phase Step order."""
+        f = {
+            'skill': 'contradictions',
+            'category': 'architecture_vs_stack',
+            'fields': [
+                'architecture_description',
+                'functional_requirements',
+                'deliverables',
+            ],
+        }
+        result = _sections_for_finding(f, _ALL_SECTIONS)
+        # requirements (A) → delivery_plan (B) → architecture (D)
+        assert result == ['requirements', 'delivery_plan', 'architecture']
+
+    def test_unknown_field_is_ignored(self):
+        """A field that does not appear in ``_FIELD_TO_SECTION`` is
+        silently dropped — it does not pin the finding to a wrong
+        section. The legacy default-route fallback still kicks in if
+        no fields map to a section at all."""
+        f = {
+            'skill': 'contradictions',
+            'category': 'activities_vs_deliverables',
+            'fields': ['unknown_field', 'deliverables'],
+        }
+        # 'deliverables' is the only mappable field → delivery_plan.
+        assert _sections_for_finding(f, _ALL_SECTIONS) == ['delivery_plan']
+
+    def test_empty_fields_falls_back_to_default_route(self):
+        """Backward-compat: when the finding lists no fields (or all
+        of them are unmapped), use the (skill, category) route from
+        ``_CROSS_SECTION_REPAIR_ROUTES``. This preserves the commit-5
+        behaviour for findings that don't have field telemetry."""
+        f = {
+            'skill': 'contradictions',
+            'category': 'fr_vs_nfr',
+            'fields': [],
+        }
+        assert _sections_for_finding(f, _ALL_SECTIONS) == ['requirements']
+
+    def test_all_unmapped_fields_falls_back_to_default_route(self):
+        f = {
+            'skill': 'contradictions',
+            'category': 'fr_vs_nfr',
+            'fields': ['nonsense_a', 'nonsense_b'],
+        }
+        assert _sections_for_finding(f, _ALL_SECTIONS) == ['requirements']
+
+    def test_section_not_available_is_dropped_from_target_list(self):
+        """When `available_sections` excludes a section that owns one
+        of the touched fields, that section is silently dropped — the
+        other involved sections still patch their side. If NO section
+        survives, the partition function falls back to mechanical."""
+        f = {
+            'skill': 'contradictions',
+            'category': 'scope_vs_oos',
+            'fields': ['out_of_scope', 'deliverables'],
+        }
+        # delivery_plan agent is not wired — only scope_boundaries gets it.
+        result = _sections_for_finding(
+            f, {'scope_boundaries', 'requirements'}
+        )
+        assert result == ['scope_boundaries']
+
+    def test_all_target_sections_unavailable_returns_empty(self):
+        """When the finding routes to N sections and none of them are
+        available, return empty — partition then falls to mechanical
+        and the reviser sees the finding as a last resort."""
+        f = {
+            'skill': 'contradictions',
+            'category': 'architecture_vs_stack',
+            'fields': ['architecture_description', 'technology_stack'],
+        }
+        # Only requirements is wired; neither architecture nor anything
+        # else touched is available.
+        assert _sections_for_finding(f, {'requirements'}) == []
+
+
+class TestFieldToSectionCoverage:
+    """Coverage invariant: every top-level ``sow_data`` field that a
+    section bundle can emit must be in :data:`_FIELD_TO_SECTION`.
+    Otherwise a finding referencing that field would not contribute to
+    routing decisions and would silently fall through to mechanical —
+    re-introducing the cross-bundle problem this commit fixes."""
+
+    def test_every_field_maps_to_a_section_in_section_order(self):
+        for field, section in _FIELD_TO_SECTION.items():
+            assert section in set(_SECTION_ORDER), (
+                f'Field {field!r} mapped to unknown section {section!r}. '
+                f'Either fix the map or add {section!r} to _SECTION_ORDER.'
+            )
+
+    def test_no_section_in_field_map_is_missing_from_routing(self):
+        """Symmetric check: every section appearing as a value in
+        ``_FIELD_TO_SECTION`` must also be a possible value in
+        ``_CROSS_SECTION_REPAIR_ROUTES`` (otherwise routing by fields
+        would target a section that no (skill, category) route covers,
+        which is fine but suggests a stale map entry)."""
+        field_sections = set(_FIELD_TO_SECTION.values())
+        routes_sections = set(_CROSS_SECTION_REPAIR_ROUTES.values())
+        # Allow field_sections to be a SUPERSET — narrative has fields
+        # but no current contradictions route. The reverse direction
+        # (route to a section not in the field map) IS a bug.
+        assert routes_sections.issubset(field_sections), (
+            'Routing table references sections that have no fields in '
+            f'_FIELD_TO_SECTION: {routes_sections - field_sections}. '
+            'Either add the section\'s fields to _FIELD_TO_SECTION or '
+            'drop the route.'
+        )
+
+    def test_field_map_covers_every_bundle_pydantic_field(self):
+        """Lint guard: any field that a section's Pydantic Bundle
+        declares MUST be in _FIELD_TO_SECTION. Adding a field to a
+        Bundle without updating the map would silently break field-
+        based routing for findings that reference the new field."""
+        from app.sub_agents.schemas import (
+            ArchitectureBundle,
+            DeliveryPlanBundle,
+            NarrativeBundle,
+            RequirementsBundle,
+            ScopeBoundariesBundle,
+        )
+
+        expected: dict[str, set[str]] = {
+            'requirements': set(RequirementsBundle.model_fields.keys()),
+            'delivery_plan': set(DeliveryPlanBundle.model_fields.keys()),
+            'scope_boundaries': set(
+                ScopeBoundariesBundle.model_fields.keys()
+            ),
+            'architecture': set(ArchitectureBundle.model_fields.keys()),
+            'narrative': set(NarrativeBundle.model_fields.keys()),
+        }
+        actual: dict[str, set[str]] = {
+            section: set() for section in expected
+        }
+        for field, section in _FIELD_TO_SECTION.items():
+            actual.setdefault(section, set()).add(field)
+
+        for section, expected_fields in expected.items():
+            missing = expected_fields - actual.get(section, set())
+            assert not missing, (
+                f'Section {section!r} bundle declares fields {missing!r} '
+                f'that are missing from _FIELD_TO_SECTION. Add them so '
+                f'findings that reference them route correctly.'
+            )
+
+
+class TestPartitionFindingsCrossBundle:
+    """End-to-end partition behaviour with cross-bundle findings.
+    ``_sections_for_finding`` is unit-tested above; here we verify
+    that the partition function uses it correctly — the same finding
+    appears under multiple section keys."""
+
+    def test_cross_bundle_finding_appears_in_every_routed_section(self):
+        cross = {
+            'skill': 'contradictions',
+            'category': 'scope_vs_oos',
+            'fields': ['out_of_scope', 'deliverables'],
+            'id': 'cross-1',
+        }
+        by_section, mechanical = _partition_findings([cross], _ALL_SECTIONS)
+        assert by_section == {
+            'delivery_plan': [cross],
+            'scope_boundaries': [cross],
+        }
+        assert mechanical == []
+
+    def test_mixed_batch_partitions_correctly(self):
+        single = {
+            'skill': 'contradictions',
+            'category': 'fr_vs_nfr',
+            'fields': ['functional_requirements'],
+            'id': 'single-1',
+        }
+        cross = {
+            'skill': 'contradictions',
+            'category': 'scope_vs_oos',
+            'fields': ['out_of_scope', 'deliverables'],
+            'id': 'cross-1',
+        }
+        mech = {
+            'skill': 'coverage',
+            'category': 'manifest_item_uncovered',
+            'fields': ['functional_requirements'],
+            'id': 'mech-1',
+        }
+        by_section, mechanical = _partition_findings(
+            [single, cross, mech], _ALL_SECTIONS,
+        )
+        assert by_section == {
+            'requirements': [single],
+            'delivery_plan': [cross],
+            'scope_boundaries': [cross],
+        }
+        assert mechanical == [mech]
+
+    def test_same_finding_appears_in_each_section_bucket_byvalue(self):
+        """Identity check: the partition stores REFERENCES, not copies.
+        Two sections receiving the same finding receive the same dict
+        — the loop writes this dict to STATE_REPAIR_FINDINGS and each
+        section agent sees identical content."""
+        cross = {
+            'skill': 'contradictions',
+            'category': 'scope_vs_oos',
+            'fields': ['out_of_scope', 'deliverables'],
+        }
+        by_section, _ = _partition_findings([cross], _ALL_SECTIONS)
+        assert by_section['delivery_plan'][0] is cross
+        assert by_section['scope_boundaries'][0] is cross
 
 
 # ---------------------------------------------------------------------------
