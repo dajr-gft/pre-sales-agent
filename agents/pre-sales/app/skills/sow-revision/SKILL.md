@@ -1,22 +1,23 @@
 ---
 name: sow-revision
 description: >
-  **Surgical patching of an existing `sow_data` payload after the
-  validation critic returns `blocked`.** Baked into the instruction of
-  `revision_agent`, the surgical-patcher sub-agent invoked by
-  `sow_quality_loop` (the QualityLoopAgent) when
+  **Surgical patching of non-structural fields on the staged SOW after
+  the validation critic returns `blocked`.** Baked into the instruction
+  of `revision_agent`, invoked by `sow_quality_loop` (the
+  QualityLoopAgent) when
   `state['app:validation_result'].overall_status == 'blocked'`. Reads
-  `state['app:sow:current']` (current sow_data) plus
-  `state['app:validation_result']` (ValidationReport), applies minimum
-  patches per finding, calls `stage_sow` with the patched payload; then
-  `sow_quality_loop` re-invokes `validation_critic` for the next round.
-  This skill exists to BREAK the loop pattern observed when the
-  monolithic SOW generator was reused for post-validation correction —
-  it has no generation workflow and three binding anti-regeneration
-  contracts.
+  `state['app:sow:current']` plus `state['app:validation_result']`,
+  patches one field at a time via `apply_sow_global_patch`, appends
+  one entry per processed finding via `record_revision_log_entries`;
+  then `sow_quality_loop` re-invokes `validation_critic` for the next
+  round. Structural fields (section bundles) and manifest-derived
+  fields are blocked at the tool level — those findings are routed to
+  the per-section repair agents by the loop's partitioner. The
+  reviser is the global safety net for textual / non-structural
+  fields only.
 metadata:
-  pattern: surgical-patcher + dynamic-reference-loading
-  produces: patched sow_data (written via stage_sow), state['app:sow:revision_log']
+  pattern: restricted-field-patcher + dynamic-reference-loading
+  produces: patched sow_data (one field at a time via apply_sow_global_patch), state['app:sow:revision_log']
   inputs: state[app:sow:current], state[app:validation_result]
   upstream: sow_quality_loop (QualityLoopAgent)
   references-skill: sow-shared (for ID stability and style)
@@ -145,22 +146,38 @@ After all findings in the group are processed, verify other sections
 (top-level keys NOT in any processed `finding.fields`) are byte-identical
 to the pre-patch snapshot.
 
-### (1c) Stage and persist the log
+### (1c) Patch fields and persist the log
 
-After every finding in every group is processed:
+For each accepted finding, apply patches field by field:
 
-1. `stage_sow(sow_data=patched_sow_data, stage=<value of <current_stage>>)` — writes to `state['app:sow:current']`.
-   The only place this skill mutates the document state directly. **Stage preservation is binding**: copy the literal value inside `<current_stage>` from the runtime inputs block above and pass it as `stage=`. NEVER substitute `"full"` (or any other value) for the stage shown there. Promoting a content-stage SOW to full mid-loop resets the QualityLoopAgent round counters and re-introduces architecture / narrative findings that the content-stage validation correctly suppressed — the loop will then never converge. If `<current_stage>` is `__MISSING__` you MUST stop and refuse to stage; see the runtime footer for the diagnostic to emit.
+1. `apply_sow_global_patch(field=<key>, value=<new value>)` —
+   overwrites a single top-level field of `state['app:sow:current']`.
+   Call once per touched field; the tool is the only writer of the
+   staged SOW available to you. The tool REJECTS by construction any
+   field owned by a section bundle (e.g. `functional_requirements`,
+   `deliverables`, `assumptions`, `architecture_components`, …) and
+   any field derived from the extraction manifest (e.g.
+   `partner_name`, `customer_name`, project dates). If you receive
+   such a rejection, the router mis-routed the finding — emit a
+   short diagnostic naming the rejected field and stop the round;
+   the section repair agent will pick the finding up in the next
+   round once routing is corrected.
 2. Write the per-finding revision entries to
    `state['app:sow:revision_log']` via
    `record_revision_log_entries(entries=[...])`. Append-only across
-   rounds. The root orchestrator agent reads this state key after the
-   loop terminates to compose the user-facing Revision Note in Phase 3.
+   rounds. The root orchestrator reads this state key after the loop
+   terminates to compose the user-facing Revision Note in Phase 3.
+
+**Do NOT call `stage_sow`.** The tool is not available to this
+agent; stage transitions (`content` → `full`) belong to the root
+orchestrator, and the QualityLoopAgent reassembles the flat SOW
+from bundles after every section repair — no in-loop re-stage is
+ever needed.
 
 **Zero-patch rounds (noop):** if a round legitimately produces no
 patches — every finding fell under `decision_required`/`source_conflict`
-and was deferred to human review, or no finding mapped to a patchable
-field — you still MUST call
+and was deferred to human review, or every routable finding belongs to
+a section bundle (so the global patcher refuses) — you still MUST call
 `record_revision_log_entries(entries=[], noop_reason="<short why>",
 round_label="round-<N>")` so the log records evidence the round ran.
 Calling with `entries=[]` and no `noop_reason` is rejected: silent
@@ -168,24 +185,27 @@ empty rounds mask bugs where the patcher ran but did nothing.
 
 After this skill returns, `sow_quality_loop` re-invokes `validation_critic` for the next round (or terminates if the round budget is exhausted).
 
-## Before staging (workflow gate)
+## Per-patch gate
 
-- Top-level keys of patched `sow_data` exactly equal the pre-patch keys (none added or removed).
-- For every top-level key NOT listed in any processed `finding.fields`, its value hashes identically to the pre-patch snapshot. If not → Contract 1 violated; re-anchor on the pre-patch payload.
-- Every refinement preserved its ID (Contract 2).
+Before each `apply_sow_global_patch(field, value)` call:
+
+- The field name is the literal top-level key from `finding.fields` — never an invented variant.
 - For each processed finding, the mapped reference(s) were loaded via `load_sow_reference` BEFORE the patch was applied (Contract 3). When `finding.fields` had more than one entry, the secondary reference was also loaded.
-- Patched content holds to the same depth/structure as the original (no "shorter because patch").
-- `state['app:sow:revision_log']` was populated with one entry per processed finding, including `before_hash` and `after_hash` per field touched.
+- The new `value` preserves every existing ID inside it (Contract 2) and holds to the same depth/structure as the original (no "shorter because patch").
 
-If any check fails, do NOT call `stage_sow`. Re-anchor on the pre-patch payload and re-run the affected group with the missing reference loaded.
+When `apply_sow_global_patch` returns `status: 'error'` with a `reviser_blocked_structural_field` suggestion:
+
+- The finding was mis-routed by the loop's partitioner. Surface a short diagnostic naming the rejected field and stop the round; do NOT retry with a different field.
+- `state['app:sow:revision_log']` must still be populated with a noop entry citing the rejection so the diagnostic survives the loop.
 
 ---
 
 ## Out of scope (critical boundaries)
 
 - **MUST NOT regenerate any section.** Rewriting fields outside `finding.fields` for a single finding is a Contract 1 violation.
-- **MUST NOT change the validation stage.** The orchestrator owns the stage transition (`content` → `full`) between Phase 2 review gates. This agent always passes `stage=<current_stage>` verbatim to `stage_sow`; the QualityLoopAgent round counters and the prior-blocking-fingerprint set depend on the stage staying constant within a loop run.
-- Does not re-validate. `sow_quality_loop` re-invokes `validation_critic` after `stage_sow`.
+- **MUST NOT call `stage_sow`.** The tool is not available to this agent. Stage transitions (`content` → `full`) belong to the root orchestrator; the QualityLoopAgent reassembles the flat SOW from bundles after every section repair, so no in-loop re-stage is ever needed.
+- **MUST NOT touch bundle-owned fields.** `apply_sow_global_patch` refuses them at the Python level (the section repair agents own them); a rejection is the router's fault, not yours.
+- Does not re-validate. `sow_quality_loop` re-invokes `validation_critic` after every revision round.
 - Does not call `confirm_phase_completion`. Phase gating belongs to the root orchestrator agent; revision rounds happen within a phase.
 - Does not present the Revision Note to the user. The root orchestrator composes the localized Revision Note after the loop terminates.
 - Does not adjust user-approved content preferences. If the user has approved an item, replace the offending phrasing only — preserve the user's intent.

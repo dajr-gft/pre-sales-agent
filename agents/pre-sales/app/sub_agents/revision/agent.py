@@ -12,10 +12,22 @@ required inputs is missing the provider switches to a STOP footer so the
 LLM never invents a patch from training data.
 
 The agent intentionally has no ``output_schema``: its outputs are side
-effects on session state (``app:sow:current`` updated by ``stage_sow``;
-``app:sow:revision_log`` appended by ``record_revision_log_entries``).
-That keeps it away from the known ``output_schema + tools`` loop hazard
-described in the ADK docs.
+effects on session state (``app:sow:current`` mutated one field at a
+time by ``apply_sow_global_patch``; ``app:sow:revision_log`` appended
+by ``record_revision_log_entries``). That keeps it away from the known
+``output_schema + tools`` loop hazard described in the ADK docs.
+
+## Phase 4 — restricted by construction
+
+``stage_sow`` was REMOVED from the reviser's toolset. It is not just
+discouraged by prompt — the function call is unavailable. The reviser
+now uses ``apply_sow_global_patch(field, value)`` to mutate ONE
+non-structural flat-SOW field at a time; bundle-owned and
+manifest-derived fields are blocked by that tool at the Python level.
+The orchestrator owns ``stage_sow`` and is the only caller that
+transitions content↔full; the reviser never needs to re-stage during
+a loop because the assembler reassembles the flat SOW from bundles
+after every section repair.
 """
 
 from __future__ import annotations
@@ -32,8 +44,8 @@ from google.genai import types
 
 from ...config import config
 from ...shared.safety import build_safety_settings
-from ...tools.sow.stage_sow import stage_sow
-from ..validation.schema import STATE_SOW, STATE_STAGE, STATE_VALIDATION_RESULT
+from ...tools.sow.apply_sow_global_patch import apply_sow_global_patch
+from ..validation.schema import STATE_SOW, STATE_VALIDATION_RESULT
 from .log_tools import REVISION_LOG_STATE_KEY, record_revision_log_entries
 from .tools import load_sow_reference
 
@@ -46,7 +58,7 @@ _MISSING_INPUTS_FOOTER = (
     '# Runtime inputs — MISSING (do not invent patches)\n\n'
     'The following inputs the patch contract depends on are NOT present '
     'in session state on this turn:\n{missing_list}\n\n'
-    '**STOP.** Do NOT call `stage_sow`. Do NOT call '
+    '**STOP.** Do NOT call `apply_sow_global_patch`. Do NOT call '
     '`record_revision_log_entries`. Do NOT fabricate a patched SOW from '
     'prior training, general knowledge, or earlier turns. The required '
     'upstream state has not been written yet — the QualityLoopAgent '
@@ -66,16 +78,19 @@ _INPUTS_PRESENT_FOOTER = (
     '`load_sow_reference`. Apply the three anti-regeneration contracts '
     'from the SKILL above: touch only the top-level keys listed in '
     '`finding.fields`; preserve every untouched field byte-for-byte; '
-    'preserve every existing id. Persist patches via `stage_sow` and '
+    'preserve every existing id. Persist patches via '
+    '`apply_sow_global_patch(field, value)` — ONE field per call — and '
     'append one entry per processed finding via '
     '`record_revision_log_entries`.\n\n'
-    '**Stage preservation (binding).** When you call `stage_sow`, pass '
-    '`stage=<value inside <current_stage>>` verbatim. Never substitute '
-    "`'full'` (or any other value) for the stage shown there. Promoting "
-    'a content-stage SOW to full mid-loop resets the QualityLoopAgent '
-    'round counters and re-introduces the architecture / narrative '
-    'findings that the content-stage validation correctly suppressed — '
-    'the loop will never converge if you change the stage here.\n\n'
+    '**Field scope (binding by construction).** '
+    '`apply_sow_global_patch` REFUSES every field owned by a section '
+    'bundle (functional_requirements, deliverables, assumptions, …) and '
+    'every field derived from the extraction manifest (partner_name, '
+    'customer_name, dates, …). If a finding routed to you names a '
+    'bundle-owned field, the router mis-routed it — surface a short '
+    'diagnostic naming the rejected field and stop, do not retry with '
+    'a different field. The section repair agent will pick up the '
+    'finding in the next round once routing is corrected.\n\n'
     '**Per-round budget (binding).** Patch at most 5 significant findings '
     '(BLOCKER / MAJOR) this round, prioritised by the selection order in '
     'workflow step (1a): persistent BLOCKERs first, then new BLOCKERs, '
@@ -84,14 +99,6 @@ _INPUTS_PRESENT_FOOTER = (
     'surface those to the user once no auto-fixable findings remain. '
     'Trying to do everything in one round drifts the SOW and forces the '
     'critic to flag new defects faster than you resolve old ones.\n'
-)
-
-
-_MISSING_STAGE_FOOTER_FRAGMENT = (
-    '\n\n**ATTENTION — `<current_stage>` is missing from runtime state.** '
-    'You MUST refuse to call `stage_sow` until the orchestrator re-stages '
-    "the SOW with a valid stage. Reply with a short diagnostic naming "
-    "the missing key (`{state_stage_key}`) and stop. Do NOT guess a stage."
 )
 
 
@@ -142,7 +149,6 @@ def _make_revision_instruction_provider(skill_body: str):
         state = ctx.state
         sow = state.get(STATE_SOW)
         report = state.get(STATE_VALIDATION_RESULT)
-        stage = state.get(STATE_STAGE)
         # revision_log is optional — round 1 starts with an empty log and
         # that is the correct initial state, not a missing input.
         revision_log = state.get(REVISION_LOG_STATE_KEY) or []
@@ -162,33 +168,21 @@ def _make_revision_instruction_provider(skill_body: str):
                 missing_list='\n'.join(missing)
             )
 
-        # Stage is technically optional for the LLM's prose, but the
-        # SKILL.md contract requires it for the `stage_sow` call. Render
-        # the block either way so the LLM can quote a literal value, and
-        # append a refuse-to-stage warning when it is absent so silent
-        # promotion to ``'full'`` is impossible.
-        rendered_stage = (
-            f'<current_stage>{stage}</current_stage>'
-            if isinstance(stage, str) and stage
-            else '<current_stage>__MISSING__</current_stage>'
-        )
+        # Stage is read only to log diagnostic info; the reviser no
+        # longer has access to ``stage_sow`` so the previous "refuse
+        # to stage" footer fragment is gone. ``STATE_STAGE`` remains
+        # available to the LLM for context, but it cannot mutate it.
 
         rendered = (
             f'<staged_sow>\n{_serialize_state_value(sow)}\n</staged_sow>\n\n'
             f'<validation_report>\n{_serialize_state_value(report)}\n'
             '</validation_report>\n\n'
-            f'{rendered_stage}\n\n'
             f'<revision_log>\n{_serialize_state_value(revision_log)}\n'
             '</revision_log>'
         )
-        body = skill_body + _INPUTS_PRESENT_FOOTER.format(
+        return skill_body + _INPUTS_PRESENT_FOOTER.format(
             rendered_inputs=rendered
         )
-        if not (isinstance(stage, str) and stage):
-            body += _MISSING_STAGE_FOOTER_FRAGMENT.format(
-                state_stage_key=STATE_STAGE,
-            )
-        return body
 
     return _provider
 
@@ -196,11 +190,13 @@ def _make_revision_instruction_provider(skill_body: str):
 revision_agent = Agent(
     name='revision_agent',
     description=(
-        'Applies minimum-change patches to the staged SOW based on a '
-        'ValidationReport. Loads section references via load_sow_reference '
-        '(allowlist-protected), patches affected fields only, then calls '
-        'stage_sow and record_revision_log_entries. Never regenerates '
-        'whole sections.'
+        'Applies minimum-change patches to non-structural fields of the '
+        'staged SOW based on a ValidationReport. Loads section references '
+        'via load_sow_reference (allowlist-protected), patches affected '
+        'fields one-at-a-time via apply_sow_global_patch (which refuses '
+        'bundle-owned and manifest-derived fields by construction), then '
+        'records each finding via record_revision_log_entries. Never '
+        'regenerates whole sections, never re-stages the SOW.'
     ),
     model=Gemini(
         model=config.GEMINI_MODEL,
@@ -216,9 +212,12 @@ revision_agent = Agent(
     # shorter" would bias the patcher toward content changes outside
     # `finding.fields`, violating Contract 1.
     include_contents='none',
+    # ``stage_sow`` is intentionally absent — the reviser cannot
+    # re-stage the SOW, and the patch surface is restricted to
+    # non-structural fields by ``apply_sow_global_patch``'s blocklist.
     tools=[
         load_sow_reference,
-        stage_sow,
+        apply_sow_global_patch,
         record_revision_log_entries,
     ],
     # The agent has its work fully scoped by the staged SOW and the
