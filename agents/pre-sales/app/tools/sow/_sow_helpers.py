@@ -115,6 +115,100 @@ def sow_data_hash(data: dict | str) -> str:
         return 'unhashable'
 
 
+# ---------------------------------------------------------------------------
+# Collection-id auto-numbering — single source of truth
+# ---------------------------------------------------------------------------
+#
+# ``Deliverable.number`` and ``Risk.number`` are required fields on their
+# Pydantic models (so the section patch engine can address items by a
+# stable id). To keep first-gen agents and in-flight (pre-deploy) state
+# from breaking on bundles where the LLM omitted these ids, the
+# *bundle-level* ``model_validator(mode='before')`` and the assembly
+# migration path both call into this single helper. Centralising the
+# numbering logic here is what guarantees the two paths cannot drift:
+#   - the bundle validator runs on every Pydantic validation (the hot
+#     path after deploy), and
+#   - the migration helper runs once per in-flight session, before the
+#     first assembly that follows the deploy.
+#
+# Sequential numbering is bundle-aware (it inspects the existing numbers
+# in the collection so newly-injected ids never collide). It is also
+# idempotent — calling it twice on the same bundle is a no-op.
+
+
+def ensure_collection_numbers(
+    bundle_dict: dict[str, Any], collection: str, prefix: str,
+) -> dict[str, Any]:
+    """Inject ``number`` ids into items of a list collection that lack one.
+
+    The function mutates ``bundle_dict[collection]`` in-place and also
+    returns the same ``bundle_dict`` so callers can chain. Each item in
+    the collection must be a dict; items that already carry a non-empty
+    ``number`` keep it untouched.
+
+    Newly assigned ids follow ``f'{prefix}-{NN:02d}'`` and start from
+    the smallest non-conflicting integer that is not already used by an
+    item in the same collection. So a collection that already contains
+    ``WS-03`` will receive ``WS-01``, ``WS-02``, ``WS-04``, ``WS-05`` …
+    for its un-numbered items, never re-issuing ``WS-03``.
+
+    No-ops on:
+    - ``bundle_dict`` that is not a dict;
+    - ``bundle_dict[collection]`` missing or not a list;
+    - empty list (returns the dict unchanged).
+
+    This helper deliberately does not validate the items against the
+    Pydantic ``item_model`` — that is the bundle validator's job. The
+    function exists purely to populate ``number`` for legacy / draft
+    items so the strict validation that follows does not blow up.
+    """
+    if not isinstance(bundle_dict, dict):
+        return bundle_dict
+    items = bundle_dict.get(collection)
+    if not isinstance(items, list) or not items:
+        return bundle_dict
+
+    used_numeric_suffixes: set[int] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        number = item.get('number')
+        if not isinstance(number, str) or not number.strip():
+            continue
+        # Pull the trailing integer if the id matches our prefix.
+        # ``WS-12`` → ``12``. Non-matching strings (a custom id from a
+        # legacy bundle) are recorded so we never re-issue them, but
+        # they do not anchor the sequence — we just pick the next free
+        # integer above the highest seen integer suffix.
+        parts = number.split('-')
+        if len(parts) == 2 and parts[0].upper() == prefix.upper():
+            try:
+                used_numeric_suffixes.add(int(parts[1]))
+            except ValueError:
+                pass
+
+    next_suffix = 1
+
+    def _allocate_next() -> int:
+        nonlocal next_suffix
+        while next_suffix in used_numeric_suffixes:
+            next_suffix += 1
+        used_numeric_suffixes.add(next_suffix)
+        allocated = next_suffix
+        next_suffix += 1
+        return allocated
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        number = item.get('number')
+        if isinstance(number, str) and number.strip():
+            continue
+        item['number'] = f'{prefix}-{_allocate_next():02d}'
+
+    return bundle_dict
+
+
 def apply_sow_assembly_to_state(
     state: dict[str, Any], stage: str,
 ) -> dict[str, Any]:
@@ -167,6 +261,24 @@ def apply_sow_assembly_to_state(
     from ...sub_agents.validation.schema import STATE_SOW, STATE_STAGE
 
     stage_normalized = (stage or '').strip().lower()
+
+    # Migrate any in-flight bundles produced before ``Deliverable.number``
+    # and ``Risk.number`` became required. The bundle-level Pydantic
+    # validator already injects ``number`` for newly-validated bundles,
+    # but a session whose bundles were written to state before deploy
+    # never re-runs that validator — we patch the raw dicts here so the
+    # assembler reads numbered items. Both calls are idempotent and
+    # share the single :func:`ensure_collection_numbers` implementation.
+    from ...sub_agents.schemas import SOW_BUNDLE_STATE_KEYS
+
+    delivery_bundle = state.get(SOW_BUNDLE_STATE_KEYS['delivery_plan'])
+    if isinstance(delivery_bundle, dict):
+        ensure_collection_numbers(delivery_bundle, 'deliverables', 'WS')
+
+    scope_bundle = state.get(SOW_BUNDLE_STATE_KEYS['scope_boundaries'])
+    if isinstance(scope_bundle, dict):
+        ensure_collection_numbers(scope_bundle, 'risks', 'R')
+
     sow_data = build_sow_data_from_state(state, stage_normalized)
 
     state[STATE_SOW] = sow_data

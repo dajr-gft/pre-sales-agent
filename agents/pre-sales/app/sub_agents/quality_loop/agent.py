@@ -58,7 +58,6 @@ The state keys this agent reads / writes:
 from __future__ import annotations
 
 import json
-import re
 from typing import Any, AsyncGenerator, ClassVar, Mapping, Optional
 
 import structlog
@@ -69,6 +68,10 @@ from google.adk.events import Event, EventActions
 from google.genai import types
 from pydantic import ConfigDict, Field
 
+from ...tools.sow._anchor_utils import (
+    ANCHOR_ID_PATTERN as _BUNDLE_ANCHOR_ID_PATTERN,
+    extract_anchor_ids as _extract_anchor_ids,
+)
 from ...tools.sow._sow_helpers import apply_sow_assembly_to_state, sow_data_hash
 from ...tools.sow.assemble_payload import AssemblyError
 # Section agents are imported directly from their ``agent.py`` modules
@@ -308,62 +311,12 @@ _SECTION_BUNDLE_KEYS: dict[str, str] = {
 }
 
 
-# Anchor extraction — used by the per-section and per-reviser diff logs
-# to detect "anchor drop": a patch that removes (or implicitly renames)
-# a stable item id that was present BEFORE the call. The shape mirrors
-# the evidence-side pattern in
-# :data:`app.sub_agents.validation.aggregator._ANCHOR_PATTERN`, but the
-# use is different — there it discriminates findings by the ids quoted
-# in evidence prose; here it walks a structured bundle / SOW dict to
-# pull every id the section actually carries. Comparing the BEFORE set
-# against the AFTER set surfaces the disappearance directly, without
-# waiting for the next critic round to flag the resulting uncovered
-# manifest item as a finding.
-#
-# The pattern is duplicated rather than imported because the two uses
-# may evolve independently (e.g., one may add prefixes the other does
-# not need). Keep both regexes in sync until that divergence happens.
-_BUNDLE_ANCHOR_ID_PATTERN = re.compile(
-    r'\b(?:FR|NFR|WS|OOS|A|I|R|T|G|P)-\d{1,4}\b',
-    flags=re.IGNORECASE,
-)
-
-
-def _extract_anchor_ids(value: Any) -> set[str]:
-    """Recursively pull stable item ids from a bundle / SOW value.
-
-    Walks every string inside lists, dicts, and tuples and matches
-    against :data:`_BUNDLE_ANCHOR_ID_PATTERN`. Returns the set of
-    UPPERCASED matches so casing drift (``fr-01`` vs ``FR-01``) does
-    not produce spurious diffs.
-
-    Returns an empty set for ``None``, non-collection scalars without
-    any matching token, or any value the walker cannot traverse.
-
-    Why this helps with anchor-drop detection: the typical anchor-drop
-    failure is "section agent rewrote the description of FR-03 in a way
-    that removed the keyword anchoring manifest item A2-08, OR removed
-    FR-03 itself". Either case shows up here as a missing id between
-    pre- and post-call snapshots. The next critic round then surfaces
-    A2-08 as ``coverage/manifest_item_uncovered`` — but by then the
-    causal link to the offending section is gone. Capturing the diff
-    inline preserves that link in the log.
-    """
-    ids: set[str] = set()
-
-    def _walk(node: Any) -> None:
-        if isinstance(node, str):
-            for match in _BUNDLE_ANCHOR_ID_PATTERN.findall(node):
-                ids.add(match.upper())
-        elif isinstance(node, dict):
-            for child in node.values():
-                _walk(child)
-        elif isinstance(node, (list, tuple)):
-            for child in node:
-                _walk(child)
-
-    _walk(value)
-    return ids
+# Anchor extraction (``_BUNDLE_ANCHOR_ID_PATTERN`` / ``_extract_anchor_ids``)
+# was extracted to :mod:`app.tools.sow._anchor_utils` so the section
+# patch engine can reuse the exact same walker without importing from
+# this module (which would create an import cycle). They are re-imported
+# under the original private names at the top of the module so the
+# function bodies below continue to work unchanged.
 
 
 def _finding_digest(finding: dict) -> dict:

@@ -10,7 +10,7 @@ SCOPE_BOUNDARIES_OUTPUT_KEY: str = SOW_BUNDLE_STATE_KEYS['scope_boundaries']
 _OUTPUT_EXAMPLE = """\
 {"assumptions": ["Customer must provide ... before ..."],
  "out_of_scope": ["..."],
- "risks": [{"description": "...", "mitigation": "..."}],
+ "risks": [{"number": "R-01", "description": "...", "mitigation": "..."}],
  "handover_disclaimers": ["..."],
  "change_request_policy_text": "..."}"""
 

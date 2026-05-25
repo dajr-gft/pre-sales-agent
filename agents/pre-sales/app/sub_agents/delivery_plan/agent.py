@@ -10,7 +10,8 @@ DELIVERY_PLAN_OUTPUT_KEY: str = SOW_BUNDLE_STATE_KEYS['delivery_plan']
 _OUTPUT_EXAMPLE = """\
 {"activity_phases": [{"name": "Phase 1: Discovery",
                        "description": "...", "tasks": ["..."]}],
- "deliverables": [{"activity": "Phase 1: Discovery", "name": "...",
+ "deliverables": [{"number": "WS-01",
+                   "activity": "Phase 1: Discovery", "name": "...",
                    "description": "...", "format": "Document"}],
  "timeline": [{"activity": "Phase 1: Discovery",
                "timeframe": "Weeks 1-2", "outcomes": "..."}],
