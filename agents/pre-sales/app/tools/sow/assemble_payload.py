@@ -237,6 +237,159 @@ def _extract_project_metadata(manifest: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+class AssemblyError(Exception):
+    """Raised by :func:`build_sow_data_from_state` when preconditions fail.
+
+    Carries machine-readable lists so callers (the ADK tool wrapper, the
+    QualityLoopAgent helper) can render their own user-facing messages
+    without parsing strings.
+    """
+
+    def __init__(
+        self,
+        reason: str,
+        *,
+        missing_keys: list[str] | None = None,
+        sentinel_keys: list[str] | None = None,
+        missing_metadata: list[str] | None = None,
+        manifest_type: str | None = None,
+    ) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.missing_keys = missing_keys or []
+        self.sentinel_keys = sentinel_keys or []
+        self.missing_metadata = missing_metadata or []
+        self.manifest_type = manifest_type
+
+
+def build_sow_data_from_state(
+    state: dict[str, Any], stage: str,
+) -> dict[str, Any]:
+    """Pure assembly — reads bundles from ``state``, returns ``sow_data``.
+
+    Does NOT mutate ``state``. Does NOT depend on a ToolContext. The
+    ADK-facing ``assemble_sow_payload`` tool wraps this, and the
+    QualityLoopAgent's :func:`apply_sow_assembly_to_state` calls it to
+    re-assemble after a section-agent repair without going through the
+    tool surface (which would require a synthetic ToolContext).
+
+    Raises :class:`AssemblyError` when preconditions are not met —
+    missing bundle keys, MISSING_INPUT sentinel from a aborted section,
+    non-dict manifest, or blank required project metadata. Each error
+    carries the offending detail in a structured attribute so callers
+    render their own messages.
+    """
+    stage_normalized = (stage or 'content').strip().lower()
+    if stage_normalized not in ('content', 'full'):
+        raise AssemblyError(
+            f"Unknown stage '{stage}'. Expected 'content' or 'full'.",
+        )
+
+    required = (
+        CONTENT_STAGE_KEYS if stage_normalized == 'content' else FULL_STAGE_KEYS
+    )
+    missing = [k for k in required if not state.get(k)]
+    if missing:
+        raise AssemblyError(
+            (
+                f'Cannot assemble stage={stage_normalized!r}: missing '
+                f'{len(missing)} bundle(s) in session state.'
+            ),
+            missing_keys=missing,
+        )
+
+    sentinel_keys = [
+        key for key in required
+        if _contains_missing_sentinel(state.get(key))
+    ]
+    if sentinel_keys:
+        raise AssemblyError(
+            (
+                f'Cannot assemble stage={stage_normalized!r}: '
+                f'{len(sentinel_keys)} bundle(s) carry the '
+                f'{_MISSING_INPUT_SENTINEL!r} sentinel from an aborted '
+                'section worker.'
+            ),
+            sentinel_keys=sentinel_keys,
+        )
+
+    manifest = state[SOW_BUNDLE_STATE_KEYS['manifest']]
+    if not isinstance(manifest, dict):
+        raise AssemblyError(
+            (
+                'Manifest in state is not a dict; cannot extract project '
+                f"metadata (got {type(manifest).__name__})."
+            ),
+            manifest_type=type(manifest).__name__,
+        )
+
+    project_metadata = _extract_project_metadata(manifest)
+
+    missing_metadata = [
+        key
+        for key in _REQUIRED_PROJECT_METADATA_KEYS
+        if not (project_metadata.get(key) or '').strip()
+    ]
+    if missing_metadata:
+        raise AssemblyError(
+            (
+                f'Cannot assemble stage={stage_normalized!r}: required '
+                f'project metadata fields are empty: {missing_metadata}. '
+                'The manifest must populate these before SOW assembly so '
+                'the document header is not rendered with blanks.'
+            ),
+            missing_metadata=missing_metadata,
+        )
+
+    requirements = state[SOW_BUNDLE_STATE_KEYS['requirements']]
+    delivery_plan = state[SOW_BUNDLE_STATE_KEYS['delivery_plan']]
+    scope_boundaries = state[SOW_BUNDLE_STATE_KEYS['scope_boundaries']]
+
+    sow_data: dict[str, Any] = {
+        **project_metadata,
+        'functional_requirements': requirements.get('functional_requirements', []),
+        'non_functional_requirements': requirements.get(
+            'non_functional_requirements', []
+        ),
+        'activity_phases': delivery_plan.get('activity_phases', []),
+        'deliverables': delivery_plan.get('deliverables', []),
+        'timeline': delivery_plan.get('timeline', []),
+        'partner_roles': delivery_plan.get('partner_roles', []),
+        'customer_roles': delivery_plan.get('customer_roles', []),
+        'success_criteria': delivery_plan.get('success_criteria', []),
+        'objectives': delivery_plan.get('objectives', []),
+        'assumptions': scope_boundaries.get('assumptions', []),
+        'out_of_scope': scope_boundaries.get('out_of_scope', []),
+        'risks': scope_boundaries.get('risks', []),
+        'handover_disclaimers': scope_boundaries.get('handover_disclaimers', []),
+        'change_request_policy_text': scope_boundaries.get(
+            'change_request_policy_text', ''
+        ),
+    }
+
+    if stage_normalized == 'full':
+        architecture = state[SOW_BUNDLE_STATE_KEYS['architecture']]
+        narrative = state[SOW_BUNDLE_STATE_KEYS['narrative']]
+        sow_data.update({
+            'architecture_description': architecture.get(
+                'architecture_description', ''
+            ),
+            'architecture_components': architecture.get(
+                'architecture_components', []
+            ),
+            'architecture_integrations': architecture.get(
+                'architecture_integrations', []
+            ),
+            'technology_stack': architecture.get('technology_stack', []),
+            'executive_summary': narrative.get('executive_summary', ''),
+            'partner_overview': narrative.get('partner_overview', ''),
+            'customer_overview': narrative.get('customer_overview', ''),
+            'customer_primary_domain': narrative.get('customer_primary_domain') or '',
+        })
+
+    return sow_data
+
+
 @safe_tool
 async def assemble_sow_payload(
     stage: Literal['content', 'full'] = 'content',
@@ -274,175 +427,67 @@ async def assemble_sow_payload(
         )
 
     stage_normalized = (stage or 'content').strip().lower()
-    if stage_normalized not in ('content', 'full'):
-        return ToolError(
-            status='error',
-            error=f"Unknown stage '{stage}'. Expected 'content' or 'full'.",
-            retryable=False,
-            tool='assemble_sow_payload',
-            suggestion="Pass stage='content' before the Content Review, 'full' after architecture and narrative.",
+    try:
+        sow_data = build_sow_data_from_state(
+            tool_context.state, stage_normalized,
         )
-
-    required = CONTENT_STAGE_KEYS if stage_normalized == 'content' else FULL_STAGE_KEYS
-    missing = [k for k in required if not tool_context.state.get(k)]
-    if missing:
-        logger.warning(
-            'assemble_sow_payload_missing_bundles',
-            stage=stage_normalized,
-            missing=missing,
-        )
-        return ToolError(
-            status='error',
-            error=(
-                f'Cannot assemble stage={stage_normalized!r}: missing '
-                f'{len(missing)} bundle(s) in session state.'
-            ),
-            retryable=False,
-            tool='assemble_sow_payload',
-            suggestion=(
+    except AssemblyError as err:
+        # Map the structured exception attributes onto the ToolError
+        # ``suggestion`` so the LLM gets the same actionable guidance the
+        # legacy inline checks used to produce. Each branch matches one
+        # of the exception's structured attributes; the order is the
+        # order :func:`build_sow_data_from_state` raises them in.
+        if err.missing_keys:
+            suggestion = (
                 'Run the section sub-agents that populate these keys before '
-                f'calling assemble_sow_payload. Missing: {missing}'
-            ),
-        )
-
-    # ----- MISSING_INPUT sentinel detection (stage-aware) ----------------
-    # A section worker aborts and emits ``MISSING_INPUT`` in its scalar
-    # fields when one of its declared upstream state inputs was empty
-    # at run time (see _section_agent._make_worker_instruction_provider).
-    # We check ONLY the bundles required for the current stage so a
-    # content-stage assembly does not get blocked by an absent
-    # architecture / narrative — those keys are not part of
-    # ``CONTENT_STAGE_KEYS``.
-    sentinel_keys = [
-        key for key in required
-        if _contains_missing_sentinel(tool_context.state.get(key))
-    ]
-    if sentinel_keys:
-        logger.warning(
-            'assemble_sow_payload_sentinel_detected',
-            stage=stage_normalized,
-            sentinel_keys=sentinel_keys,
-        )
-        return ToolError(
-            status='error',
-            error=(
-                f'Cannot assemble stage={stage_normalized!r}: '
-                f'{len(sentinel_keys)} bundle(s) carry the '
-                f'{_MISSING_INPUT_SENTINEL!r} sentinel from an aborted '
-                'section worker.'
-            ),
-            retryable=False,
-            tool='assemble_sow_payload',
-            suggestion=(
+                f'calling assemble_sow_payload. Missing: {err.missing_keys}'
+            )
+            logger.warning(
+                'assemble_sow_payload_missing_bundles',
+                stage=stage_normalized,
+                missing=err.missing_keys,
+            )
+        elif err.sentinel_keys:
+            suggestion = (
                 'A section sub-agent emitted an empty bundle because a '
                 'required upstream input was missing from state. Re-invoke '
                 'the affected section agent(s) in Phase Step order; the '
                 'sentinel will clear once the section runs with all its '
-                f'inputs present. Affected bundles: {sentinel_keys}.'
-            ),
-        )
-    # ---------------------------------------------------------------------
-
-    manifest = tool_context.state[SOW_BUNDLE_STATE_KEYS['manifest']]
-    if not isinstance(manifest, dict):
-        return ToolError(
-            status='error',
-            error=(
-                'Manifest in state is not a dict; cannot extract project '
-                f"metadata (got {type(manifest).__name__})."
-            ),
-            retryable=False,
-            tool='assemble_sow_payload',
-            suggestion=(
-                'Re-run sow-discovery so the manifest is written as a dict.'
-            ),
-        )
-
-    project_metadata = _extract_project_metadata(manifest)
-
-    # F-07: fail fast when project-level fields the docx template treats
-    # as load-bearing are blank. ``_extract_project_metadata`` emits the
-    # empty string for missing keys so the template never KeyErrors —
-    # great for resilience, terrible for catching upstream bugs. Validate
-    # here so a discovery-side defect surfaces as a clear ToolError
-    # instead of an SOW with "Partner: " in the header.
-    missing_metadata = [
-        key
-        for key in _REQUIRED_PROJECT_METADATA_KEYS
-        if not (project_metadata.get(key) or '').strip()
-    ]
-    if missing_metadata:
-        logger.warning(
-            'assemble_sow_payload_missing_metadata',
-            stage=stage_normalized,
-            missing=missing_metadata,
-        )
-        return ToolError(
-            status='error',
-            error=(
-                f'Cannot assemble stage={stage_normalized!r}: required '
-                f'project metadata fields are empty: {missing_metadata}. '
-                'The manifest must populate these before SOW assembly so '
-                'the document header is not rendered with blanks.'
-            ),
-            retryable=False,
-            tool='assemble_sow_payload',
-            suggestion=(
+                f'inputs present. Affected bundles: {err.sentinel_keys}.'
+            )
+            logger.warning(
+                'assemble_sow_payload_sentinel_detected',
+                stage=stage_normalized,
+                sentinel_keys=err.sentinel_keys,
+            )
+        elif err.missing_metadata:
+            suggestion = (
                 'Re-run sow-discovery (or the manifest tools) so the '
-                f'manifest carries non-empty values for: {missing_metadata}. '
+                f'manifest carries non-empty values for: {err.missing_metadata}. '
                 'Both flat (e.g. `manifest["partner_name"]`) and nested '
                 '(`manifest["project"]["partner_name"]`) shapes are accepted.'
-            ),
+            )
+            logger.warning(
+                'assemble_sow_payload_missing_metadata',
+                stage=stage_normalized,
+                missing=err.missing_metadata,
+            )
+        elif err.manifest_type:
+            suggestion = (
+                'Re-run sow-discovery so the manifest is written as a dict.'
+            )
+        else:
+            suggestion = (
+                "Pass stage='content' before the Content Review, 'full' "
+                'after architecture and narrative.'
+            )
+        return ToolError(
+            status='error',
+            error=err.reason,
+            retryable=False,
+            tool='assemble_sow_payload',
+            suggestion=suggestion,
         )
-
-    requirements = tool_context.state[SOW_BUNDLE_STATE_KEYS['requirements']]
-    delivery_plan = tool_context.state[SOW_BUNDLE_STATE_KEYS['delivery_plan']]
-    scope_boundaries = tool_context.state[SOW_BUNDLE_STATE_KEYS['scope_boundaries']]
-
-    sow_data: dict[str, Any] = {
-        **project_metadata,
-        # Requirements bundle
-        'functional_requirements': requirements.get('functional_requirements', []),
-        'non_functional_requirements': requirements.get(
-            'non_functional_requirements', []
-        ),
-        # Delivery plan bundle
-        'activity_phases': delivery_plan.get('activity_phases', []),
-        'deliverables': delivery_plan.get('deliverables', []),
-        'timeline': delivery_plan.get('timeline', []),
-        'partner_roles': delivery_plan.get('partner_roles', []),
-        'customer_roles': delivery_plan.get('customer_roles', []),
-        'success_criteria': delivery_plan.get('success_criteria', []),
-        'objectives': delivery_plan.get('objectives', []),
-        # Scope-boundaries bundle
-        'assumptions': scope_boundaries.get('assumptions', []),
-        'out_of_scope': scope_boundaries.get('out_of_scope', []),
-        'risks': scope_boundaries.get('risks', []),
-        'handover_disclaimers': scope_boundaries.get('handover_disclaimers', []),
-        'change_request_policy_text': scope_boundaries.get(
-            'change_request_policy_text', ''
-        ),
-    }
-
-    if stage_normalized == 'full':
-        architecture = tool_context.state[SOW_BUNDLE_STATE_KEYS['architecture']]
-        narrative = tool_context.state[SOW_BUNDLE_STATE_KEYS['narrative']]
-        sow_data.update({
-            'architecture_description': architecture.get(
-                'architecture_description', ''
-            ),
-            'architecture_components': architecture.get(
-                'architecture_components', []
-            ),
-            'architecture_integrations': architecture.get(
-                'architecture_integrations', []
-            ),
-            'technology_stack': architecture.get('technology_stack', []),
-            'executive_summary': narrative.get('executive_summary', ''),
-            'partner_overview': narrative.get('partner_overview', ''),
-            'customer_overview': narrative.get('customer_overview', ''),
-            'customer_primary_domain': narrative.get('customer_primary_domain') or '',
-        })
 
     logger.info(
         'sow_payload_assembled',
