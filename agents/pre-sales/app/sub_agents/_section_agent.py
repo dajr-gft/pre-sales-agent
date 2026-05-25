@@ -50,6 +50,32 @@ edit signal from the orchestrator. This is the structural safeguard
 against the "regenerate-from-scratch on every revision" hazard —
 without it, a targeted user edit like "change NFR-03 to multi-zone"
 would re-roll every other FR/NFR/id in the bundle by coincidence.
+
+## Repair mode
+
+Layers on top of patch mode. When the QualityLoopAgent decides a
+cross-section ``contradictions`` finding (or any finding whose
+``(skill, category)`` is mapped to a section repair route) must be
+fixed by re-invoking the section agent rather than by the generic
+revision_agent, it writes the list of findings to
+``state[STATE_REPAIR_FINDINGS]`` and invokes the section agent. The
+factory auto-injects that key as the optional ``repair_findings``
+input, the provider renders it as a ``<repair_findings>`` XML block
+alongside the existing ``<previous_bundle>``, and the worker sees a
+``_REPAIR_MODE_FOOTER`` telling it: address every finding in the
+list, apply the minimum delta each ``recommendation`` requests, do
+NOT regenerate the section, and keep the patch-mode contracts
+(preserve ids, carry untouched items verbatim). Repair mode never
+runs alone — it requires ``<previous_bundle>`` to be present, which
+the orchestrator guarantees by only repair-routing AFTER a first
+generation has populated the bundle key.
+
+The revision_agent remains the right tool for mechanical findings
+(coverage, contractual_exposure, disclosures, semantic_quality
+simples, placeholders, canonical clauses). Repair mode here only
+takes over cases the generic patcher cannot reason about safely
+because they require section-internal contracts the section agent
+already encodes via its SKILL.md.
 """
 
 from __future__ import annotations
@@ -238,6 +264,61 @@ _PATCH_MODE_FOOTER = (
 )
 
 
+# Layered ON TOP OF the patch-mode footer when ``<repair_findings>`` is
+# present. The findings are the specific defects the validation critic
+# flagged in THIS section and that the QualityLoopAgent routed here for
+# section-internal repair (instead of letting the generic revision_agent
+# patch them). The footer keeps the patch-mode contracts (preserve ids,
+# carry untouched items verbatim) AND adds:
+#
+# - "address every finding" — the orchestrator already filtered them, so
+#   no triage is needed here; the section agent should not skip any.
+# - "minimum delta per recommendation" — each finding ships with a
+#   concrete corrective instruction; the agent should not refactor
+#   unrelated items as a side effect.
+# - "no cross-section patching" — coordinate WITHIN this section even
+#   when a finding mentions sibling fields, because the loop will run
+#   the sibling section's own repair if it needs one.
+# - explicit pointer back to ``<previous_bundle>`` as the source of
+#   truth for untouched items.
+_REPAIR_MODE_FOOTER = (
+    '\n---\n\n'
+    '# Repair mode (binding — `<repair_findings>` is present)\n\n'
+    'The QualityLoopAgent re-invoked you BECAUSE the validation critic '
+    'flagged specific defects in your section that the generic '
+    'revision_agent cannot fix without breaking section-internal '
+    'contracts. Each entry in `<repair_findings>` carries:\n'
+    '- `category` — the type of defect (e.g. `activities_vs_deliverables`).\n'
+    '- `severity` — BLOCKER / MAJOR / MINOR.\n'
+    '- `evidence` — the verbatim text from your last bundle that the '
+    'critic objected to.\n'
+    '- `recommendation` — a concrete corrective instruction.\n'
+    '- `fields` — the top-level bundle fields that need to change.\n\n'
+    '**Rules (non-negotiable):**\n\n'
+    '1. **Address every finding in the list.** The orchestrator already '
+    'partitioned findings by section; the ones routed to you are the '
+    'ones that need YOUR domain knowledge. Skip none.\n'
+    '2. **Apply the minimum delta each `recommendation` requests.** Do '
+    'not refactor unrelated items. Do not introduce new items unless a '
+    'finding explicitly calls for one. Do not delete items unless a '
+    'finding tells you to.\n'
+    '3. **Patch-mode rules above still apply.** Every existing id stays '
+    'byte-for-byte; untouched items carry over verbatim from '
+    '`<previous_bundle>` (which IS present — repair mode without it is '
+    'a contract violation the orchestrator must not produce).\n'
+    '4. **Read each `recommendation` literally.** The critic already '
+    'wrote the corrective step; your job is to apply it within your '
+    'section while keeping the bundle internally coherent.\n'
+    '5. **Cross-section coordination is implicit, not direct.** You see '
+    'your section and the upstream packets above. If a finding mentions '
+    'a sibling bundle (e.g. an FR references a service the architecture '
+    'bundle does not list), reconcile WITHIN your section — restate, '
+    'remove, or qualify the offending item. Do NOT try to patch a '
+    'sibling bundle; that is the sibling agent contract and the loop '
+    'will run the sibling repair on the next iteration if needed.\n'
+)
+
+
 def _make_worker_instruction_provider(
     *,
     skill_body: str,
@@ -245,6 +326,7 @@ def _make_worker_instruction_provider(
     state_inputs: tuple[tuple[str, str], ...],
     optional_state_inputs: tuple[tuple[str, str], ...] = (),
     patch_mode_label: str | None = None,
+    repair_mode_label: str | None = None,
 ):
     """Build the runtime instruction for a section worker.
 
@@ -278,6 +360,15 @@ def _make_worker_instruction_provider(
             :data:`_PATCH_MODE_FOOTER` so the worker switches from first-
             generation to patch discipline. Typically set to
             ``'previous_bundle'`` for section agents.
+        repair_mode_label: When set AND the matching
+            ``optional_state_inputs`` label is present in state at
+            provider time, append :data:`_REPAIR_MODE_FOOTER` ON TOP OF
+            the patch-mode footer. Repair mode never runs alone — it
+            requires ``<previous_bundle>`` to be present (the
+            orchestrator only repair-routes after a first generation
+            populated the bundle key), so the patch-mode footer will
+            also be active whenever the repair-mode footer is. Typically
+            set to ``'repair_findings'`` for section agents.
 
     Returns:
         A callable accepted by ADK's ``LlmAgent(instruction=...)``.
@@ -313,6 +404,7 @@ def _make_worker_instruction_provider(
         # reads top-down; upstream context first, then "here's what
         # you produced last time").
         patch_mode_active = False
+        repair_mode_active = False
         for label, key in optional_state_inputs:
             value = state.get(key)
             if not _is_present(value):
@@ -322,6 +414,8 @@ def _make_worker_instruction_provider(
             )
             if patch_mode_label is not None and label == patch_mode_label:
                 patch_mode_active = True
+            if repair_mode_label is not None and label == repair_mode_label:
+                repair_mode_active = True
 
         if not rendered:
             # No declared inputs at all. Worker runs with SKILL.md +
@@ -334,12 +428,28 @@ def _make_worker_instruction_provider(
         )
         if patch_mode_active:
             prompt += _PATCH_MODE_FOOTER
+        # Repair mode layers on top of patch mode — only appended when
+        # the orchestrator has explicitly populated the repair findings
+        # slot. The footer itself reminds the LLM that patch-mode rules
+        # remain in force; this ordering keeps the structural rules
+        # (preserve ids, carry untouched verbatim) BEFORE the targeted
+        # action list, mirroring the document's reading order.
+        if repair_mode_active:
+            prompt += _REPAIR_MODE_FOOTER
         return prompt
 
     return _provider
 
 
 _PREVIOUS_BUNDLE_LABEL = 'previous_bundle'
+
+# Repair mode (commit 3 of the cross-section repair router). The
+# QualityLoopAgent writes the section's findings here before invoking
+# the section agent in repair mode; the agent reads them from the
+# auto-injected ``<repair_findings>`` block. Shared across all section
+# agents because only one repair runs at a time per loop iteration.
+_REPAIR_FINDINGS_LABEL = 'repair_findings'
+STATE_REPAIR_FINDINGS = 'app:sow:repair_findings'
 
 
 def build_section_agent(
@@ -448,17 +558,27 @@ def build_section_agent(
     effective_model = model or config.GEMINI_MODEL
 
     # Auto-inject the previous-bundle optional input when patch mode is
-    # enabled. Placing it FIRST in the optional tuple keeps the order
-    # deterministic regardless of what callers pass in
-    # ``extra_optional_state_inputs``; reorder caller-supplied inputs
-    # explicitly if a different order ever matters.
+    # enabled, plus the repair-findings slot the QualityLoopAgent uses
+    # to invoke this agent in repair mode. Both are placed FIRST in the
+    # optional tuple so the order is deterministic regardless of what
+    # callers pass in ``extra_optional_state_inputs``; repair mode is
+    # rendered AFTER previous_bundle in the prompt so the model reads
+    # "here's the prior output" before "here's what to fix in it".
+    #
+    # Repair mode rides on the same ``enable_patch_mode`` flag because
+    # the repair-mode footer asserts patch-mode rules also apply — it
+    # would be a contract violation to inject repair findings without
+    # the prior bundle the patch contracts depend on.
     optional_inputs: tuple[tuple[str, str], ...] = ()
     if enable_patch_mode:
-        optional_inputs = ((_PREVIOUS_BUNDLE_LABEL, output_key),)
+        optional_inputs = (
+            (_PREVIOUS_BUNDLE_LABEL, output_key),
+            (_REPAIR_FINDINGS_LABEL, STATE_REPAIR_FINDINGS),
+        )
     if extra_optional_state_inputs:
         # De-dupe by state_key so a caller cannot shadow the auto-
-        # injected previous_bundle with the same key under a different
-        # label.
+        # injected previous_bundle / repair_findings with the same key
+        # under a different label.
         seen_keys = {key for _, key in optional_inputs}
         optional_inputs = optional_inputs + tuple(
             (label, key)
@@ -485,6 +605,9 @@ def build_section_agent(
             optional_state_inputs=optional_inputs,
             patch_mode_label=(
                 _PREVIOUS_BUNDLE_LABEL if enable_patch_mode else None
+            ),
+            repair_mode_label=(
+                _REPAIR_FINDINGS_LABEL if enable_patch_mode else None
             ),
         ),
         include_contents='none',

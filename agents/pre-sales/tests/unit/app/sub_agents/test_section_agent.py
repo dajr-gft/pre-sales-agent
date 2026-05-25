@@ -910,3 +910,333 @@ class TestSectionAgentsAllOptInToPatchMode:
             f'{agent_attr}: patch-mode footer missing — F-12 contract '
             f'broken. Did someone set enable_patch_mode=False?'
         )
+
+
+# ---------------------------------------------------------------------------
+# Repair mode — auto-injected ``<repair_findings>`` optional input + footer
+#
+# The QualityLoopAgent writes the section's flagged findings to
+# ``state[STATE_REPAIR_FINDINGS]`` before invoking a section agent in
+# repair mode. The provider must render that list as an XML block AND
+# layer the repair-mode footer ON TOP OF the patch-mode footer so the
+# worker addresses every listed defect with minimum delta while keeping
+# the patch-mode contracts (preserve ids, carry untouched verbatim).
+#
+# These tests pin the auto-injection from the factory + the provider
+# semantics + the "all real section agents have it" invariant.
+# ---------------------------------------------------------------------------
+
+
+class TestRepairModeWiring:
+    """Validates the factory auto-injects the repair_findings optional
+    input alongside previous_bundle, and the provider renders both."""
+
+    def _build(self, tmp_path: Path, **kwargs):
+        from app.sub_agents import _section_agent
+
+        _common_skill_tree(tmp_path)
+        agent_factory = _AgentCalls()
+        toolset = SimpleNamespace(name='toolset')
+
+        defaults = dict(
+            name='requirements_agent',
+            description='Generates FR/NFR.',
+            skill_name='sow-requirements',
+            output_schema=_DummyBundle,
+            output_key='app:sow:requirements',
+            output_example='{}',
+            state_inputs=(
+                ('extraction_manifest', 'extraction_manifest'),
+            ),
+        )
+        defaults.update(kwargs)
+
+        with _stack(_patches(
+            _section_agent, tmp_path, agent_factory,
+            lambda *, skills: toolset,
+        )):
+            _section_agent.build_section_agent(**defaults)
+
+        return agent_factory
+
+    def test_first_run_without_repair_findings_omits_repair_footer(
+        self, tmp_path: Path
+    ):
+        """No repair_findings in state → no repair footer; the worker
+        generates from scratch (or patches via previous_bundle alone if
+        that is populated)."""
+        agent_factory = self._build(tmp_path)
+        provider = agent_factory.worker['instruction']
+
+        class _Ctx:
+            state = {
+                'extraction_manifest': {'project': 'P1'},
+                # No repair_findings key.
+            }
+
+        instr = provider(_Ctx())
+        assert '<repair_findings>' not in instr
+        assert 'Repair mode' not in instr
+
+    def test_repair_run_renders_block_and_footer(self, tmp_path: Path):
+        """The orchestrator wrote findings to STATE_REPAIR_FINDINGS and
+        repopulated the prior bundle — repair mode footer fires on top
+        of patch mode footer."""
+        from app.sub_agents._section_agent import STATE_REPAIR_FINDINGS
+
+        agent_factory = self._build(tmp_path)
+        provider = agent_factory.worker['instruction']
+
+        findings = [
+            {
+                'id': 'contradictions-001',
+                'skill': 'contradictions',
+                'category': 'activities_vs_deliverables',
+                'severity': 'MAJOR',
+                'evidence': 'WS-03 has no activity row.',
+                'recommendation': 'Add an activity that produces WS-03.',
+                'fields': ['activity_phases', 'deliverables'],
+            },
+        ]
+
+        class _Ctx:
+            state = {
+                'extraction_manifest': {'project': 'P1'},
+                'app:sow:requirements': {
+                    'functional_requirements': [
+                        {'number': 'FR-01', 'description': 'x'},
+                    ],
+                    'non_functional_requirements': [],
+                },
+                STATE_REPAIR_FINDINGS: findings,
+            }
+
+        instr = provider(_Ctx())
+        # Both blocks visible.
+        assert '<previous_bundle>' in instr
+        assert '<repair_findings>' in instr
+        # Compact JSON of the finding is in the prompt.
+        assert '"activities_vs_deliverables"' in instr
+        assert '"WS-03 has no activity row."' in instr
+        # Both footers fire — patch mode for the structural rules, repair
+        # mode for the targeted action list.
+        assert 'Patch mode' in instr
+        assert 'Repair mode' in instr
+        # Repair footer must appear AFTER the patch footer (structural
+        # rules first, then targeted action list).
+        assert instr.index('Patch mode') < instr.index('Repair mode')
+
+    def test_empty_repair_findings_list_does_not_trigger_repair_mode(
+        self, tmp_path: Path
+    ):
+        """An empty list of findings means there is nothing to repair —
+        the footer must not fire (``_is_present`` already treats empty
+        containers as missing)."""
+        from app.sub_agents._section_agent import STATE_REPAIR_FINDINGS
+
+        agent_factory = self._build(tmp_path)
+        provider = agent_factory.worker['instruction']
+
+        class _Ctx:
+            state = {
+                'extraction_manifest': {'project': 'P1'},
+                'app:sow:requirements': {
+                    'functional_requirements': [{'number': 'FR-01'}],
+                    'non_functional_requirements': [],
+                },
+                STATE_REPAIR_FINDINGS: [],  # empty
+            }
+
+        instr = provider(_Ctx())
+        assert '<repair_findings>' not in instr
+        assert 'Repair mode' not in instr
+        # Patch mode still fires because the previous_bundle is present.
+        assert 'Patch mode' in instr
+
+    def test_repair_findings_without_patch_mode_is_disabled(
+        self, tmp_path: Path
+    ):
+        """``enable_patch_mode=False`` removes BOTH auto-injected inputs.
+        Repair mode rides on the same flag because the repair footer
+        explicitly asserts patch-mode contracts."""
+        from app.sub_agents._section_agent import STATE_REPAIR_FINDINGS
+
+        agent_factory = self._build(tmp_path, enable_patch_mode=False)
+        provider = agent_factory.worker['instruction']
+
+        class _Ctx:
+            state = {
+                'extraction_manifest': {'project': 'P1'},
+                STATE_REPAIR_FINDINGS: [{'category': 'x'}],
+            }
+
+        instr = provider(_Ctx())
+        assert '<repair_findings>' not in instr
+        assert 'Repair mode' not in instr
+
+    def test_repair_footer_carries_load_bearing_phrases(
+        self, tmp_path: Path
+    ):
+        """Smoke-test the footer's anchor phrases — these are the
+        invariants the QualityLoopAgent relies on the LLM following."""
+        from app.sub_agents._section_agent import STATE_REPAIR_FINDINGS
+
+        agent_factory = self._build(tmp_path)
+        provider = agent_factory.worker['instruction']
+
+        class _Ctx:
+            state = {
+                'extraction_manifest': {'project': 'P1'},
+                'app:sow:requirements': {
+                    'functional_requirements': [{'number': 'FR-01'}],
+                    'non_functional_requirements': [],
+                },
+                STATE_REPAIR_FINDINGS: [{'category': 'x'}],
+            }
+
+        instr = provider(_Ctx())
+        # Each rule the loop depends on is visible.
+        assert 'Address every finding' in instr
+        assert 'minimum delta' in instr
+        assert 'Patch-mode rules above still apply' in instr
+        assert 'Cross-section coordination is implicit' in instr
+
+
+class TestRepairModeProvider:
+    """Direct provider tests — same shape as TestPatchModeProvider."""
+
+    def test_repair_label_must_match_to_activate_footer(self):
+        from app.sub_agents import _section_agent
+
+        provider = _section_agent._make_worker_instruction_provider(
+            skill_body='SKILL',
+            output_protocol='\nOUTPUT',
+            state_inputs=(('manifest', 'mkey'),),
+            optional_state_inputs=(
+                ('previous_bundle', 'pkey'),
+                ('repair_findings', 'rkey'),
+                ('other_optional', 'okey'),
+            ),
+            patch_mode_label='previous_bundle',
+            repair_mode_label='repair_findings',
+        )
+
+        class _Ctx:
+            state = {
+                'mkey': {'x': 1},
+                'pkey': {'y': 2},  # patch mode active
+                'okey': 'noise',  # not the repair label
+                # 'rkey' deliberately absent
+            }
+
+        instr = provider(_Ctx())
+        assert 'Patch mode' in instr
+        assert '<repair_findings>' not in instr
+        assert 'Repair mode' not in instr
+
+    def test_no_repair_label_means_footer_never_fires(self):
+        """``repair_mode_label=None`` is the opt-out — even a populated
+        optional input does not activate repair mode."""
+        from app.sub_agents import _section_agent
+
+        provider = _section_agent._make_worker_instruction_provider(
+            skill_body='SKILL',
+            output_protocol='\nOUTPUT',
+            state_inputs=(('manifest', 'mkey'),),
+            optional_state_inputs=(('repair_findings', 'rkey'),),
+            patch_mode_label=None,
+            repair_mode_label=None,
+        )
+
+        class _Ctx:
+            state = {'mkey': {'x': 1}, 'rkey': [{'cat': 'c'}]}
+
+        instr = provider(_Ctx())
+        assert '<repair_findings>' in instr  # block still rendered
+        assert 'Repair mode' not in instr  # but footer suppressed
+
+
+class TestSectionAgentsAllOptInToRepairMode:
+    """Belt-and-suspenders: confirms every real section agent gets the
+    repair_findings input auto-injected. Mirrors the patch-mode opt-in
+    test above so a future refactor that breaks ONE wiring trips here."""
+
+    @pytest.mark.parametrize(
+        'module_path,agent_attr,output_key',
+        [
+            (
+                'app.sub_agents.requirements',
+                'requirements_agent',
+                'app:sow:requirements',
+            ),
+            (
+                'app.sub_agents.delivery_plan',
+                'delivery_plan_agent',
+                'app:sow:delivery_plan',
+            ),
+            (
+                'app.sub_agents.scope_boundaries',
+                'scope_boundaries_agent',
+                'app:sow:scope_boundaries',
+            ),
+            (
+                'app.sub_agents.architecture',
+                'architecture_agent',
+                'app:sow:architecture',
+            ),
+            (
+                'app.sub_agents.narrative',
+                'narrative_agent',
+                'app:sow:narrative',
+            ),
+        ],
+    )
+    def test_worker_provider_emits_repair_footer_when_findings_present(
+        self, module_path: str, agent_attr: str, output_key: str
+    ):
+        import importlib
+
+        from app.sub_agents._section_agent import STATE_REPAIR_FINDINGS
+        from app.sub_agents.schemas import SOW_BUNDLE_STATE_KEYS
+
+        mod = importlib.import_module(module_path)
+        agent = getattr(mod, agent_attr)
+        worker = agent.sub_agents[0]
+        provider = worker.instruction
+
+        non_empty_marker = {'__filled__': True}
+        state = {
+            SOW_BUNDLE_STATE_KEYS['manifest']: non_empty_marker,
+            SOW_BUNDLE_STATE_KEYS['requirements']: non_empty_marker,
+            SOW_BUNDLE_STATE_KEYS['delivery_plan']: non_empty_marker,
+            SOW_BUNDLE_STATE_KEYS['scope_boundaries']: non_empty_marker,
+            SOW_BUNDLE_STATE_KEYS['architecture']: non_empty_marker,
+            SOW_BUNDLE_STATE_KEYS['narrative']: non_empty_marker,
+        }
+        # Section already produced a bundle (precondition for repair).
+        state[output_key] = {'__prev__': True}
+        # Orchestrator populated the repair findings slot.
+        state[STATE_REPAIR_FINDINGS] = [
+            {
+                'category': 'activities_vs_deliverables',
+                'severity': 'MAJOR',
+                'evidence': 'WS-03 has no activity row.',
+                'recommendation': 'Add the matching activity.',
+                'fields': ['activity_phases', 'deliverables'],
+            },
+        ]
+
+        class _Ctx:
+            pass
+
+        _Ctx.state = state
+        instr = provider(_Ctx())
+        assert '<repair_findings>' in instr, (
+            f'{agent_attr}: repair_findings block must render when '
+            f'STATE_REPAIR_FINDINGS is populated.'
+        )
+        assert 'Repair mode' in instr, (
+            f'{agent_attr}: repair-mode footer missing — the '
+            'QualityLoopAgent cannot route cross-section findings to '
+            'this section if the footer never fires.'
+        )
