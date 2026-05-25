@@ -575,6 +575,47 @@ class ValidationAggregatorAgent(BaseAgent):
             resolved_blocking_finding_count=resolved_count,
         )
 
+        # ----- diagnostic snapshot ------------------------------------------
+        # Dump every finding's identity so we can trace what the loop sees
+        # round-to-round WITHOUT having to inspect session state. Captures:
+        # - id, skill, category, severity, confidence, resolution_mode,
+        #   persistent — all the calibration outputs.
+        # - manifest_item_id — key for tracking coverage churn (if the
+        #   same manifest item keeps re-appearing as uncovered, a section
+        #   agent is dropping its anchor).
+        # - fields (up to 3) — key for tracking which top-level keys keep
+        #   getting flagged after patches.
+        # - fingerprint — short hash from :func:`_fingerprint`; tells us
+        #   when "the same defect" recurs even if the textual evidence
+        #   shifts slightly (the fix we landed in
+        #   :func:`_evidence_discriminator` makes this number meaningful).
+        #
+        # Recomputes fingerprints for non-blocking findings (we only kept
+        # the blocking pair list above for state-tracking) — cheap, ~20
+        # findings per round at most.
+        findings_snapshot = []
+        for f in findings:
+            findings_snapshot.append({
+                'id': f.id,
+                'skill': f.skill,
+                'category': f.category,
+                'severity': f.severity,
+                'confidence': round(f.confidence, 2),
+                'resolution_mode': f.resolution_mode,
+                'persistent': f.persistent,
+                'manifest_item_id': f.manifest_item_id,
+                'fields': list(f.fields or [])[:3],
+                'fingerprint': _fingerprint(f),
+            })
+        logger.info(
+            'validation_findings_snapshot',
+            round_count=round_count,
+            stage=state.get(STATE_STAGE) or 'full',
+            total_findings=len(findings_snapshot),
+            findings=findings_snapshot,
+        )
+        # --------------------------------------------------------------------
+
         # State-only event. Telemetry already in Cloud Logging via logger.info.
         # No Content so the gate decision does not surface to the chat — the
         # root agent reads `state[STATE_VALIDATION_RESULT]` after the

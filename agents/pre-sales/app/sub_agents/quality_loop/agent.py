@@ -267,6 +267,43 @@ def _sections_for_finding(
     return [s for s in _SECTION_ORDER if s in sections]
 
 
+# Map section name -> the ``state[<output_key>]`` slot where its bundle
+# lives. The loop reads/hashes the bundle before and after a section
+# repair to confirm the agent actually changed something — when a
+# bundle hash is identical before and after, the section agent ran a
+# no-op repair and the next critic round will probably re-flag the
+# same findings.
+_SECTION_BUNDLE_KEYS: dict[str, str] = {
+    'requirements': 'app:sow:requirements',
+    'delivery_plan': 'app:sow:delivery_plan',
+    'scope_boundaries': 'app:sow:scope_boundaries',
+    'architecture': 'app:sow:architecture',
+    'narrative': 'app:sow:narrative',
+}
+
+
+def _finding_digest(finding: dict) -> dict:
+    """Compact digest of a finding for diagnostic logging.
+
+    Keeps only the fields a human reading the log needs to trace a
+    finding's lifecycle round-to-round: identity, classification,
+    manifest anchor (for coverage tracking), and the first three
+    ``fields`` (the bundle keys the patcher would touch). Drops
+    ``evidence`` and ``recommendation`` — those are long prose, and the
+    fingerprint is what we use to track identity across rounds anyway.
+    """
+    return {
+        'id': finding.get('id'),
+        'skill': finding.get('skill'),
+        'category': finding.get('category'),
+        'severity': finding.get('severity'),
+        'resolution_mode': finding.get('resolution_mode'),
+        'manifest_item_id': finding.get('manifest_item_id'),
+        'fields': list(finding.get('fields') or [])[:3],
+        'persistent': finding.get('persistent'),
+    }
+
+
 def _partition_findings(
     findings: list[dict],
     available_sections: set[str],
@@ -577,10 +614,60 @@ class QualityLoopAgent(BaseAgent):
                     section=section_name,
                     finding_count=len(section_findings),
                 )
+                # Diagnostic: dump the EXACT findings handed to this
+                # section so we can later correlate "section X received
+                # finding Y in round N" with "finding Y reappeared (or
+                # didn't) in round N+1". Without this we only know the
+                # COUNT, not which findings.
+                logger.info(
+                    'quality_loop_section_dispatch',
+                    round=round_number,
+                    section=section_name,
+                    findings=[
+                        _finding_digest(f) for f in section_findings
+                    ],
+                )
+                # Bundle hash BEFORE the section agent runs. Used by the
+                # diff log below to confirm whether the agent actually
+                # changed its bundle. ``None`` is allowed — first-round
+                # sections may not have populated state[<output_key>] yet
+                # (the agent reads its previous_bundle from this slot).
+                bundle_key = _SECTION_BUNDLE_KEYS.get(section_name)
+                pre_bundle = (
+                    ctx.session.state.get(bundle_key) if bundle_key else None
+                )
+                pre_bundle_hash = (
+                    sow_data_hash(pre_bundle)
+                    if isinstance(pre_bundle, dict) and pre_bundle
+                    else None
+                )
+
                 async for event in section_agent.run_async(ctx):
                     self._apply_state_delta(ctx, event)
                     yield event
                 ctx.session.state[STATE_REPAIR_FINDINGS] = None
+
+                # Bundle hash AFTER the agent ran. Identical to
+                # pre_bundle_hash means the agent ran a no-op repair —
+                # almost certainly the cause if the next critic round
+                # still flags the same findings on this section.
+                post_bundle = (
+                    ctx.session.state.get(bundle_key) if bundle_key else None
+                )
+                post_bundle_hash = (
+                    sow_data_hash(post_bundle)
+                    if isinstance(post_bundle, dict) and post_bundle
+                    else None
+                )
+                logger.info(
+                    'quality_loop_section_bundle_diff',
+                    round=round_number,
+                    section=section_name,
+                    bundle_key=bundle_key,
+                    pre_hash=pre_bundle_hash,
+                    post_hash=post_bundle_hash,
+                    changed=pre_bundle_hash != post_bundle_hash,
+                )
 
                 # The section agent wrote its updated bundle to
                 # ``state[<output_key>]``; re-assemble the flat sow_data
@@ -627,15 +714,61 @@ class QualityLoopAgent(BaseAgent):
                     narrowed['findings'] = mechanical
                     ctx.session.state[STATE_VALIDATION_RESULT] = narrowed
 
+                # Which findings actually went to the reviser this round:
+                # when section repairs narrowed the report, that's
+                # ``mechanical``; otherwise the reviser sees the full
+                # ``all_findings`` list (loop's commit-5 fallback).
+                dispatched_to_reviser = (
+                    mechanical if section_repaired_count else all_findings
+                )
+
                 logger.info(
                     'quality_loop_invoking_revision',
                     round=round_number,
-                    finding_count=len(mechanical) if section_repaired_count else len(all_findings),
+                    finding_count=len(dispatched_to_reviser),
                     sections_repaired=section_repaired_count,
                 )
+                # Diagnostic: dump exactly which findings the reviser
+                # received. Same correlation goal as the section
+                # dispatch log above — round N reviser received finding
+                # X, round N+1 critic still flags it -> we know the
+                # reviser failed THAT specific patch.
+                logger.info(
+                    'quality_loop_mechanical_dispatch',
+                    round=round_number,
+                    findings=[
+                        _finding_digest(f) for f in dispatched_to_reviser
+                    ],
+                )
+
+                # STATE_SOW hash BEFORE the reviser runs. The reviser's
+                # stage_sow tool writes here; comparing before/after
+                # tells us if the patches were actually applied.
+                pre_sow = ctx.session.state.get(STATE_SOW)
+                pre_sow_hash = (
+                    sow_data_hash(pre_sow)
+                    if isinstance(pre_sow, dict) and pre_sow
+                    else None
+                )
+
                 async for event in reviser.run_async(ctx):
                     self._apply_state_delta(ctx, event)
                     yield event
+
+                post_sow = ctx.session.state.get(STATE_SOW)
+                post_sow_hash = (
+                    sow_data_hash(post_sow)
+                    if isinstance(post_sow, dict) and post_sow
+                    else None
+                )
+                logger.info(
+                    'quality_loop_reviser_sow_diff',
+                    round=round_number,
+                    dispatched_count=len(dispatched_to_reviser),
+                    pre_hash=pre_sow_hash,
+                    post_hash=post_sow_hash,
+                    changed=pre_sow_hash != post_sow_hash,
+                )
             else:
                 logger.info(
                     'quality_loop_skipping_revision_no_mechanical_residue',
