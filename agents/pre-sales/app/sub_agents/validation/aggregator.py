@@ -65,6 +65,7 @@ findings require external guidance.
 from __future__ import annotations
 
 import hashlib
+import re
 from collections import Counter
 from typing import AsyncGenerator, ClassVar, Iterable
 
@@ -164,12 +165,73 @@ _POLICY_FORCED_AUTO_FIXABLE: frozenset[tuple[str, str]] = frozenset(
 )
 
 
+# Anchor pattern: SOW-specific stable identifiers the critic quotes in
+# ``evidence``. Stable across critic invocations because the IDs come from
+# the staged SOW itself (the section agents own ID generation), not from
+# the critic's prose. Used to derive a textual discriminator for
+# :func:`_fingerprint` that survives the critic re-quoting the same
+# finding with slightly different wording across rounds.
+#
+# Word boundaries on both sides prevent false hits like ``AES-256`` (the
+# leading ``\b`` matches between non-word ``S`` neighbours but the next
+# captured group is ``A`` so the position must be a word boundary BEFORE
+# an A/I/etc — ``AES-256`` does not satisfy that).
+_ANCHOR_PATTERN = re.compile(
+    r'\b(?:FR|NFR|WS|OOS|A|I|R|T|G|P)-\d{1,4}\b',
+    flags=re.IGNORECASE,
+)
+
+# Fallback normalisation cap. The unstable evidence prose is at most this
+# long after lower+alphanumeric+collapse-whitespace, so two near-identical
+# findings (same skill+category+fields, no anchors) still share a
+# fingerprint even if punctuation / case / extra adjective drift between
+# rounds.
+_EVIDENCE_FALLBACK_CHARS = 120
+
+
+def _evidence_discriminator(evidence: str) -> str | tuple[str, ...]:
+    """Stable textual discriminator extracted from ``Finding.evidence``.
+
+    Returns a sorted tuple of anchor literals when any are present in the
+    evidence — the canonical case, since contradictions / coverage /
+    contractual_exposure findings always quote SOW ids in their evidence.
+    Falls back to a heavily normalised prefix of the prose for skills
+    that legitimately have no anchors (some ``semantic_quality`` style
+    findings, ``naming_drift``, generic disclosure language).
+
+    Why both: the production loop showed ``persistent_blocking_finding_count: 0``
+    across every round even when the reviser only patched 5 of ~10
+    significant findings — meaning the OLD discriminator
+    (``evidence[:240].strip().lower()``) was so wording-sensitive that
+    even unpatched findings re-fingerprinted differently round to round.
+    Anchors-when-present + normalised prefix-when-absent is the smallest
+    change that recovers persistence detection (and by extension makes
+    :data:`QualityLoopAgent._consecutive_no_progress_rounds` operate on
+    meaningful counts).
+    """
+    if not evidence:
+        return ''
+    anchors = sorted({m.upper() for m in _ANCHOR_PATTERN.findall(evidence)})
+    if anchors:
+        return tuple(anchors)
+    normalised = re.sub(r'[^a-z0-9 ]+', ' ', evidence.lower())
+    normalised = re.sub(r'\s+', ' ', normalised).strip()
+    return normalised[:_EVIDENCE_FALLBACK_CHARS]
+
+
 def _fingerprint(f: Finding) -> str:
-    """Stable identity used to deduplicate findings across rounds/skills."""
+    """Stable identity used to deduplicate findings across rounds/skills.
+
+    The textual discriminator (see :func:`_evidence_discriminator`) is
+    derived from the SOW-internal anchors the critic quotes, falling
+    back to a normalised evidence prefix. Skill, category, sorted fields
+    and ``manifest_item_id`` complete the key — those rarely drift
+    between critic invocations on the same defect.
+    """
     key = (
         f.skill,
         f.category,
-        (f.evidence or '')[:240].strip().lower(),
+        _evidence_discriminator(f.evidence or ''),
         tuple(sorted(f.fields or [])),
         f.manifest_item_id or '',
     )
