@@ -79,15 +79,18 @@ from ...tools.sow.assemble_payload import AssemblyError
 # ``app/sub_agents/__init__.py`` importing both ``quality_loop`` and
 # the sections is avoided — direct imports bypass the parent package's
 # mid-init attribute lookup.
-from ..architecture.agent import architecture_agent
+from ..architecture.agent import architecture_agent, architecture_repair_agent
 from ..delivery_plan.agent import (
     delivery_plan_agent,
     delivery_plan_repair_agent,
 )
-from ..narrative.agent import narrative_agent
-from ..requirements.agent import requirements_agent
+from ..narrative.agent import narrative_agent, narrative_repair_agent
+from ..requirements.agent import requirements_agent, requirements_repair_agent
 from ..revision import revision_agent
-from ..scope_boundaries.agent import scope_boundaries_agent
+from ..scope_boundaries.agent import (
+    scope_boundaries_agent,
+    scope_boundaries_repair_agent,
+)
 from .._section_agent import STATE_REPAIR_FINDINGS
 from ..validation import validation_critic
 from ..validation.schema import STATE_SOW, STATE_STAGE, STATE_VALIDATION_RESULT
@@ -1100,16 +1103,15 @@ sow_quality_loop = QualityLoopAgent(
     # section means adding entries to BOTH (the routing table tells the
     # loop which findings belong here; this map tells it which agent to
     # invoke).
+    # Phase 3 rollout — every repair route now goes through the
+    # tool-based ``apply_<section>_patch`` flow. The first-gen
+    # SequentialAgents stay defined for root-side generation only;
+    # the loop never regenerates a bundle in repair mode.
     repair_section_agents={
-        'requirements': requirements_agent,
-        # Phase 2 vertical slice — delivery_plan repair runs through
-        # the tool-based ``apply_delivery_plan_patch`` flow instead of
-        # regenerating its bundle. The other four sections still use
-        # their first-gen agents until the vertical slice checkpoints
-        # positive on a real SOW (Phase 3 rollout).
+        'requirements': requirements_repair_agent,
         'delivery_plan': delivery_plan_repair_agent,
-        'scope_boundaries': scope_boundaries_agent,
-        'architecture': architecture_agent,
-        'narrative': narrative_agent,
+        'scope_boundaries': scope_boundaries_repair_agent,
+        'architecture': architecture_repair_agent,
+        'narrative': narrative_repair_agent,
     },
 )

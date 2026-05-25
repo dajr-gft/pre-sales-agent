@@ -358,29 +358,18 @@ class TestQualityLoopWiring:
             is delivery_plan_repair_agent
         )
 
-    def test_other_sections_still_use_first_gen_agents(self):
-        """Phase 2 is a VERTICAL slice — the other four sections must
-        keep regenerating their bundles until the slice checkpoints
-        positive on a real SOW (Phase 3 rollout)."""
+    def test_all_sections_now_use_repair_agents(self):
+        """Phase 3 completed the rollout — every section's repair route
+        now goes through its tool-based repair agent. Each section is
+        also covered by its own ``test_<section>_repair_agent.py``."""
+        from app.sub_agents.architecture import architecture_repair_agent
+        from app.sub_agents.narrative import narrative_repair_agent
         from app.sub_agents.quality_loop.agent import sow_quality_loop
-        from app.sub_agents.architecture.agent import architecture_agent
-        from app.sub_agents.narrative.agent import narrative_agent
-        from app.sub_agents.requirements.agent import requirements_agent
-        from app.sub_agents.scope_boundaries.agent import scope_boundaries_agent
+        from app.sub_agents.requirements import requirements_repair_agent
+        from app.sub_agents.scope_boundaries import scope_boundaries_repair_agent
 
-        assert (
-            sow_quality_loop.repair_section_agents['requirements']
-            is requirements_agent
-        )
-        assert (
-            sow_quality_loop.repair_section_agents['scope_boundaries']
-            is scope_boundaries_agent
-        )
-        assert (
-            sow_quality_loop.repair_section_agents['architecture']
-            is architecture_agent
-        )
-        assert (
-            sow_quality_loop.repair_section_agents['narrative']
-            is narrative_agent
-        )
+        wired = sow_quality_loop.repair_section_agents
+        assert wired['requirements'] is requirements_repair_agent
+        assert wired['scope_boundaries'] is scope_boundaries_repair_agent
+        assert wired['architecture'] is architecture_repair_agent
+        assert wired['narrative'] is narrative_repair_agent
