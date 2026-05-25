@@ -80,7 +80,10 @@ from ...tools.sow.assemble_payload import AssemblyError
 # the sections is avoided — direct imports bypass the parent package's
 # mid-init attribute lookup.
 from ..architecture.agent import architecture_agent
-from ..delivery_plan.agent import delivery_plan_agent
+from ..delivery_plan.agent import (
+    delivery_plan_agent,
+    delivery_plan_repair_agent,
+)
 from ..narrative.agent import narrative_agent
 from ..requirements.agent import requirements_agent
 from ..revision import revision_agent
@@ -1099,7 +1102,12 @@ sow_quality_loop = QualityLoopAgent(
     # invoke).
     repair_section_agents={
         'requirements': requirements_agent,
-        'delivery_plan': delivery_plan_agent,
+        # Phase 2 vertical slice — delivery_plan repair runs through
+        # the tool-based ``apply_delivery_plan_patch`` flow instead of
+        # regenerating its bundle. The other four sections still use
+        # their first-gen agents until the vertical slice checkpoints
+        # positive on a real SOW (Phase 3 rollout).
+        'delivery_plan': delivery_plan_repair_agent,
         'scope_boundaries': scope_boundaries_agent,
         'architecture': architecture_agent,
         'narrative': narrative_agent,

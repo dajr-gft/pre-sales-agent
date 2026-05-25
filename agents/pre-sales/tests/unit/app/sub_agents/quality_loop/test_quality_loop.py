@@ -1683,8 +1683,16 @@ class TestProductionSingletonWiring:
         )
 
     def test_each_wired_agent_matches_the_canonical_section_module(self):
+        """Phase 2 of the quality-loop refactor swapped the delivery_plan
+        wiring from ``delivery_plan_agent`` (regenerate flow) to
+        ``delivery_plan_repair_agent`` (tool-based patch flow). The
+        other four sections still use their first-gen agents until
+        the vertical slice checkpoints positive on a real SOW
+        (Phase 3 rollout). This test pins the mid-rollout state — the
+        assertions for the other sections will flip to ``_repair_agent``
+        one at a time as Phase 3 lands."""
         from app.sub_agents.architecture import architecture_agent
-        from app.sub_agents.delivery_plan import delivery_plan_agent
+        from app.sub_agents.delivery_plan import delivery_plan_repair_agent
         from app.sub_agents.narrative import narrative_agent
         from app.sub_agents.quality_loop.agent import sow_quality_loop
         from app.sub_agents.requirements import requirements_agent
@@ -1692,7 +1700,7 @@ class TestProductionSingletonWiring:
 
         wired = sow_quality_loop.repair_section_agents
         assert wired['requirements'] is requirements_agent
-        assert wired['delivery_plan'] is delivery_plan_agent
+        assert wired['delivery_plan'] is delivery_plan_repair_agent
         assert wired['scope_boundaries'] is scope_boundaries_agent
         assert wired['architecture'] is architecture_agent
         assert wired['narrative'] is narrative_agent
