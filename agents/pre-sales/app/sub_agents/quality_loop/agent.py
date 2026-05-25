@@ -58,7 +58,7 @@ The state keys this agent reads / writes:
 from __future__ import annotations
 
 import json
-from typing import Any, AsyncGenerator, ClassVar, Optional
+from typing import Any, AsyncGenerator, ClassVar, Mapping, Optional
 
 import structlog
 from google.adk.agents import BaseAgent
@@ -66,11 +66,14 @@ from google.adk.agents.base_agent_config import BaseAgentConfig
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event, EventActions
 from google.genai import types
+from pydantic import ConfigDict, Field
 
-from ...tools.sow._sow_helpers import sow_data_hash
+from ...tools.sow._sow_helpers import apply_sow_assembly_to_state, sow_data_hash
+from ...tools.sow.assemble_payload import AssemblyError
 from ..revision import revision_agent
+from .._section_agent import STATE_REPAIR_FINDINGS
 from ..validation import validation_critic
-from ..validation.schema import STATE_SOW, STATE_VALIDATION_RESULT
+from ..validation.schema import STATE_SOW, STATE_STAGE, STATE_VALIDATION_RESULT
 
 logger = structlog.get_logger()
 
@@ -101,12 +104,113 @@ LoopStatus = str  # one of: 'passed', 'needs_human_review', 'blocked',
 # 'exhausted', 'no_progress', 'unexpected_status'
 
 
+# ---------------------------------------------------------------------------
+# Repair routing — cross-section findings the generic revision_agent
+# cannot fix without breaking section-internal contracts.
+#
+# Why this exists: production logs showed contradictions findings going
+# 4 -> 3 -> 5 across rounds even with the per-round 5-patch cap on the
+# reviser. The reviser is a generic patcher operating on a flat
+# sow_data dict — when a finding says "deliverable WS-03 has no
+# matching activity", choosing whether to add the activity or remove
+# the deliverable requires the cross-section reasoning that the
+# section agents already encode in their SKILL.md + cumulative upstream
+# visibility. Routing those findings to the owning section agent
+# (instead of the reviser) is the structural fix.
+#
+# Each entry maps a ``(skill, category)`` pair to the canonical section
+# name (the bundle key, NOT the ``_agent`` suffix). The QualityLoopAgent
+# looks the section up in its ``repair_section_agents`` mapping at
+# runtime; sections that are not wired fall back to the reviser
+# automatically so the loop still functions before commit 6 lands the
+# wiring.
+_CROSS_SECTION_REPAIR_ROUTES: dict[tuple[str, str], str] = {
+    # Cross-section contradictions inside delivery_plan's contract.
+    ('contradictions', 'timeline_vs_deliverables'): 'delivery_plan',
+    ('contradictions', 'activities_vs_deliverables'): 'delivery_plan',
+    # Cross-section contradictions inside scope_boundaries's contract.
+    ('contradictions', 'scope_vs_oos'): 'scope_boundaries',
+    ('contradictions', 'assumptions_vs_risks'): 'scope_boundaries',
+    # FR <-> NFR alignment is requirements-internal even though FR and
+    # NFR are sibling fields — the agent owns both, so it can reconcile.
+    ('contradictions', 'fr_vs_nfr'): 'requirements',
+    ('contradictions', 'fr_restated_as_nfr'): 'requirements',
+    # Architecture description vs technology_stack table — both are
+    # produced by the same agent and must stay consistent.
+    ('contradictions', 'architecture_vs_stack'): 'architecture',
+}
+
+# Section-agent invocation order when MULTIPLE sections have repair
+# findings in the same round. Mirrors the Phase-Step generation order
+# (A -> B -> C -> D -> E) so a later section sees the upstream patches
+# applied by an earlier one. Without this, scope_boundaries repair
+# could be evaluated against a stale delivery_plan bundle, only for the
+# next critic round to flag the same contradiction again.
+_SECTION_ORDER: tuple[str, ...] = (
+    'requirements',
+    'delivery_plan',
+    'scope_boundaries',
+    'architecture',
+    'narrative',
+)
+
+
+def _partition_findings(
+    findings: list[dict],
+    available_sections: set[str],
+) -> tuple[dict[str, list[dict]], list[dict]]:
+    """Split findings into per-section repair groups + mechanical residue.
+
+    Args:
+        findings: ``ValidationReport.findings`` as dicts (the loop sees
+            them in dict form via ``state[STATE_VALIDATION_RESULT]``).
+        available_sections: section names the loop actually has agents
+            for. A route to a section that isn't wired falls back to the
+            mechanical bucket so the reviser still gets a shot at it
+            (and the loop does not stall on an unimplemented section).
+
+    Returns:
+        ``(by_section, mechanical)`` where ``by_section`` keys are
+        section names from :data:`_CROSS_SECTION_REPAIR_ROUTES` and
+        each value is the list of findings routed to that section in
+        original report order. ``mechanical`` holds everything else,
+        also in original order.
+    """
+    by_section: dict[str, list[dict]] = {}
+    mechanical: list[dict] = []
+    for finding in findings:
+        if not isinstance(finding, dict):
+            continue
+        skill = finding.get('skill')
+        category = finding.get('category')
+        section = _CROSS_SECTION_REPAIR_ROUTES.get((skill, category))
+        if section is not None and section in available_sections:
+            by_section.setdefault(section, []).append(finding)
+        else:
+            mechanical.append(finding)
+    return by_section, mechanical
+
+
 class QualityLoopAgent(BaseAgent):
     """Critic → (conditional revision) loop with explicit stop conditions."""
+
+    # ``repair_section_agents`` is a Mapping holding ADK ``BaseAgent``
+    # instances, which Pydantic cannot validate; ``arbitrary_types_allowed``
+    # lets the field carry whatever the caller passes (a dict of agents).
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     config_type: ClassVar[type[BaseAgentConfig]] = BaseAgentConfig
 
     max_rounds: int = DEFAULT_MAX_ROUNDS
+
+    # Section-name -> section agent. The loop uses these to repair
+    # cross-section findings in their owning section instead of forcing
+    # the generic reviser to coordinate cross-bundle changes. Empty by
+    # default — when nothing is wired the loop behaves exactly as it did
+    # before commit 5, sending every finding to the reviser. Keys must
+    # match values in :data:`_CROSS_SECTION_REPAIR_ROUTES` and
+    # :data:`_SECTION_ORDER` ('requirements', 'delivery_plan', etc.).
+    repair_section_agents: Mapping[str, BaseAgent] = Field(default_factory=dict)
 
     async def _run_async_impl(
         self, ctx: InvocationContext
@@ -275,14 +379,110 @@ class QualityLoopAgent(BaseAgent):
                     return
             # ---------------------------------------------------------------
 
-            logger.info(
-                'quality_loop_invoking_revision',
-                round=round_number,
-                finding_count=len(report.get('findings', []) or []),
+            # ----- repair routing -----------------------------------------
+            # Partition findings into per-section repair groups
+            # (delegated to the owning section agent) + mechanical
+            # residue (handed to the generic reviser). Sections without
+            # an agent wired fall back to mechanical so the loop never
+            # stalls because a route lacks an implementation.
+            all_findings = report.get('findings') or []
+            available_sections = set(self.repair_section_agents.keys())
+            by_section, mechanical = _partition_findings(
+                all_findings, available_sections
             )
-            async for event in reviser.run_async(ctx):
-                self._apply_state_delta(ctx, event)
-                yield event
+
+            current_stage = ctx.session.state.get(STATE_STAGE) or 'content'
+            section_repaired_count = 0
+            for section_name in _SECTION_ORDER:
+                section_findings = by_section.get(section_name)
+                if not section_findings:
+                    continue
+                section_agent = self.repair_section_agents.get(section_name)
+                if section_agent is None:
+                    # Defensive: ``_partition_findings`` already filters
+                    # against ``available_sections``; this branch only
+                    # fires if the mapping mutated between check and use.
+                    continue
+
+                # Hand the section its repair packet via the canonical
+                # state slot ``STATE_REPAIR_FINDINGS``. The factory wired
+                # this slot as an optional input on every section agent
+                # in commit 3, and the worker's provider renders
+                # <repair_findings> + the repair-mode footer when the
+                # slot is non-empty. We clear after invocation so the
+                # next section in this same round sees a clean state.
+                ctx.session.state[STATE_REPAIR_FINDINGS] = section_findings
+                logger.info(
+                    'quality_loop_invoking_section_repair',
+                    round=round_number,
+                    section=section_name,
+                    finding_count=len(section_findings),
+                )
+                async for event in section_agent.run_async(ctx):
+                    self._apply_state_delta(ctx, event)
+                    yield event
+                ctx.session.state[STATE_REPAIR_FINDINGS] = None
+
+                # The section agent wrote its updated bundle to
+                # ``state[<output_key>]``; re-assemble the flat sow_data
+                # so the next section (or the reviser, or the next
+                # critic) sees the patched payload. Same-stage
+                # re-assembly does not perturb round counters /
+                # fingerprints / language — see
+                # ``apply_sow_assembly_to_state``.
+                try:
+                    apply_sow_assembly_to_state(
+                        ctx.session.state, current_stage,
+                    )
+                    section_repaired_count += 1
+                except AssemblyError as err:
+                    # The section agent likely emitted an empty bundle
+                    # (MISSING_INPUT sentinel) or a malformed payload.
+                    # Logging keeps the diagnostic visible; we DO NOT
+                    # abort the loop here — the next critic round will
+                    # surface the residual findings as ``blocked`` or
+                    # ``no_progress`` and the standard branches handle
+                    # it from there.
+                    logger.warning(
+                        'quality_loop_section_repair_assembly_failed',
+                        round=round_number,
+                        section=section_name,
+                        reason=err.reason,
+                        missing_keys=err.missing_keys,
+                        sentinel_keys=err.sentinel_keys,
+                    )
+
+            # ----- mechanical residue → reviser ----------------------------
+            # If section repairs ran AND there is no mechanical residue,
+            # skip the reviser entirely this round — its only job would
+            # be to re-emit a noop, wasting a model call.
+            if mechanical or section_repaired_count == 0:
+                # When section repairs DID run, narrow the report the
+                # reviser sees to the mechanical residue so it does not
+                # re-patch findings the section agents already addressed.
+                # The next critic round overwrites STATE_VALIDATION_RESULT
+                # unconditionally, so this temporary mutation cannot leak
+                # past the current iteration.
+                if section_repaired_count > 0 and mechanical != all_findings:
+                    narrowed = dict(report)
+                    narrowed['findings'] = mechanical
+                    ctx.session.state[STATE_VALIDATION_RESULT] = narrowed
+
+                logger.info(
+                    'quality_loop_invoking_revision',
+                    round=round_number,
+                    finding_count=len(mechanical) if section_repaired_count else len(all_findings),
+                    sections_repaired=section_repaired_count,
+                )
+                async for event in reviser.run_async(ctx):
+                    self._apply_state_delta(ctx, event)
+                    yield event
+            else:
+                logger.info(
+                    'quality_loop_skipping_revision_no_mechanical_residue',
+                    round=round_number,
+                    sections_repaired=section_repaired_count,
+                )
 
         # Defensive: the loop body must return before this point (the
         # blocked branch above handles the last iteration explicitly).

@@ -21,7 +21,7 @@ async generators so we exercise only the loop's branching logic.
 
 from __future__ import annotations
 
-from typing import AsyncGenerator, ClassVar, List, Optional
+from typing import Any, AsyncGenerator, ClassVar, List, Optional
 from unittest.mock import MagicMock
 
 import pytest
@@ -721,6 +721,573 @@ class TestStateDeltaOnlyCritic:
         assert reviser.calls == 0
         result = ctx.session.state[QUALITY_LOOP_RESULT_KEY]
         assert result['status'] == 'needs_human_review'
+
+
+# ---------------------------------------------------------------------------
+# Repair routing — cross-section findings go to the owning section agent
+# instead of the generic reviser
+#
+# Commit 5 added a per-(skill, category) routing table. The loop
+# partitions findings each round, invokes the section agent(s) that own
+# the routed findings, re-assembles the SOW between section invocations,
+# and only hands mechanical residue to the reviser. The tests below
+# cover the partition function in isolation + the loop-level branching
+# (section invocation order, residue handling, fallback when the section
+# agent is not wired).
+# ---------------------------------------------------------------------------
+
+
+from app.sub_agents.quality_loop.agent import (
+    _CROSS_SECTION_REPAIR_ROUTES,
+    _SECTION_ORDER,
+    _partition_findings,
+)
+from app.sub_agents._section_agent import STATE_REPAIR_FINDINGS
+from app.sub_agents.validation.schema import STATE_STAGE
+from app.tools.sow._sow_helpers import sow_data_hash as _sow_data_hash
+
+
+class TestPartitionFindings:
+    """Direct coverage of the partition function."""
+
+    def test_empty_findings_returns_empty(self):
+        by_section, mechanical = _partition_findings([], set())
+        assert by_section == {}
+        assert mechanical == []
+
+    def test_known_route_groups_under_section_name(self):
+        f = {
+            'skill': 'contradictions',
+            'category': 'activities_vs_deliverables',
+            'severity': 'MAJOR',
+        }
+        by_section, mechanical = _partition_findings([f], {'delivery_plan'})
+        assert by_section == {'delivery_plan': [f]}
+        assert mechanical == []
+
+    def test_unmapped_pair_falls_to_mechanical(self):
+        """A finding whose (skill, category) isn't in the routes goes to
+        the reviser. Coverage is the canonical example."""
+        f = {
+            'skill': 'coverage',
+            'category': 'manifest_item_uncovered',
+            'severity': 'MAJOR',
+        }
+        by_section, mechanical = _partition_findings(
+            [f], set(_SECTION_ORDER)
+        )
+        assert by_section == {}
+        assert mechanical == [f]
+
+    def test_route_to_unwired_section_falls_to_mechanical(self):
+        """Architecture has a route but if the loop wasn't passed an
+        architecture agent, the finding must still get a chance — fall
+        back to the reviser instead of stalling."""
+        f = {
+            'skill': 'contradictions',
+            'category': 'architecture_vs_stack',
+            'severity': 'MAJOR',
+        }
+        # ``available_sections`` deliberately excludes 'architecture'.
+        by_section, mechanical = _partition_findings(
+            [f], {'requirements', 'delivery_plan'}
+        )
+        assert by_section == {}
+        assert mechanical == [f]
+
+    def test_preserves_report_order_within_each_bucket(self):
+        f1 = {'skill': 'coverage', 'category': 'manifest_item_uncovered'}
+        f2 = {
+            'skill': 'contradictions',
+            'category': 'timeline_vs_deliverables',
+        }
+        f3 = {
+            'skill': 'contradictions',
+            'category': 'activities_vs_deliverables',
+        }
+        f4 = {'skill': 'disclosures', 'category': 'missing_ai_nondeterminism_disclosure'}
+        by_section, mechanical = _partition_findings(
+            [f1, f2, f3, f4], {'delivery_plan'}
+        )
+        # delivery_plan bucket holds f2 then f3 (insertion order).
+        assert by_section == {'delivery_plan': [f2, f3]}
+        # Mechanical bucket holds f1 and f4 in report order.
+        assert mechanical == [f1, f4]
+
+    def test_skips_malformed_finding_entries(self):
+        """Non-dict entries (None, strings) must not crash the partition;
+        they are dropped silently — the aggregator already normalises
+        findings, so this is defensive only."""
+        good = {
+            'skill': 'contradictions',
+            'category': 'activities_vs_deliverables',
+        }
+        by_section, mechanical = _partition_findings(
+            [None, 'not a dict', good], {'delivery_plan'}
+        )
+        assert by_section == {'delivery_plan': [good]}
+        assert mechanical == []
+
+    def test_routing_table_only_lists_known_section_names(self):
+        """Every section in the routing table must be in the canonical
+        invocation order; otherwise the loop would skip findings routed
+        to an unknown section."""
+        ordered = set(_SECTION_ORDER)
+        for (skill, category), section in _CROSS_SECTION_REPAIR_ROUTES.items():
+            assert section in ordered, (
+                f'Route ({skill}, {category}) -> {section!r} but '
+                f'{section!r} is not in _SECTION_ORDER {_SECTION_ORDER}.'
+            )
+
+
+# ---------------------------------------------------------------------------
+# Loop-level — section agents are invoked, reviser sees only residue
+# ---------------------------------------------------------------------------
+
+
+class FakeSectionAgent(BaseAgent):
+    """Stub that records every invocation + the repair findings it saw.
+
+    Mirrors the production contract: when invoked, it writes a non-empty
+    bundle to ``state[output_key]`` so the loop's re-assembly step has
+    something to work with. The ``output_key`` is configured per-instance
+    so we can simulate distinct sections (requirements, delivery_plan,
+    etc.) without standing up the full section agent factory.
+    """
+
+    config_type: ClassVar[type[BaseAgentConfig]] = BaseAgentConfig
+
+    output_key: str = ''
+    repair_payload_per_call: List[Any] = []
+    calls: int = 0
+
+    async def run_async(self, ctx) -> AsyncGenerator[Event, None]:  # type: ignore[override]
+        # Record the findings packet the loop placed in state for us.
+        self.repair_payload_per_call.append(
+            list(ctx.session.state.get(STATE_REPAIR_FINDINGS) or [])
+        )
+        self.calls += 1
+        # Emit a non-empty bundle so the re-assembly can use it.
+        ctx.session.state[self.output_key] = {
+            '__patched_by': self.name,
+            'call_index': self.calls,
+        }
+        if False:  # pragma: no cover
+            yield  # type: ignore[unreachable]
+
+
+def _critic_emitting(findings: list[dict], *, status: str = 'blocked'):
+    """Build a FakeCritic-like stub that emits a scripted report with
+    custom findings (the existing FakeCritic only sets findings=[])."""
+
+    class _CriticWithFindings(BaseAgent):
+        config_type: ClassVar[type[BaseAgentConfig]] = BaseAgentConfig
+        statuses: List[str] = [status, 'passed']
+        calls: int = 0
+
+        async def run_async(self, ctx) -> AsyncGenerator[Event, None]:  # type: ignore[override]
+            idx = min(self.calls, len(self.statuses) - 1)
+            current_status = self.statuses[idx]
+            self.calls += 1
+            ctx.session.state[STATE_VALIDATION_RESULT] = {
+                'overall_status': current_status,
+                'summary': f'round {self.calls} ({current_status})',
+                'next_action': '...',
+                'findings': findings if current_status == 'blocked' else [],
+                'blocker_count': sum(
+                    1 for f in findings if f.get('severity') == 'BLOCKER'
+                ),
+                'major_count': sum(
+                    1 for f in findings if f.get('severity') == 'MAJOR'
+                ),
+                'new_blocking_finding_count': 0,
+                'resolved_blocking_finding_count': 0,
+            }
+            if False:  # pragma: no cover
+                yield  # type: ignore[unreachable]
+
+    return _CriticWithFindings(name='critic')
+
+
+def _seed_assembly_state(state: dict) -> None:
+    """Populate the in-state bundles + manifest with the minimum shape
+    ``apply_sow_assembly_to_state`` accepts so the loop can re-assemble
+    after a section agent runs."""
+    from app.sub_agents.schemas import SOW_BUNDLE_STATE_KEYS
+
+    state[SOW_BUNDLE_STATE_KEYS['manifest']] = {
+        'project': {
+            'title': 'P',
+            'customer_name': 'C',
+            'partner_name': 'GFT',
+            'funding_type': 'DAF',
+        },
+    }
+    state[SOW_BUNDLE_STATE_KEYS['requirements']] = {
+        'functional_requirements': [
+            {'number': 'FR-01', 'description': 'x'},
+        ],
+        'non_functional_requirements': [
+            {'number': 'NFR-01', 'description': 'x'},
+        ],
+    }
+    state[SOW_BUNDLE_STATE_KEYS['delivery_plan']] = {
+        'activity_phases': [{'name': 'P1', 'description': 'd', 'tasks': []}],
+        'deliverables': [
+            {'activity': 'P1', 'name': 'D', 'description': 'd', 'format': 'doc'},
+        ],
+        'timeline': [{'activity': 'P1', 'timeframe': 'W1', 'outcomes': 'o'}],
+        'partner_roles': [{'role': 'PM', 'responsibilities': 'r'}],
+        'customer_roles': [{'role': 'Sponsor', 'responsibilities': 'r'}],
+        'success_criteria': ['ok'],
+        'objectives': [],
+    }
+    state[SOW_BUNDLE_STATE_KEYS['scope_boundaries']] = {
+        'assumptions': ['a'],
+        'out_of_scope': ['o'],
+        'risks': [],
+        'handover_disclaimers': [],
+        'change_request_policy_text': '',
+    }
+    state[STATE_STAGE] = 'content'
+
+
+class TestRepairRoutingWithinLoop:
+    """The loop dispatches routed findings to section agents and only
+    sends the mechanical residue to the reviser."""
+
+    def _build(
+        self,
+        *,
+        critic,
+        sections: dict[str, BaseAgent],
+        max_rounds: int = 3,
+    ) -> tuple[QualityLoopAgent, FakeReviser]:
+        reviser = FakeReviser(name='fake_reviser')
+        loop = QualityLoopAgent(
+            name='sow_quality_loop',
+            description='test',
+            sub_agents=[critic, reviser],
+            max_rounds=max_rounds,
+            repair_section_agents=sections,
+        )
+        return loop, reviser
+
+    async def test_cross_section_finding_routes_to_section_not_reviser(self):
+        """A single contradictions/activities_vs_deliverables finding
+        must go to delivery_plan, NOT the reviser."""
+        delivery = FakeSectionAgent(
+            name='delivery_plan_agent',
+            output_key='app:sow:delivery_plan',
+            repair_payload_per_call=[],
+        )
+        critic = _critic_emitting(
+            [
+                {
+                    'id': 'c-1',
+                    'skill': 'contradictions',
+                    'category': 'activities_vs_deliverables',
+                    'severity': 'MAJOR',
+                    'fields': ['activity_phases', 'deliverables'],
+                    'evidence': 'WS-03 missing activity',
+                    'recommendation': 'Add the activity.',
+                },
+            ],
+        )
+        loop, reviser = self._build(
+            critic=critic, sections={'delivery_plan': delivery}
+        )
+        ctx = _fake_ctx()
+        _seed_assembly_state(ctx.session.state)
+
+        await _run_loop(loop, ctx)
+
+        assert delivery.calls == 1, (
+            'delivery_plan section agent must be invoked when the route '
+            'matches its (skill, category).'
+        )
+        # Reviser MUST NOT run when there is no mechanical residue — that
+        # would just spend tokens to confirm no-op.
+        assert reviser.calls == 0
+
+    async def test_mixed_findings_run_section_then_reviser_on_residue(self):
+        """Section repairs handle their share; the reviser sees ONLY the
+        mechanical residue, not the whole report."""
+        delivery = FakeSectionAgent(
+            name='delivery_plan_agent',
+            output_key='app:sow:delivery_plan',
+            repair_payload_per_call=[],
+        )
+        coverage_finding = {
+            'id': 'cov-1',
+            'skill': 'coverage',
+            'category': 'manifest_item_uncovered',
+            'severity': 'MAJOR',
+            'fields': ['functional_requirements'],
+            'evidence': 'manifest item I-001 missing',
+            'recommendation': 'Anchor it.',
+        }
+        cross_finding = {
+            'id': 'c-1',
+            'skill': 'contradictions',
+            'category': 'timeline_vs_deliverables',
+            'severity': 'MAJOR',
+            'fields': ['timeline', 'deliverables'],
+            'evidence': 'timeline mismatch',
+            'recommendation': 'Reconcile.',
+        }
+        critic = _critic_emitting([coverage_finding, cross_finding])
+        loop, reviser = self._build(
+            critic=critic, sections={'delivery_plan': delivery}
+        )
+        ctx = _fake_ctx()
+        _seed_assembly_state(ctx.session.state)
+
+        await _run_loop(loop, ctx)
+
+        assert delivery.calls == 1
+        assert reviser.calls == 1, (
+            'reviser must still run when mechanical residue exists.'
+        )
+        # The reviser sees a narrowed report — only the coverage finding.
+        # The loop wrote the narrowed report to STATE_VALIDATION_RESULT
+        # before invoking the reviser; on the next critic run the report
+        # is overwritten so we cannot inspect it here. Instead, we check
+        # the section agent saw ONLY its routed finding.
+        assert delivery.repair_payload_per_call == [[cross_finding]]
+
+    async def test_section_agents_run_in_phase_step_order(self):
+        """When multiple sections have routed findings, the loop must
+        invoke them in Phase Step order (A→B→C→D→E) so a later section
+        sees the patched upstream bundle."""
+        invocation_order: list[str] = []
+
+        class _RecordingSection(FakeSectionAgent):
+            async def run_async(self, ctx):  # type: ignore[override]
+                invocation_order.append(self.name)
+                async for ev in super().run_async(ctx):  # pragma: no cover
+                    yield ev
+
+        requirements = _RecordingSection(
+            name='requirements_agent',
+            output_key='app:sow:requirements',
+            repair_payload_per_call=[],
+        )
+        delivery = _RecordingSection(
+            name='delivery_plan_agent',
+            output_key='app:sow:delivery_plan',
+            repair_payload_per_call=[],
+        )
+        scope = _RecordingSection(
+            name='scope_boundaries_agent',
+            output_key='app:sow:scope_boundaries',
+            repair_payload_per_call=[],
+        )
+
+        critic = _critic_emitting([
+            # Listed out of Phase Step order — the loop must still run
+            # in (requirements, delivery_plan, scope_boundaries) order.
+            {
+                'skill': 'contradictions',
+                'category': 'scope_vs_oos',
+                'severity': 'MAJOR',
+                'fields': ['out_of_scope'],
+                'evidence': '...',
+                'recommendation': '...',
+            },
+            {
+                'skill': 'contradictions',
+                'category': 'fr_vs_nfr',
+                'severity': 'MAJOR',
+                'fields': ['functional_requirements', 'non_functional_requirements'],
+                'evidence': '...',
+                'recommendation': '...',
+            },
+            {
+                'skill': 'contradictions',
+                'category': 'activities_vs_deliverables',
+                'severity': 'MAJOR',
+                'fields': ['activity_phases', 'deliverables'],
+                'evidence': '...',
+                'recommendation': '...',
+            },
+        ])
+        loop, _ = self._build(
+            critic=critic,
+            sections={
+                'requirements': requirements,
+                'delivery_plan': delivery,
+                'scope_boundaries': scope,
+            },
+        )
+        ctx = _fake_ctx()
+        _seed_assembly_state(ctx.session.state)
+
+        await _run_loop(loop, ctx)
+
+        assert invocation_order == [
+            'requirements_agent',
+            'delivery_plan_agent',
+            'scope_boundaries_agent',
+        ], invocation_order
+
+    async def test_state_repair_findings_is_cleared_between_sections(self):
+        """A section agent must not see the previous section's repair
+        packet — the loop clears the slot after each invocation."""
+        requirements = FakeSectionAgent(
+            name='requirements_agent',
+            output_key='app:sow:requirements',
+            repair_payload_per_call=[],
+        )
+        delivery = FakeSectionAgent(
+            name='delivery_plan_agent',
+            output_key='app:sow:delivery_plan',
+            repair_payload_per_call=[],
+        )
+        req_finding = {
+            'skill': 'contradictions',
+            'category': 'fr_vs_nfr',
+            'severity': 'MAJOR',
+            'fields': ['functional_requirements'],
+        }
+        del_finding = {
+            'skill': 'contradictions',
+            'category': 'activities_vs_deliverables',
+            'severity': 'MAJOR',
+            'fields': ['activity_phases'],
+        }
+        critic = _critic_emitting([req_finding, del_finding])
+        loop, _ = self._build(
+            critic=critic,
+            sections={
+                'requirements': requirements,
+                'delivery_plan': delivery,
+            },
+        )
+        ctx = _fake_ctx()
+        _seed_assembly_state(ctx.session.state)
+
+        await _run_loop(loop, ctx)
+
+        # Each section sees ONLY its own routed finding — never both.
+        assert requirements.repair_payload_per_call == [[req_finding]]
+        assert delivery.repair_payload_per_call == [[del_finding]]
+        # And after the loop terminates, the slot is None (or absent).
+        assert not ctx.session.state.get(STATE_REPAIR_FINDINGS)
+
+    async def test_no_section_wired_falls_back_to_reviser_only(self):
+        """Backwards compatibility: ``repair_section_agents`` defaults to
+        ``{}``, in which case the loop must behave exactly as before —
+        every finding goes to the reviser."""
+        cross_finding = {
+            'skill': 'contradictions',
+            'category': 'activities_vs_deliverables',
+            'severity': 'MAJOR',
+            'fields': ['activity_phases'],
+        }
+        critic = _critic_emitting([cross_finding])
+        loop, reviser = self._build(critic=critic, sections={})
+        ctx = _fake_ctx()
+        _seed_assembly_state(ctx.session.state)
+
+        await _run_loop(loop, ctx)
+
+        assert reviser.calls == 1, (
+            'With no section agents wired the reviser remains the sole '
+            'patcher — same behaviour as before commit 5.'
+        )
+
+    async def test_sow_is_reassembled_after_section_repair(self):
+        """After a section agent writes its bundle, the loop must
+        re-assemble the flat sow_data so the next critic round (and any
+        subsequent section / reviser invocation) sees the patched
+        payload, not the pre-patch one."""
+        delivery = FakeSectionAgent(
+            name='delivery_plan_agent',
+            output_key='app:sow:delivery_plan',
+            repair_payload_per_call=[],
+        )
+        critic = _critic_emitting([
+            {
+                'skill': 'contradictions',
+                'category': 'activities_vs_deliverables',
+                'severity': 'MAJOR',
+                'fields': ['activity_phases', 'deliverables'],
+                'evidence': '...',
+                'recommendation': '...',
+            },
+        ])
+        loop, _ = self._build(
+            critic=critic, sections={'delivery_plan': delivery}
+        )
+        ctx = _fake_ctx()
+        _seed_assembly_state(ctx.session.state)
+
+        await _run_loop(loop, ctx)
+
+        # STATE_SOW must now reflect the new delivery_plan bundle the
+        # section agent wrote (via __patched_by marker).
+        staged = ctx.session.state.get(STATE_SOW) or {}
+        # The patched bundle has deliverables=[] (the section agent stub
+        # writes only __patched_by / call_index keys), so the assembler's
+        # ``.get('deliverables', [])`` gives an empty list. The
+        # functional_requirements still carry FR-01 from the seed.
+        assert staged.get('deliverables') == [], (
+            'Re-assembly must have replaced the seeded deliverables with '
+            "the section agent's patched bundle (which has none)."
+        )
+        assert staged.get('functional_requirements'), (
+            'Non-patched bundles must still appear in the re-assembled '
+            'SOW; only the patched section is replaced.'
+        )
+
+    async def test_failed_reassembly_does_not_abort_the_loop(self):
+        """If a section agent emits a malformed bundle and the
+        re-assembly raises AssemblyError, the loop must log and
+        continue — the next critic round will surface the problem
+        through its normal status branches."""
+        class _BadSection(BaseAgent):
+            config_type: ClassVar[type[BaseAgentConfig]] = BaseAgentConfig
+            calls: int = 0
+
+            async def run_async(self, ctx):  # type: ignore[override]
+                self.calls += 1
+                # Wipe a required bundle so the assembler raises.
+                from app.sub_agents.schemas import SOW_BUNDLE_STATE_KEYS
+                ctx.session.state.pop(
+                    SOW_BUNDLE_STATE_KEYS['scope_boundaries'], None
+                )
+                if False:  # pragma: no cover
+                    yield  # type: ignore[unreachable]
+
+        bad = _BadSection(name='delivery_plan_agent')
+        critic = _critic_emitting([
+            {
+                'skill': 'contradictions',
+                'category': 'activities_vs_deliverables',
+                'severity': 'MAJOR',
+                'fields': ['activity_phases'],
+            },
+        ])
+        loop, reviser = self._build(
+            critic=critic,
+            sections={'delivery_plan': bad},
+            max_rounds=2,
+        )
+        ctx = _fake_ctx()
+        _seed_assembly_state(ctx.session.state)
+
+        # The loop must NOT raise — it logs and proceeds.
+        await _run_loop(loop, ctx)
+
+        assert bad.calls == 1
+        # Reviser still runs on the original report (the section agent
+        # had no mechanical residue to delegate, so the residue path
+        # falls through and reviser sees the report unchanged).
+        # The exact reviser invocation count is policy — we only assert
+        # the loop completed cleanly.
+        result = ctx.session.state[QUALITY_LOOP_RESULT_KEY]
+        assert result['status'] in ('passed', 'exhausted', 'no_progress', 'blocked')
 
 
 class TestApplyStateDeltaHelper:
