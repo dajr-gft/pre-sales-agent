@@ -22,6 +22,7 @@ from app.sub_agents.validation.aggregator import (
     validation_aggregator_agent,
 )
 from app.sub_agents.validation.schema import (
+    PERSISTENCE_WINDOW_ROUNDS,
     PRIOR_FINGERPRINTS_CAP,
     STATE_DET_RESULT,
     STATE_PRIOR_BLOCKING_FINGERPRINTS,
@@ -155,17 +156,24 @@ async def test_first_round_initializes_counters_and_marks_nothing_persistent():
     assert report.resolved_blocking_finding_count == 0
     assert all(f.persistent is False for f in report.findings)
     assert state[STATE_ROUND_COUNT] == 1
-    assert len(state[STATE_PRIOR_BLOCKING_FINGERPRINTS]) == 1
+    # Window shape: a single round entry containing the round's fingerprints.
+    window = state[STATE_PRIOR_BLOCKING_FINGERPRINTS]
+    assert len(window) == 1
+    assert len(window[0]) == 1
 
 
 @pytest.mark.unit
-async def test_first_round_with_passed_status_writes_empty_prior_set():
+async def test_first_round_with_passed_status_writes_empty_round_to_window():
+    """Passed status → no blocking fingerprints in the round, but we still
+    append an empty entry to keep the window time-bounded (a finding that
+    re-appears after a multi-round gap correctly resolves as ``new``, not
+    persistent)."""
     state = _base_state({'semantic_quality': [_finding(severity='MINOR')]})
     report = await _run_aggregator(state)
 
     assert report.overall_status == 'passed'
     assert report.round_count == 1
-    assert state[STATE_PRIOR_BLOCKING_FINGERPRINTS] == []
+    assert state[STATE_PRIOR_BLOCKING_FINGERPRINTS] == [[]]
 
 
 # ---------------------------------------------------------------------------
@@ -249,18 +257,26 @@ async def test_resolved_finding_drops_from_prior_set_and_counter():
     assert report.resolved_blocking_finding_count == 1
     assert report.findings[0].id == 'contradictions-002'
     assert report.findings[0].persistent is False
-    # Prior set should now hold only the new fingerprint.
+    # Window shape: legacy single-round prior_fps gets adapted into a
+    # one-entry window; this round's fingerprints append as a new entry.
+    # The stale fp stays in the window (it can still detect re-appearance
+    # within PERSISTENCE_WINDOW_ROUNDS), and the fresh fp is now the
+    # most recent entry.
+    fresh_fp = _fingerprint(Finding(**fresh_payload))
     assert state[STATE_PRIOR_BLOCKING_FINGERPRINTS] == [
-        _fingerprint(Finding(**fresh_payload))
+        [stale_fp],
+        [fresh_fp],
     ]
 
 
 @pytest.mark.unit
 async def test_minor_findings_never_enter_prior_blocking_set():
+    """MINOR findings are non-blocking — the round entry must be empty
+    even though the round did produce findings."""
     state = _base_state({'semantic_quality': [_finding(severity='MINOR')]})
     await _run_aggregator(state)
 
-    assert state[STATE_PRIOR_BLOCKING_FINGERPRINTS] == []
+    assert state[STATE_PRIOR_BLOCKING_FINGERPRINTS] == [[]]
 
 
 @pytest.mark.unit
@@ -285,7 +301,10 @@ async def test_round_count_increments_monotonically_across_runs():
 
 @pytest.mark.unit
 async def test_prior_blocking_fingerprints_capped_at_limit():
-    """Pathological case: aggregator must not write more than the cap."""
+    """Pathological case: per-round entry must not exceed the cap. The
+    cap is independent of :data:`PERSISTENCE_WINDOW_ROUNDS` — the
+    former bounds how many fingerprints a single round contributes;
+    the latter bounds how many rounds are retained."""
     many_findings = [
         _finding(
             fid=f'contradictions-{i:03d}',
@@ -297,6 +316,115 @@ async def test_prior_blocking_fingerprints_capped_at_limit():
     state = _base_state({'contradictions': many_findings})
     await _run_aggregator(state)
 
-    assert (
-        len(state[STATE_PRIOR_BLOCKING_FINGERPRINTS]) == PRIOR_FINGERPRINTS_CAP
+    window = state[STATE_PRIOR_BLOCKING_FINGERPRINTS]
+    assert len(window) == 1  # only ran one round
+    assert len(window[0]) == PRIOR_FINGERPRINTS_CAP
+
+
+# ---------------------------------------------------------------------------
+# Sliding-window persistence — N=PERSISTENCE_WINDOW_ROUNDS
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+async def test_finding_recurring_after_one_round_gap_marked_persistent():
+    """Production failure pattern: a patch removed a coverage anchor for
+    one round and the next round re-flagged the same defect. Single-round
+    comparison classified it as ``new`` (under-reporting persistence and
+    starving the no-progress detector). With the sliding window, the
+    finding's fingerprint stays in the window across the gap and the
+    re-appearance is correctly flagged as persistent."""
+    payload = _finding(severity='BLOCKER')
+    fp = _fingerprint(Finding(**payload))
+    # Window state: round 1 had `fp`, round 2 was empty (gap).
+    state = _base_state(
+        {'contradictions': [payload]},
+        prior_fps=[[fp], []],
+        round_count=2,
     )
+
+    report = await _run_aggregator(state)
+
+    assert report.persistent_blocking_finding_count == 1
+    assert report.findings[0].persistent is True
+    # Window now spans rounds 1, 2 (empty), 3 (fp re-appeared).
+    assert state[STATE_PRIOR_BLOCKING_FINGERPRINTS] == [
+        [fp],
+        [],
+        [fp],
+    ]
+
+
+@pytest.mark.unit
+async def test_finding_recurring_after_window_overflow_marked_as_new():
+    """A finding that disappears for MORE rounds than the window allows
+    must be treated as a fresh regression, not as persistent. The window
+    bounds the lookback so old defects do not pollute fresh statistics
+    indefinitely."""
+    payload = _finding(severity='BLOCKER')
+    fp = _fingerprint(Finding(**payload))
+    # Simulate the maximum-allowed gap: fp blocked once, then was absent
+    # for the entire window — by the time it returns, the original
+    # entry has fallen out.
+    window_with_gap: list[list[str]] = [[]] * PERSISTENCE_WINDOW_ROUNDS
+    state = _base_state(
+        {'contradictions': [payload]},
+        prior_fps=window_with_gap,
+        round_count=PERSISTENCE_WINDOW_ROUNDS,
+    )
+
+    report = await _run_aggregator(state)
+
+    assert report.persistent_blocking_finding_count == 0
+    assert report.new_blocking_finding_count == 1
+    assert report.findings[0].persistent is False
+
+
+@pytest.mark.unit
+async def test_window_trims_to_persistence_window_rounds():
+    """The window stores at most :data:`PERSISTENCE_WINDOW_ROUNDS`
+    entries, oldest first → trimmed from the head when a new round is
+    appended."""
+    payload = _finding(severity='BLOCKER')
+    fp = _fingerprint(Finding(**payload))
+    # Seed a full window so adding the new round forces a trim.
+    full_window = [[f'old-{i}'] for i in range(PERSISTENCE_WINDOW_ROUNDS)]
+    state = _base_state(
+        {'contradictions': [payload]},
+        prior_fps=full_window,
+        round_count=PERSISTENCE_WINDOW_ROUNDS,
+    )
+
+    await _run_aggregator(state)
+
+    window = state[STATE_PRIOR_BLOCKING_FINGERPRINTS]
+    assert len(window) == PERSISTENCE_WINDOW_ROUNDS
+    # Oldest entry dropped; newest is the current round.
+    assert window[0] == [f'old-1']  # was index 1 before the trim
+    assert window[-1] == [fp]
+
+
+@pytest.mark.unit
+async def test_legacy_list_str_shape_treated_as_one_round_window():
+    """Backward compat: in-flight sessions whose state was written before
+    the window migration carry the legacy ``list[str]`` shape (single
+    round). The aggregator's adapter treats it as a one-entry window so
+    persistence detection survives the migration without resetting."""
+    payload = _finding(severity='BLOCKER')
+    fp = _fingerprint(Finding(**payload))
+    # Legacy shape — single round's worth of fingerprints, flat list.
+    state = _base_state(
+        {'contradictions': [payload]},
+        prior_fps=[fp],
+        round_count=1,
+    )
+
+    report = await _run_aggregator(state)
+
+    # The legacy entry counted toward the prior window → finding is
+    # recognised as persistent (would have been "new" under the previous
+    # codepath if we had failed to adapt the shape).
+    assert report.persistent_blocking_finding_count == 1
+    assert report.findings[0].persistent is True
+    # State is rewritten in the new shape — no more legacy reads needed.
+    assert state[STATE_PRIOR_BLOCKING_FINGERPRINTS] == [[fp], [fp]]

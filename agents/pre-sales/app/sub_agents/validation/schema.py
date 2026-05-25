@@ -71,17 +71,37 @@ STATE_VALIDATION_RESULT = 'app:validation_result'
 # - STATE_ROUND_COUNT: monotonic counter, incremented by the aggregator each
 #   time it runs. Reset to 0 by the root when starting a new validation for a
 #   different ``stage`` (e.g. ``content`` -> ``full``).
-# - STATE_PRIOR_BLOCKING_FINGERPRINTS: list of fingerprints (str) for the
-#   findings that contributed to ``overall_status == blocked`` in the previous
-#   round. Used to mark ``Finding.persistent`` on the next round. Capped to
-#   avoid unbounded state growth.
+# - STATE_PRIOR_BLOCKING_FINGERPRINTS: SLIDING WINDOW of the per-round
+#   blocking-finding fingerprint lists, oldest first. Shape:
+#   ``list[list[str]]`` with at most :data:`PERSISTENCE_WINDOW_ROUNDS`
+#   entries. A finding's fingerprint is considered "persistent" when it
+#   appears in the UNION of the window (i.e. it blocked in ANY of the
+#   last N rounds, not just the immediately prior one). The legacy
+#   single-round shape (``list[str]``) is treated as a one-entry window
+#   by the aggregator's adapter so in-flight sessions migrate cleanly.
+#
+# Why a window instead of a single round: production traces showed
+# findings that disappeared for exactly one round (a patch removed the
+# anchor) and re-appeared the next round (the patch dropped the
+# coverage and the critic re-flagged it under a new fingerprint).
+# Single-round comparison classified those as "new", under-reporting
+# persistence and starving the loop's no-progress detector. The window
+# closes that gap without changing the cap on per-round storage.
 STATE_ROUND_COUNT = 'app:validation:round_count'
 STATE_PRIOR_BLOCKING_FINGERPRINTS = 'app:validation:prior_blocking_fingerprints'
 
-# Upper bound on how many fingerprints we keep in state between rounds.
+# Upper bound on how many fingerprints we keep PER ROUND in the window.
 # A SOW with more than this number of blocking findings in a single round
 # almost certainly has bigger problems than persistence tracking can solve.
 PRIOR_FINGERPRINTS_CAP = 30
+
+# Number of recent rounds whose blocking-finding fingerprints are
+# retained in the sliding window. A finding is flagged ``persistent``
+# when its fingerprint matches ANY round in this window. 3 rounds is the
+# smallest window that catches the observed "disappears for 1 round,
+# returns the next" pattern while still bounding state size (3 * 30 =
+# 90 fingerprints max per session).
+PERSISTENCE_WINDOW_ROUNDS = 3
 
 
 def skill_findings_state_key(name: str) -> str:

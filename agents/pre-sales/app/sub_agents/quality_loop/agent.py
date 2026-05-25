@@ -58,6 +58,7 @@ The state keys this agent reads / writes:
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, AsyncGenerator, ClassVar, Mapping, Optional
 
 import structlog
@@ -115,25 +116,38 @@ LoopStatus = str  # one of: 'passed', 'needs_human_review', 'blocked',
 
 
 # ---------------------------------------------------------------------------
-# Repair routing — cross-section findings the generic revision_agent
-# cannot fix without breaking section-internal contracts.
+# Repair routing — structural fields belong to section bundles.
 #
-# Why this exists: production logs showed contradictions findings going
-# 4 -> 3 -> 5 across rounds even with the per-round 5-patch cap on the
-# reviser. The reviser is a generic patcher operating on a flat
-# sow_data dict — when a finding says "deliverable WS-03 has no
-# matching activity", choosing whether to add the activity or remove
-# the deliverable requires the cross-section reasoning that the
-# section agents already encode in their SKILL.md + cumulative upstream
-# visibility. Routing those findings to the owning section agent
-# (instead of the reviser) is the structural fix.
+# Two complementary mechanisms decide who patches a finding:
 #
-# Each entry maps a ``(skill, category)`` pair to the canonical section
-# name (the bundle key, NOT the ``_agent`` suffix). The QualityLoopAgent
-# looks the section up in its ``repair_section_agents`` mapping at
-# runtime; sections that are not wired fall back to the reviser
-# automatically so the loop still functions before commit 6 lands the
-# wiring.
+# 1. :data:`_FIELD_TO_SECTION` (PRIMARY) — any finding whose ``fields``
+#    lists a structural SOW field is routed to the section agent that
+#    OWNS that field, regardless of ``(skill, category)``. This holds
+#    for coverage, semantic_quality, contradictions, contractual_exposure,
+#    everything. The rule is contractual: structural fields are written
+#    by section agents into bundles, and the assembler rebuilds the
+#    flat SOW from those bundles. If the generic reviser patched a
+#    structural field in the flat SOW, the next assembly would
+#    overwrite the patch with the unchanged bundle — the two-writers
+#    divergence that motivated this commit.
+#
+# 2. :data:`_CROSS_SECTION_REPAIR_ROUTES` (FALLBACK) — ``(skill,
+#    category)`` pairs whose ``fields`` is sometimes omitted by the
+#    critic but whose target section is still well-defined. Each entry
+#    maps to the canonical section name (the bundle key, NOT the
+#    ``_agent`` suffix). Used only when fields-driven routing produced
+#    no target.
+#
+# Why both: production logs showed cross-section contradictions (e.g.
+# scope_vs_oos) where the critic occasionally emitted findings with
+# ``fields=[]``; without a fallback those would land in the mechanical
+# bucket and the reviser would patch the flat SOW. Keeping the table
+# as a backstop guarantees those findings still reach a section agent.
+#
+# The QualityLoopAgent looks the section up in its
+# ``repair_section_agents`` mapping at runtime; sections that are not
+# wired fall back to the reviser automatically so the loop still
+# functions before all sections are mounted.
 _CROSS_SECTION_REPAIR_ROUTES: dict[tuple[str, str], str] = {
     # Cross-section contradictions inside delivery_plan's contract.
     ('contradictions', 'timeline_vs_deliverables'): 'delivery_plan',
@@ -210,44 +224,54 @@ def _sections_for_finding(
 ) -> list[str]:
     """Sections that should repair this finding, in Phase Step order.
 
-    The contract: a finding whose ``(skill, category)`` is in
-    :data:`_CROSS_SECTION_REPAIR_ROUTES` gets section repair. The TARGET
-    sections come from ``Finding.fields`` — every distinct section
-    whose owned field appears in the list. A finding with
-    ``fields=['out_of_scope', 'deliverables']`` returns
-    ``['delivery_plan', 'scope_boundaries']`` (Phase Step order); each
-    section gets a copy of the finding so it can patch its own side
-    while the order guarantees the downstream section sees the patched
-    upstream bundle on the next re-assembly.
+    Routing precedence:
 
-    Why fields drive the routing instead of just the (skill, category)
-    default: a `contradictions/scope_vs_oos` finding with
-    `fields=['out_of_scope', 'deliverables']` is cross-bundle in
-    reality — scope_boundaries patching alone leaves the deliverables
-    side untouched. Production logs showed contradictions oscillating
-    3 -> 4 -> 4 -> 5 across rounds even after commit 5 routed them to
-    a single owner; routing to ALL involved sections lets each one
-    reconcile its own surface in a coordinated way.
+    1. **Fields-driven (PRIMARY).** Any finding whose ``fields`` lists
+       a structural SOW field (anything in :data:`_FIELD_TO_SECTION`)
+       is routed to the section agent that OWNS that field. This rule
+       holds for ALL ``(skill, category)`` pairs — coverage,
+       semantic_quality, contradictions, contractual_exposure,
+       disclosures. The motivation is contractual: structural fields
+       are written by section agents into bundles, and the assembler
+       rebuilds the flat SOW from bundles. A reviser patch to a
+       structural field in the flat SOW is overwritten the next time
+       any section agent runs (the two-writers divergence). Sending
+       the finding to the bundle owner keeps the SOW internally
+       consistent.
+
+       A finding with ``fields=['out_of_scope', 'deliverables']``
+       returns ``['delivery_plan', 'scope_boundaries']`` (Phase Step
+       order); each section gets a copy of the finding so it can patch
+       its own side, and the order guarantees the downstream section
+       sees the patched upstream bundle on the next re-assembly.
+
+    2. **Route-table fallback.** When ``fields`` is empty or contains
+       no structural entries, fall back to
+       :data:`_CROSS_SECTION_REPAIR_ROUTES` for the (skill, category)
+       pair. This covers cross-section contradictions whose ``fields``
+       the critic occasionally omits but whose target section is still
+       well-defined (e.g., ``fr_vs_nfr`` always routes to
+       ``requirements``).
+
+    3. **Mechanical.** Returns ``[]`` when neither rule fires — the
+       finding has no structural-field hint and no (skill, category)
+       in the route table. These purely textual / global findings go
+       to the reviser, which only ever touches the flat SOW for
+       fields no section owns.
 
     Args:
         finding: Validation finding as a dict (the loop reads them
             from ``state[STATE_VALIDATION_RESULT].findings``).
         available_sections: Section names the loop actually has agents
-            for. Sections in the derived list but missing from this
+            for. Sections derived by either rule but missing from this
             set are dropped — the partition function then falls the
             whole finding back to mechanical if NO sections survive.
 
     Returns:
-        Empty list when the finding is mechanical (its (skill,
-        category) is not a section-repair route). Single-element list
-        when only one section's fields are involved. Multi-element
-        list in :data:`_SECTION_ORDER` for cross-bundle findings.
+        Empty list when the finding is mechanical. Single-element list
+        when only one section is involved. Multi-element list in
+        :data:`_SECTION_ORDER` for cross-bundle findings.
     """
-    skill = finding.get('skill')
-    category = finding.get('category')
-    if (skill, category) not in _CROSS_SECTION_REPAIR_ROUTES:
-        return []
-
     fields = finding.get('fields') or []
     sections: set[str] = set()
     for field in fields:
@@ -255,16 +279,18 @@ def _sections_for_finding(
         if section is not None and section in available_sections:
             sections.add(section)
 
-    # Fallback: the finding's fields are empty or none of them map to a
-    # known section. Use the legacy single-section route from the
-    # routing table so the finding still gets a target instead of
-    # falling back to the reviser by accident.
-    if not sections:
-        default_section = _CROSS_SECTION_REPAIR_ROUTES.get((skill, category))
-        if default_section is not None and default_section in available_sections:
-            sections.add(default_section)
+    if sections:
+        return [s for s in _SECTION_ORDER if s in sections]
 
-    return [s for s in _SECTION_ORDER if s in sections]
+    # Fields-driven routing produced nothing — try the (skill, category)
+    # route table as a fallback for findings whose ``fields`` is
+    # empty / non-structural but whose target section is still known.
+    skill = finding.get('skill')
+    category = finding.get('category')
+    default_section = _CROSS_SECTION_REPAIR_ROUTES.get((skill, category))
+    if default_section is not None and default_section in available_sections:
+        return [default_section]
+    return []
 
 
 # Map section name -> the ``state[<output_key>]`` slot where its bundle
@@ -280,6 +306,64 @@ _SECTION_BUNDLE_KEYS: dict[str, str] = {
     'architecture': 'app:sow:architecture',
     'narrative': 'app:sow:narrative',
 }
+
+
+# Anchor extraction — used by the per-section and per-reviser diff logs
+# to detect "anchor drop": a patch that removes (or implicitly renames)
+# a stable item id that was present BEFORE the call. The shape mirrors
+# the evidence-side pattern in
+# :data:`app.sub_agents.validation.aggregator._ANCHOR_PATTERN`, but the
+# use is different — there it discriminates findings by the ids quoted
+# in evidence prose; here it walks a structured bundle / SOW dict to
+# pull every id the section actually carries. Comparing the BEFORE set
+# against the AFTER set surfaces the disappearance directly, without
+# waiting for the next critic round to flag the resulting uncovered
+# manifest item as a finding.
+#
+# The pattern is duplicated rather than imported because the two uses
+# may evolve independently (e.g., one may add prefixes the other does
+# not need). Keep both regexes in sync until that divergence happens.
+_BUNDLE_ANCHOR_ID_PATTERN = re.compile(
+    r'\b(?:FR|NFR|WS|OOS|A|I|R|T|G|P)-\d{1,4}\b',
+    flags=re.IGNORECASE,
+)
+
+
+def _extract_anchor_ids(value: Any) -> set[str]:
+    """Recursively pull stable item ids from a bundle / SOW value.
+
+    Walks every string inside lists, dicts, and tuples and matches
+    against :data:`_BUNDLE_ANCHOR_ID_PATTERN`. Returns the set of
+    UPPERCASED matches so casing drift (``fr-01`` vs ``FR-01``) does
+    not produce spurious diffs.
+
+    Returns an empty set for ``None``, non-collection scalars without
+    any matching token, or any value the walker cannot traverse.
+
+    Why this helps with anchor-drop detection: the typical anchor-drop
+    failure is "section agent rewrote the description of FR-03 in a way
+    that removed the keyword anchoring manifest item A2-08, OR removed
+    FR-03 itself". Either case shows up here as a missing id between
+    pre- and post-call snapshots. The next critic round then surfaces
+    A2-08 as ``coverage/manifest_item_uncovered`` — but by then the
+    causal link to the offending section is gone. Capturing the diff
+    inline preserves that link in the log.
+    """
+    ids: set[str] = set()
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, str):
+            for match in _BUNDLE_ANCHOR_ID_PATTERN.findall(node):
+                ids.add(match.upper())
+        elif isinstance(node, dict):
+            for child in node.values():
+                _walk(child)
+        elif isinstance(node, (list, tuple)):
+            for child in node:
+                _walk(child)
+
+    _walk(value)
+    return ids
 
 
 def _finding_digest(finding: dict) -> dict:
@@ -641,6 +725,11 @@ class QualityLoopAgent(BaseAgent):
                     if isinstance(pre_bundle, dict) and pre_bundle
                     else None
                 )
+                # Snapshot anchor ids BEFORE the agent runs (D1
+                # instrumentation). Used by the dropped-ids diff log
+                # below — see :func:`_extract_anchor_ids` for the
+                # rationale.
+                pre_anchor_ids = _extract_anchor_ids(pre_bundle)
 
                 async for event in section_agent.run_async(ctx):
                     self._apply_state_delta(ctx, event)
@@ -668,6 +757,30 @@ class QualityLoopAgent(BaseAgent):
                     post_hash=post_bundle_hash,
                     changed=pre_bundle_hash != post_bundle_hash,
                 )
+
+                # D1 — anchor-drop detection. Compare the set of stable
+                # item ids in the bundle BEFORE the agent ran against
+                # the AFTER set. Any id present before AND absent after
+                # is a candidate anchor drop (the section agent removed
+                # or renamed an item that may have been covering a
+                # manifest entry). Logged as WARNING when dropped is
+                # non-empty so the event is easy to grep in a long
+                # production trace.
+                post_anchor_ids = _extract_anchor_ids(post_bundle)
+                dropped_anchor_ids = sorted(pre_anchor_ids - post_anchor_ids)
+                added_anchor_ids = sorted(post_anchor_ids - pre_anchor_ids)
+                if dropped_anchor_ids:
+                    logger.warning(
+                        'quality_loop_section_anchor_dropped',
+                        round=round_number,
+                        section=section_name,
+                        bundle_key=bundle_key,
+                        dropped_ids=dropped_anchor_ids,
+                        added_ids=added_anchor_ids,
+                        kept_count=len(pre_anchor_ids & post_anchor_ids),
+                        pre_count=len(pre_anchor_ids),
+                        post_count=len(post_anchor_ids),
+                    )
 
                 # The section agent wrote its updated bundle to
                 # ``state[<output_key>]``; re-assemble the flat sow_data
@@ -750,6 +863,10 @@ class QualityLoopAgent(BaseAgent):
                     if isinstance(pre_sow, dict) and pre_sow
                     else None
                 )
+                # D1 — anchor snapshot BEFORE the reviser runs. Same
+                # rationale as the per-section anchor-drop log above,
+                # applied to the flat SOW the reviser writes to.
+                pre_sow_anchor_ids = _extract_anchor_ids(pre_sow)
 
                 async for event in reviser.run_async(ctx):
                     self._apply_state_delta(ctx, event)
@@ -769,6 +886,31 @@ class QualityLoopAgent(BaseAgent):
                     post_hash=post_sow_hash,
                     changed=pre_sow_hash != post_sow_hash,
                 )
+
+                # D1 — reviser anchor drop detection. The reviser's
+                # contract (sow-revision/SKILL.md) says "touch only
+                # fields in finding.fields, preserve byte-for-byte" —
+                # any id present pre-call and absent post-call is a
+                # contract violation worth surfacing.
+                post_sow_anchor_ids = _extract_anchor_ids(post_sow)
+                reviser_dropped_ids = sorted(
+                    pre_sow_anchor_ids - post_sow_anchor_ids
+                )
+                reviser_added_ids = sorted(
+                    post_sow_anchor_ids - pre_sow_anchor_ids
+                )
+                if reviser_dropped_ids:
+                    logger.warning(
+                        'quality_loop_reviser_anchor_dropped',
+                        round=round_number,
+                        dropped_ids=reviser_dropped_ids,
+                        added_ids=reviser_added_ids,
+                        kept_count=len(
+                            pre_sow_anchor_ids & post_sow_anchor_ids
+                        ),
+                        pre_count=len(pre_sow_anchor_ids),
+                        post_count=len(post_sow_anchor_ids),
+                    )
             else:
                 logger.info(
                     'quality_loop_skipping_revision_no_mechanical_residue',

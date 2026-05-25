@@ -271,3 +271,183 @@ class TestFingerprintStabilityAcrossRounds:
             manifest_item_id='I-002',
         )
         assert _fingerprint(a) != _fingerprint(b)
+
+
+# ---------------------------------------------------------------------------
+# Canonical-identity fingerprinting — by-category rules
+# ---------------------------------------------------------------------------
+
+
+class TestCanonicalManifestIdFingerprint:
+    """``coverage/manifest_item_uncovered`` keys on ``manifest_item_id``
+    alone. The critic's evidence prose and the ``fields`` list are
+    dropped because they drift between rounds even when the same
+    manifest gap is being flagged. The production failure surfaced as
+    ``persistent_blocking_finding_count = 0`` on a manifest item that
+    appeared in 4 of 5 rounds (4 distinct fingerprints) — this rule is
+    the fix."""
+
+    def test_same_manifest_id_different_evidence_shares_fingerprint(self):
+        a = _make_finding(
+            skill='coverage',
+            category='manifest_item_uncovered',
+            evidence='The activity row references no anchor for this item.',
+            fields=['activity_phases'],
+            manifest_item_id='I-042',
+        )
+        b = _make_finding(
+            skill='coverage',
+            category='manifest_item_uncovered',
+            evidence='Item I-042 is not covered by any deliverable row.',
+            fields=['deliverables'],
+            manifest_item_id='I-042',
+        )
+        assert _fingerprint(a) == _fingerprint(b)
+
+    def test_same_manifest_id_different_fields_shares_fingerprint(self):
+        """The patcher may attribute the gap to different fields between
+        rounds (was a missing FR, now a missing deliverable). The
+        underlying defect — manifest item I-042 is uncovered — is the
+        same, so the fingerprint must match."""
+        a = _make_finding(
+            skill='coverage',
+            category='manifest_item_uncovered',
+            evidence='whatever',
+            fields=['functional_requirements'],
+            manifest_item_id='I-042',
+        )
+        b = _make_finding(
+            skill='coverage',
+            category='manifest_item_uncovered',
+            evidence='whatever',
+            fields=['deliverables', 'out_of_scope'],
+            manifest_item_id='I-042',
+        )
+        assert _fingerprint(a) == _fingerprint(b)
+
+    def test_empty_manifest_id_does_not_collapse_with_populated(self):
+        """A coverage finding emitted without a manifest_item_id (data
+        bug upstream) must not silently collide with another. Keying on
+        an empty string is still distinct from keying on 'I-001'."""
+        empty = _make_finding(
+            skill='coverage',
+            category='manifest_item_uncovered',
+            evidence='unspecified',
+            manifest_item_id=None,
+        )
+        populated = _make_finding(
+            skill='coverage',
+            category='manifest_item_uncovered',
+            evidence='unspecified',
+            manifest_item_id='I-001',
+        )
+        assert _fingerprint(empty) != _fingerprint(populated)
+
+
+class TestCanonicalFieldFingerprint:
+    """``contractual_exposure/missing_*`` and ``disclosures/missing_*``
+    key on the sorted ``fields`` tuple alone. These categories flag
+    "field absent" defects whose identity lives in the schema, not in
+    the critic's prose."""
+
+    @pytest.mark.parametrize(
+        ('skill', 'category'),
+        [
+            ('contractual_exposure', 'missing_handover_boundary'),
+            ('contractual_exposure', 'missing_change_request_gate'),
+            ('disclosures', 'missing_ai_nondeterminism_disclosure'),
+            ('disclosures', 'missing_pii_responsibility_disclosure'),
+        ],
+    )
+    def test_same_fields_different_evidence_shares_fingerprint(
+        self, skill, category,
+    ):
+        a = _make_finding(
+            skill=skill,
+            category=category,
+            evidence='Round 1 wording flagging the absence of the clause.',
+            fields=['handover_disclaimers'],
+        )
+        b = _make_finding(
+            skill=skill,
+            category=category,
+            evidence='Round 2 rephrasing the same gap with different prose.',
+            fields=['handover_disclaimers'],
+        )
+        assert _fingerprint(a) == _fingerprint(b)
+
+    def test_field_order_invariant(self):
+        """When a finding lists multiple fields, ordering must not affect
+        the fingerprint — the sorted tuple is what enters the key."""
+        a = _make_finding(
+            skill='contractual_exposure',
+            category='missing_consequence_clause',
+            evidence='gap',
+            fields=['handover_disclaimers', 'change_request_policy_text'],
+        )
+        b = _make_finding(
+            skill='contractual_exposure',
+            category='missing_consequence_clause',
+            evidence='gap',
+            fields=['change_request_policy_text', 'handover_disclaimers'],
+        )
+        assert _fingerprint(a) == _fingerprint(b)
+
+    def test_different_fields_produce_different_fingerprints(self):
+        """Two different missing-field defects in the same category are
+        distinct — the rule does not over-collapse."""
+        a = _make_finding(
+            skill='disclosures',
+            category='missing_pii_responsibility_disclosure',
+            evidence='same',
+            fields=['handover_disclaimers'],
+        )
+        b = _make_finding(
+            skill='disclosures',
+            category='missing_pii_responsibility_disclosure',
+            evidence='same',
+            fields=['assumptions'],
+        )
+        assert _fingerprint(a) != _fingerprint(b)
+
+
+class TestLegacyFingerprintFallbackUnchanged:
+    """Categories outside both canonical sets continue to use the
+    evidence-derived discriminator. These are the textual / semantic
+    categories whose only stable identity signal IS in the prose."""
+
+    def test_contradictions_still_keyed_by_evidence(self):
+        """``contradictions/*`` (non-trivial cases) carry their identity
+        in the SOW anchors quoted in the evidence. The legacy path must
+        keep this working — same anchors, different prose, same key."""
+        a = _make_finding(
+            skill='contradictions',
+            category='fr_vs_nfr',
+            evidence='FR-01 commits to behaviour X but NFR-03 forbids it',
+            fields=['functional_requirements', 'non_functional_requirements'],
+        )
+        b = _make_finding(
+            skill='contradictions',
+            category='fr_vs_nfr',
+            evidence='NFR-03 prohibits the behaviour FR-01 requires',
+            fields=['functional_requirements', 'non_functional_requirements'],
+        )
+        assert _fingerprint(a) == _fingerprint(b)
+
+    def test_semantic_quality_still_uses_evidence_prefix_fallback(self):
+        """``semantic_quality/naming_drift`` legitimately has no anchors
+        in many cases — the fallback prefix is its only identity signal,
+        and must remain in place for these categories."""
+        a = _make_finding(
+            skill='semantic_quality',
+            category='naming_drift',
+            evidence='Term "delivery-plan" appears as "delivery plan".',
+            fields=['executive_summary'],
+        )
+        b = _make_finding(
+            skill='semantic_quality',
+            category='naming_drift',
+            evidence='term delivery plan appears as delivery plan',
+            fields=['executive_summary'],
+        )
+        assert _fingerprint(a) == _fingerprint(b)

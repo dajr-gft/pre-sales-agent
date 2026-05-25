@@ -738,9 +738,11 @@ class TestStateDeltaOnlyCritic:
 
 
 from app.sub_agents.quality_loop.agent import (
+    _BUNDLE_ANCHOR_ID_PATTERN,
     _CROSS_SECTION_REPAIR_ROUTES,
     _FIELD_TO_SECTION,
     _SECTION_ORDER,
+    _extract_anchor_ids,
     _partition_findings,
     _sections_for_finding,
 )
@@ -767,9 +769,13 @@ class TestPartitionFindings:
         assert by_section == {'delivery_plan': [f]}
         assert mechanical == []
 
-    def test_unmapped_pair_falls_to_mechanical(self):
-        """A finding whose (skill, category) isn't in the routes goes to
-        the reviser. Coverage is the canonical example."""
+    def test_no_fields_no_route_falls_to_mechanical(self):
+        """A finding with no structural ``fields`` AND no (skill,
+        category) entry in the route table is mechanical — the reviser
+        is the only fallback. Coverage findings without an explicit
+        ``fields`` hint are the canonical example (with a structural
+        ``fields`` hint they now route to the owning section, see
+        ``TestSectionsForFinding``)."""
         f = {
             'skill': 'coverage',
             'category': 'manifest_item_uncovered',
@@ -860,14 +866,14 @@ _ALL_SECTIONS = set(_SECTION_ORDER)
 
 
 class TestSectionsForFinding:
-    def test_mechanical_finding_returns_empty(self):
-        """A finding whose (skill, category) is not in the routing
-        table is mechanical regardless of its fields — the reviser
-        owns coverage, contractual_exposure, disclosures, etc."""
+    def test_finding_with_no_fields_and_no_route_is_mechanical(self):
+        """A finding with no structural ``fields`` AND no (skill,
+        category) entry in the route table has no section to route to
+        — the reviser sees it as a last resort."""
         f = {
             'skill': 'coverage',
             'category': 'manifest_item_uncovered',
-            'fields': ['functional_requirements'],
+            'fields': [],
         }
         assert _sections_for_finding(f, _ALL_SECTIONS) == []
 
@@ -991,6 +997,79 @@ class TestSectionsForFinding:
         assert _sections_for_finding(f, {'requirements'}) == []
 
 
+class TestFieldsDrivenRoutingIsUniversal:
+    """The fields-driven routing rule applies regardless of (skill,
+    category) — structural fields belong to section bundles, full
+    stop. This guards the two-writers fix: any finding whose fields
+    touch a bundle-owned schema field must reach the section agent
+    that owns it, not the generic reviser (whose flat-SOW patches
+    would be overwritten by the next assembly)."""
+
+    def test_coverage_with_structural_fields_routes_to_owning_section(self):
+        """Coverage findings carrying a structural ``fields`` hint
+        route to the owning section. Without this rule, the reviser
+        would patch the flat SOW's requirements list and the next
+        section-agent run would assemble away the patch."""
+        f = {
+            'skill': 'coverage',
+            'category': 'manifest_item_uncovered',
+            'fields': ['functional_requirements'],
+        }
+        assert _sections_for_finding(f, _ALL_SECTIONS) == ['requirements']
+
+    def test_coverage_cross_bundle_routes_to_all_owners(self):
+        f = {
+            'skill': 'coverage',
+            'category': 'manifest_item_uncovered',
+            'fields': ['deliverables', 'out_of_scope'],
+        }
+        assert _sections_for_finding(f, _ALL_SECTIONS) == [
+            'delivery_plan',
+            'scope_boundaries',
+        ]
+
+    def test_semantic_quality_with_structural_fields_routes(self):
+        """``semantic_quality`` was traditionally mechanical — the
+        new rule means it routes through section agents whenever it
+        touches a structural field."""
+        f = {
+            'skill': 'semantic_quality',
+            'category': 'naming_drift',
+            'fields': ['executive_summary'],
+        }
+        assert _sections_for_finding(f, _ALL_SECTIONS) == ['narrative']
+
+    def test_contractual_exposure_with_structural_fields_routes(self):
+        f = {
+            'skill': 'contractual_exposure',
+            'category': 'missing_handover_boundary',
+            'fields': ['handover_disclaimers'],
+        }
+        assert _sections_for_finding(f, _ALL_SECTIONS) == ['scope_boundaries']
+
+    def test_disclosures_with_structural_fields_routes(self):
+        f = {
+            'skill': 'disclosures',
+            'category': 'missing_ai_nondeterminism_disclosure',
+            'fields': ['assumptions'],
+        }
+        assert _sections_for_finding(f, _ALL_SECTIONS) == ['scope_boundaries']
+
+    def test_route_table_only_used_when_fields_produce_no_target(self):
+        """When ``fields`` populates a section, the (skill, category)
+        route table is NOT consulted — the field rule wins. This
+        matters when the two disagree (e.g., a finding nominally for
+        ``contradictions/fr_vs_nfr`` whose fields touch ``deliverables``
+        should follow the fields, not the legacy default)."""
+        f = {
+            'skill': 'contradictions',
+            'category': 'fr_vs_nfr',  # route table says → 'requirements'
+            'fields': ['deliverables'],
+        }
+        # Fields rule wins → delivery_plan, not requirements.
+        assert _sections_for_finding(f, _ALL_SECTIONS) == ['delivery_plan']
+
+
 class TestFieldToSectionCoverage:
     """Coverage invariant: every top-level ``sow_data`` field that a
     section bundle can emit must be in :data:`_FIELD_TO_SECTION`.
@@ -1093,10 +1172,13 @@ class TestPartitionFindingsCrossBundle:
             'fields': ['out_of_scope', 'deliverables'],
             'id': 'cross-1',
         }
+        # Genuinely mechanical: no structural fields hint AND no
+        # (skill, category) entry in the route table. The reviser is
+        # the only handler for findings of this shape.
         mech = {
             'skill': 'coverage',
             'category': 'manifest_item_uncovered',
-            'fields': ['functional_requirements'],
+            'fields': [],
             'id': 'mech-1',
         }
         by_section, mechanical = _partition_findings(
@@ -2019,3 +2101,136 @@ class _ReviserThatPatches(BaseAgent):
         ctx.session.state[STATE_SOW] = patched
         if False:  # pragma: no cover
             yield  # type: ignore[unreachable]
+
+
+# ---------------------------------------------------------------------------
+# D1 — anchor extraction + drop detection
+#
+# These tests pin two layers:
+# 1. ``_extract_anchor_ids`` — pure walker over a bundle / SOW value,
+#    pulls SOW item ids out of every string regardless of nesting.
+# 2. ``_BUNDLE_ANCHOR_ID_PATTERN`` — regex shape, what is and is not
+#    treated as an anchor id (must not match generic tokens like
+#    ``AES-256`` that would create false-positive drops).
+#
+# End-to-end "the log actually fires when a section drops an id" is
+# exercised in the loop-level fakes section above — those already
+# cover the section-repair codepath; here we focus on the helper
+# correctness so a future refactor cannot quietly break the diff.
+# ---------------------------------------------------------------------------
+
+
+class TestBundleAnchorIdPattern:
+    @pytest.mark.parametrize(
+        ('text', 'expected'),
+        [
+            ('item FR-01 references NFR-03', ['FR-01', 'NFR-03']),
+            ('deliverable WS-12 belongs to phase A-02', ['WS-12', 'A-02']),
+            ('manifest items I-001, I-002, I-003 are covered', ['I-001', 'I-002', 'I-003']),
+            ('out-of-scope OOS-01 vs OOS-02', ['OOS-01', 'OOS-02']),
+            ('risk R-04 mitigated by control T-09', ['R-04', 'T-09']),
+            ('gap G-04 escalated to priority P-2', ['G-04', 'P-2']),
+            # No anchors at all.
+            ('the description is too short to flag', []),
+        ],
+    )
+    def test_matches_expected_anchor_shapes(self, text, expected):
+        assert _BUNDLE_ANCHOR_ID_PATTERN.findall(text) == expected
+
+    @pytest.mark.parametrize(
+        'noise',
+        [
+            'AES-256 encryption',
+            'ISO-9001 compliance certification',
+            'PEP-8 style violations',
+            'release v1.2 timeline',
+        ],
+    )
+    def test_does_not_match_non_anchor_tokens(self, noise):
+        """A bundle full of crypto/standards references must not trigger
+        spurious dropped-id warnings."""
+        assert _BUNDLE_ANCHOR_ID_PATTERN.findall(noise) == []
+
+
+class TestExtractAnchorIds:
+    def test_none_returns_empty_set(self):
+        assert _extract_anchor_ids(None) == set()
+
+    def test_empty_dict_returns_empty_set(self):
+        assert _extract_anchor_ids({}) == set()
+
+    def test_empty_list_returns_empty_set(self):
+        assert _extract_anchor_ids([]) == set()
+
+    def test_scalar_without_anchors_returns_empty_set(self):
+        assert _extract_anchor_ids(42) == set()
+        assert _extract_anchor_ids('') == set()
+        assert _extract_anchor_ids('no matches here') == set()
+
+    def test_flat_string_returns_matching_anchors_uppercased(self):
+        """Casing drift in the source must not produce spurious diffs —
+        the walker uppercases every match so ``fr-01`` and ``FR-01``
+        collapse to one id."""
+        assert _extract_anchor_ids('fr-01 and FR-02') == {'FR-01', 'FR-02'}
+
+    def test_walks_nested_dict_values(self):
+        bundle = {
+            'functional_requirements': [
+                {'number': 'FR-01', 'description': 'covers FR-02 too'},
+                {'number': 'FR-03', 'description': 'standalone'},
+            ],
+            'non_functional_requirements': [
+                {'number': 'NFR-01', 'description': 'depends on WS-05'},
+            ],
+        }
+        assert _extract_anchor_ids(bundle) == {
+            'FR-01', 'FR-02', 'FR-03', 'NFR-01', 'WS-05',
+        }
+
+    def test_walks_through_tuples(self):
+        """Defensive: bundles serialized from Pydantic models may carry
+        tuples in some fields. The walker must descend through them."""
+        value = ('FR-01', {'nested': ('NFR-02',)})
+        assert _extract_anchor_ids(value) == {'FR-01', 'NFR-02'}
+
+    def test_dedupes_repeated_anchors(self):
+        """The same id quoted multiple times in different fields counts
+        once — sets handle this naturally but pin the contract."""
+        bundle = {
+            'a': 'FR-01 first',
+            'b': 'FR-01 again',
+            'c': ['FR-01', 'FR-02'],
+        }
+        assert _extract_anchor_ids(bundle) == {'FR-01', 'FR-02'}
+
+    def test_ignores_non_string_leaves(self):
+        bundle = {
+            'count': 5,
+            'enabled': True,
+            'price': 12.5,
+            'ref': 'FR-01',
+        }
+        assert _extract_anchor_ids(bundle) == {'FR-01'}
+
+    def test_anchor_drop_diff_use_case(self):
+        """End-to-end illustration: the loop computes
+        ``pre - post`` to find dropped ids. This pins the symmetric
+        diff semantics tests in the loop body rely on."""
+        pre = _extract_anchor_ids({
+            'fr': [
+                {'number': 'FR-01'},
+                {'number': 'FR-02'},
+                {'number': 'FR-03'},
+            ],
+        })
+        post = _extract_anchor_ids({
+            'fr': [
+                {'number': 'FR-01'},
+                {'number': 'FR-03'},  # FR-02 dropped
+                {'number': 'FR-04'},  # FR-04 added
+            ],
+        })
+        dropped = pre - post
+        added = post - pre
+        assert dropped == {'FR-02'}
+        assert added == {'FR-04'}
