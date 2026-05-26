@@ -39,11 +39,13 @@ Standard contractual protections, limitations, Customer-responsibility
 shifts, and explicit deferrals/manual placeholders are valid SOW content
 when they do not introduce a new business or technical commitment.
 
-Set `requires_human_review: true` only when deciding the fix would
-require an unknown business fact, commercial decision, legal/regulatory
-judgment, or a choice between valid alternatives. Clear missing anchors
-with an actionable recommendation are auto-correctable findings, not
-human-review findings.
+Default ``resolution_mode`` to ``auto_fixable`` for every coverage gap
+whose remedy is "add an FR / NFR / OOS / activity that anchors this
+manifest item" — that is the revision_agent's exact contract. Escalate
+to ``decision_required`` only when restoring the item demands a real
+business / commercial / legal decision the agent cannot infer (e.g. a
+specific price, a region, a residency policy, a governance owner).
+Severity is independent: a MAJOR missing anchor stays ``auto_fixable``.
 
 ## What counts as an anchor
 
@@ -121,7 +123,7 @@ whether to scan the item:
 - 0.60–0.84 — at least one section might contain a partial anchor.
 - < 0.60 — speculative; do not emit unless the gap is critical and the
   required fix depends on human-only information. In that rare case, set
-  `requires_human_review: true`.
+  ``resolution_mode: "decision_required"``.
 
 ## Output
 
@@ -140,6 +142,7 @@ Return ONLY a JSON object matching `SkillFindings`:
       "recommendation": "Add an FR that names <system>, the protocol, and the data exchanged; add an Architecture Integration row mirroring the entry.",
       "fields": ["functional_requirements", "architecture_integrations"],
       "manifest_item_id": "I-NN",
+      "resolution_mode": "auto_fixable",
       "requires_human_review": false
     }
   ]

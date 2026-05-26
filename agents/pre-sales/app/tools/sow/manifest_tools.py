@@ -34,6 +34,11 @@ logger = structlog.get_logger()
 
 _MANIFEST_STATE_KEY = "extraction_manifest"
 _BUFFER_STATE_KEY = "extraction_buffer"
+# Mirrors ``app/tools/sow/stage_sow.py`` and the validation summary agent —
+# centralised so anyone who needs to read the conversation language
+# (section workers, revision skill, summary skill) reads from a single
+# canonical key.
+_LANGUAGE_STATE_KEY = "app:language"
 
 
 def _format_errors(exc: ValidationError) -> list[dict[str, Any]]:
@@ -470,6 +475,13 @@ async def finalize_extraction_manifest(
     manifest_dict = validated.model_dump(mode="json")
     tool_context.state[_MANIFEST_STATE_KEY] = manifest_dict
     tool_context.state[_BUFFER_STATE_KEY] = None
+    # Propagate the conversation language to the canonical state key so
+    # the Phase 2 section workers — which run BEFORE ``stage_sow`` (the
+    # other writer of this key) — can pick the right output language
+    # without having to dig into the manifest dict. Downstream readers
+    # are ``stage_sow``, the validation summary skill, and the revision
+    # skill; all already read from ``app:language``.
+    tool_context.state[_LANGUAGE_STATE_KEY] = validated.conversation_language
 
     logger.info(
         "manifest_persisted",
@@ -477,6 +489,7 @@ async def finalize_extraction_manifest(
         state_key=_MANIFEST_STATE_KEY,
         items_count=len(validated.extracted_items),
         flow="incremental",
+        conversation_language=validated.conversation_language,
     )
 
     return {

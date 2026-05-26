@@ -423,3 +423,96 @@ class TestHappyPath:
         assert not any(
             i.field == 'architecture_description' for i in content.issues
         )
+
+
+class TestPlaceholderHandling:
+    """Deterministic validator must NOT flag fields whose content is —
+    or contains — a user-approved placeholder marker. The semantic
+    skills decide whether the placeholder is approved against the
+    manifest; the deterministic layer's job is to stop emitting
+    nuisance length warnings on ``[A DEFINIR]`` (11 chars), which
+    confused both the user and the LLM in production.
+    """
+
+    def test_fr_description_that_is_a_placeholder_skips_length_check(
+        self, sow_data
+    ):
+        sow_data['functional_requirements'][0]['description'] = '[A DEFINIR]'
+        result = ContentValidator().validate(sow_data)
+        assert not any(
+            w.field == 'functional_requirements' and 'too short' in w.message
+            for w in result.warnings
+        )
+
+    @pytest.mark.parametrize(
+        'placeholder',
+        [
+            '[TO BE DEFINED]',
+            '[TBD]',
+            '[A DEFINIR]',
+            '[A SER DEFINIDO]',
+            '[POR DEFINIR]',
+            '[INSERT integration name]',
+        ],
+    )
+    def test_role_responsibility_that_is_a_placeholder_skips_length_check(
+        self, sow_data, placeholder
+    ):
+        sow_data['partner_roles'][0]['responsibilities'] = placeholder
+        result = ContentValidator().validate(sow_data)
+        assert not any(
+            w.field == 'partner_roles' and 'too short' in w.message
+            for w in result.warnings
+        )
+
+    def test_fr_description_with_inline_placeholder_uses_stripped_length(
+        self, sow_data
+    ):
+        """A description that mixes prose with a placeholder is gauged
+        on the prose. ``"[A DEFINIR]"`` alone is OK, ``"x [A DEFINIR]"``
+        is still effectively empty after stripping (2 chars) — the
+        check must still fire."""
+        # Mostly-placeholder, prose insufficient → still warns.
+        sow_data['functional_requirements'][0]['description'] = 'x [A DEFINIR]'
+        result = ContentValidator().validate(sow_data)
+        assert any(
+            w.field == 'functional_requirements' and 'too short' in w.message
+            for w in result.warnings
+        )
+
+    def test_fr_description_with_real_prose_and_placeholder_passes(
+        self, sow_data
+    ):
+        """Once the surrounding prose has enough technical content,
+        the inline placeholder doesn't drag the field below the
+        threshold."""
+        sow_data['functional_requirements'][0]['description'] = (
+            'The platform shall integrate with the Customer API gateway '
+            'specified in [A DEFINIR] using REST/JSON over TLS 1.3.'
+        )
+        result = ContentValidator().validate(sow_data)
+        assert not any(
+            w.field == 'functional_requirements' and 'too short' in w.message
+            for w in result.warnings
+        )
+
+    def test_placeholder_assumptions_excluded_from_consequence_ratio(
+        self, sow_data
+    ):
+        """A SOW that defers most of its assumptions as ``[A DEFINIR]``
+        and writes a single concrete one with a consequence clause must
+        NOT trigger the missing-consequence warning. The previous logic
+        counted all assumptions in the ratio; placeholders pulled the
+        ratio under the threshold and produced a false positive."""
+        sow_data['assumptions'] = [
+            '[A DEFINIR]',
+            '[A DEFINIR]',
+            '[TO BE DEFINED]',
+            'Customer must provide test data within 5 business days. '
+            'Failure will result in proportional timeline extension.',
+        ]
+        result = ContentValidator().validate(sow_data)
+        assert not any(
+            w.field == 'assumptions' and 'consequence' in w.message.lower()
+            for w in result.warnings
+        )

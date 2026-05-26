@@ -18,21 +18,23 @@ Invariants enforced by the topology:
 - `validation_assembler_agent` is the single writer of
   ``state[STATE_VALIDATION_RESULT]`` and escalates control back to root.
 
-Invocation pattern: the root calls ``validation_critic`` via ``AgentTool``
-(see ``app/agent.py``). AgentTool runs this SequentialAgent inside an
-isolated runner — every event yielded by the sub-agents below stays in
-that runner and never reaches the user-facing chat stream. Only
-``state_delta`` from each event (notably ``state[STATE_VALIDATION_RESULT]``
-written by the assembler) is forwarded back to the root session.
+Invocation pattern: the critic is exclusively driven by
+:class:`QualityLoopAgent` (``app/sub_agents/quality_loop``), which is
+the single ``AgentTool`` the root exposes for SOW validation. The loop
+runs the critic in an isolated runner — every event yielded by the
+sub-agents below stays inside that runner and never reaches the user-
+facing chat stream. ``state_delta`` from each event (notably
+``state[STATE_VALIDATION_RESULT]`` written by the assembler) is mirrored
+into the loop's session state so the loop's branching logic can read
+it between rounds.
 
-Correction loop: the root agent owns the 4-round correction loop via
-its prompt — when the critic returns ``blocked``, the root applies
-edits using the ``sow-generator`` SkillToolset (already loaded at the
-root) and re-invokes the ``validation_critic`` tool. We intentionally
-do not wrap the critic in a ``LoopAgent`` with a separate reviser sub-
-agent: that would duplicate the SOW generation knowledge already
-encoded in the ``sow-generator`` skill and inflate the per-call
-context for no architectural gain.
+Correction loop: ``QualityLoopAgent`` owns the round budget and the
+branching. When the critic returns ``blocked`` the loop invokes
+``revision_agent`` (``app/sub_agents/revision``), which patches the
+staged SOW and re-runs the critic. The root never calls the critic or
+the revision agent directly — it talks only to ``sow_quality_loop`` so
+the stop conditions (passed / needs_human_review / exhausted) stay
+authoritative.
 """
 
 from __future__ import annotations

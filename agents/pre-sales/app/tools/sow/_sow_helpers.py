@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json as _json
 from pathlib import Path
+from typing import Any
 
 import structlog
 from docx.shared import Mm
@@ -112,6 +113,72 @@ def sow_data_hash(data: dict | str) -> str:
         return hashlib.sha256(normalized.encode('utf-8')).hexdigest()[:12]
     except Exception:
         return 'unhashable'
+
+
+def apply_sow_assembly_to_state(
+    state: dict[str, Any], stage: str,
+) -> dict[str, Any]:
+    """Re-assemble and stage the SOW from in-state bundles.
+
+    For sub-agents that run OUTSIDE the ADK tool surface (the
+    QualityLoopAgent in particular) and therefore have no ToolContext
+    available. The function combines what ``assemble_sow_payload`` +
+    ``stage_sow`` would do back-to-back, minus everything the loop must
+    NOT touch between repair rounds.
+
+    Side effects (deliberately narrow):
+
+    - Overwrites ``state[STATE_SOW]`` with the freshly built ``sow_data``
+      dict produced by :func:`build_sow_data_from_state`.
+    - Writes ``state[STATE_STAGE] = stage`` (caller passes the current
+      stage). This helper assumes **same-stage repair** — the loop
+      reassembles to materialise patches applied by section agents, not
+      to transition between content and full. It therefore does NOT
+      reset ``STATE_ROUND_COUNT`` or
+      ``STATE_PRIOR_BLOCKING_FINGERPRINTS`` even when ``stage`` differs
+      from what is already in state (which a misbehaving caller would
+      have to do explicitly — and that path is rejected today by
+      :func:`stage_sow`'s strict argument).
+
+    Guardrails (deliberately preserved):
+
+    - Never reads or writes ``app:language`` — the orchestrator owns it,
+      and the production incident where the reviser overwrote
+      ``pt-BR -> en`` cannot be replayed through this surface.
+    - Never reads or writes the revision log — it accumulates across
+      rounds and the loop drives every entry via the reviser's own tool.
+    - Never re-emits the F-05 anti-thrashing hash; the QualityLoopAgent
+      already maintains its own terminal-hash cache via ``_emit_result``.
+
+    Returns the assembled ``sow_data`` (also written to state) so the
+    caller can hash it, log it, or pass it to downstream logic without
+    a second state read. Raises :class:`AssemblyError` on precondition
+    failure (missing bundles, MISSING_INPUT sentinel, non-dict manifest,
+    blank required metadata) — exactly the same errors
+    :func:`assemble_sow_payload` would have wrapped in ToolError.
+    """
+    # Local import avoids a module-load cycle with the validation
+    # schema module: ``assemble_payload`` already imports from
+    # ``sub_agents.schemas``; this helper sits one layer below tools and
+    # should not pull the schema import chain into every consumer.
+    from .assemble_payload import build_sow_data_from_state
+    # ``STATE_SOW`` and ``STATE_STAGE`` live in the validation schema
+    # module — the canonical source of state-key literals.
+    from ...sub_agents.validation.schema import STATE_SOW, STATE_STAGE
+
+    stage_normalized = (stage or '').strip().lower()
+    sow_data = build_sow_data_from_state(state, stage_normalized)
+
+    state[STATE_SOW] = sow_data
+    state[STATE_STAGE] = stage_normalized
+
+    logger.info(
+        'sow_assembly_applied_to_state',
+        stage=stage_normalized,
+        sow_data_hash=sow_data_hash(sow_data),
+        top_level_keys=len(sow_data),
+    )
+    return sow_data
 
 
 def sow_data_preview(data: dict | str, max_chars: int = 2000) -> str:

@@ -21,6 +21,7 @@ from google.adk.agents.base_agent_config import BaseAgentConfig
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event, EventActions
 
+from ...shared.placeholders import contains_placeholder
 from .schema import STATE_MANIFEST_RESIDUAL, STATE_SOW
 
 logger = structlog.get_logger()
@@ -47,19 +48,60 @@ def _is_admin_metadata(item: dict) -> bool:
 
 
 def _is_intentionally_deferred(item: dict, manifest: dict) -> bool:
-    """Items declared as `[TO BE DEFINED]` upstream — not coverage gaps."""
-    item_id = item.get('item_id') or item.get('id')
-    if not item_id:
+    """Items whose substance is already documented as an approved deferral.
+
+    Historical bug: the previous implementation tried ``g.get('item_id')``
+    on every entry in ``gaps.hard_gaps`` and ``gaps.to_be_defined``, but
+    neither model carries an ``item_id`` field (see ``HardGap`` and
+    ``ToBeDefined`` in ``_extraction_manifest.py``). The check therefore
+    always returned False — the gap-driven filter never actually fired.
+
+    Replacement strategy: fuzzy match the extracted item's ``value`` /
+    ``value_detail`` against the human-readable description of every
+    relevant gap. A blocking hard_gap pulls the item out of the residual
+    so the coverage skill doesn't flag an item the discovery interview
+    already escalated. A non-blocking deferral (``to_be_defined`` items
+    or ``hard_gaps`` with ``blocks_sow_generation=false``) also pulls
+    the item out — the SOW is expected to carry a placeholder in that
+    field and the validator handles placeholders elsewhere.
+
+    Match is case-insensitive substring in either direction (item value
+    inside the gap description, or gap description inside the item
+    value) — fuzzy enough to bridge the wording differences typical of
+    a human-authored gap description vs the canonical short value the
+    extractor produced.
+    """
+    raw_value = (item.get('value') or '').strip()
+    raw_detail = (item.get('value_detail') or '').strip()
+    haystacks = [s.lower() for s in (raw_value, raw_detail) if s]
+    if not haystacks:
         return False
+
     gaps = manifest.get('gaps') or {}
-    hard = gaps.get('hard_gaps') or []
-    for g in hard:
-        if g.get('item_id') == item_id and g.get('blocks_sow_generation'):
+    if not isinstance(gaps, dict):
+        return False
+
+    def _matches(description: str) -> bool:
+        desc = description.strip().lower()
+        if not desc:
+            return False
+        for hay in haystacks:
+            if desc in hay or hay in desc:
+                return True
+        return False
+
+    for hg in gaps.get('hard_gaps') or []:
+        if not isinstance(hg, dict):
+            continue
+        if _matches(hg.get('description', '')):
             return True
-    tbd = gaps.get('to_be_defined') or []
-    for g in tbd:
-        if g.get('item_id') == item_id:
+
+    for tbd in gaps.get('to_be_defined') or []:
+        if not isinstance(tbd, dict):
+            continue
+        if _matches(tbd.get('item', '')):
             return True
+
     return False
 
 

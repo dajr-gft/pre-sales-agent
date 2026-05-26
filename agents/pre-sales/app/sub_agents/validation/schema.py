@@ -25,6 +25,28 @@ SkillName = Literal[
     'semantic_quality',
 ]
 Stage = Literal['content', 'full']
+# How a finding can be resolved. Decoupled from severity on purpose: a
+# BLOCKER can still be ``auto_fixable`` (the revision_agent can rewrite
+# the SOW from the same evidence/recommendation the critic produced),
+# while a MINOR can still be ``decision_required`` (cosmetically small,
+# but the choice is not the agent's to make). The aggregator uses this
+# field — not severity — to decide ``needs_human_review``.
+#
+# - ``auto_fixable``         — revision_agent can apply the fix from the
+#                              SOW + manifest + recommendation alone.
+# - ``decision_required``    — fix needs a commercial, legal, or scope
+#                              decision that is not in the sources.
+# - ``source_conflict``      — two equally authoritative sources disagree;
+#                              the model cannot pick one safely.
+# - ``not_fixable_by_agent`` — fix needs information that is neither in
+#                              the SOW, the manifest, nor inferable from
+#                              the references (truly missing input).
+ResolutionMode = Literal[
+    'auto_fixable',
+    'decision_required',
+    'source_conflict',
+    'not_fixable_by_agent',
+]
 
 SKILL_NAMES: tuple[str, ...] = (
     'coverage',
@@ -43,6 +65,43 @@ STATE_MANIFEST_RESIDUAL = 'app:manifest_residual'
 STATE_REPORT_PARTIAL = 'app:validation_report:partial'
 STATE_SUMMARY_DRAFT = 'app:validation_summary:draft'
 STATE_VALIDATION_RESULT = 'app:validation_result'
+
+# Round tracking — populated by the aggregator and consumed by the root prompt
+# to decide loop convergence (downgrade / stop / continue).
+# - STATE_ROUND_COUNT: monotonic counter, incremented by the aggregator each
+#   time it runs. Reset to 0 by the root when starting a new validation for a
+#   different ``stage`` (e.g. ``content`` -> ``full``).
+# - STATE_PRIOR_BLOCKING_FINGERPRINTS: SLIDING WINDOW of the per-round
+#   blocking-finding fingerprint lists, oldest first. Shape:
+#   ``list[list[str]]`` with at most :data:`PERSISTENCE_WINDOW_ROUNDS`
+#   entries. A finding's fingerprint is considered "persistent" when it
+#   appears in the UNION of the window (i.e. it blocked in ANY of the
+#   last N rounds, not just the immediately prior one). The legacy
+#   single-round shape (``list[str]``) is treated as a one-entry window
+#   by the aggregator's adapter so in-flight sessions migrate cleanly.
+#
+# Why a window instead of a single round: production traces showed
+# findings that disappeared for exactly one round (a patch removed the
+# anchor) and re-appeared the next round (the patch dropped the
+# coverage and the critic re-flagged it under a new fingerprint).
+# Single-round comparison classified those as "new", under-reporting
+# persistence and starving the loop's no-progress detector. The window
+# closes that gap without changing the cap on per-round storage.
+STATE_ROUND_COUNT = 'app:validation:round_count'
+STATE_PRIOR_BLOCKING_FINGERPRINTS = 'app:validation:prior_blocking_fingerprints'
+
+# Upper bound on how many fingerprints we keep PER ROUND in the window.
+# A SOW with more than this number of blocking findings in a single round
+# almost certainly has bigger problems than persistence tracking can solve.
+PRIOR_FINGERPRINTS_CAP = 30
+
+# Number of recent rounds whose blocking-finding fingerprints are
+# retained in the sliding window. A finding is flagged ``persistent``
+# when its fingerprint matches ANY round in this window. 3 rounds is the
+# smallest window that catches the observed "disappears for 1 round,
+# returns the next" pattern while still bounding state size (3 * 30 =
+# 90 fingerprints max per session).
+PERSISTENCE_WINDOW_ROUNDS = 3
 
 
 def skill_findings_state_key(name: str) -> str:
@@ -90,7 +149,26 @@ class Finding(BaseModel):
         default=False,
         description='Flag set when the finding re-appears across loop rounds.',
     )
-    requires_human_review: bool = Field(default=False)
+    resolution_mode: ResolutionMode = Field(
+        default='auto_fixable',
+        description=(
+            'How the finding should be resolved. The aggregator routes '
+            'anything other than `auto_fixable` to `needs_human_review`. '
+            'Severity (BLOCKER/MAJOR/MINOR) is independent — a BLOCKER '
+            'can still be `auto_fixable` when the revision_agent has '
+            'enough context to rewrite it.'
+        ),
+    )
+    requires_human_review: bool = Field(
+        default=False,
+        description=(
+            'Legacy flag kept for backwards compatibility with older '
+            'skill emissions and downstream consumers (telemetry, '
+            'fallback summary). The authoritative signal is '
+            '`resolution_mode`: the aggregator reconciles this flag '
+            'so `auto_fixable` always wins over a stale True.'
+        ),
+    )
     model_used: str = Field(
         default='', description='Model id when emitted by an LLM.'
     )
@@ -172,5 +250,34 @@ class ValidationReport(BaseModel):
     major_count: int = 0
     minor_count: int = 0
     findings_by_skill: dict[str, int] = Field(default_factory=dict)
+    round_count: int = Field(
+        default=0,
+        description=(
+            'Monotonic counter incremented by the aggregator each run. '
+            'Used by the root prompt to gate downgrade/stop decisions.'
+        ),
+    )
+    persistent_blocking_finding_count: int = Field(
+        default=0,
+        description=(
+            'Number of blocking findings (post-calibration) whose '
+            'fingerprint matches one that contributed to `blocked` in the '
+            'previous round.'
+        ),
+    )
+    new_blocking_finding_count: int = Field(
+        default=0,
+        description=(
+            'Blocking findings present in this round but absent from the '
+            'previous round. 0 on round 1.'
+        ),
+    )
+    resolved_blocking_finding_count: int = Field(
+        default=0,
+        description=(
+            'Blocking findings present in the previous round but absent '
+            'from this round. 0 on round 1.'
+        ),
+    )
     summary: str = ''
     next_action: str = ''

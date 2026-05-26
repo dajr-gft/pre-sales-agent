@@ -1,19 +1,20 @@
-"""Stage the draft SOW in session state for the Validation Critic.
+"""Stage the draft SOW in session state for downstream validation.
 
-This tool **only writes state**. It does NOT invoke the
-`validation_critic` sub-agent — that would re-introduce the "tool
-orchestrating agent" anti-pattern the new architecture was designed
-to eliminate.
+This tool **only writes state**. It does NOT run validation; the
+``sow_quality_loop`` sub-agent owns the critic → revision dance.
 
-Use this tool right before transferring control to `validation_critic`:
+Typical sequence:
 
-    1. agent calls `stage_sow(sow_data, stage)` — SOW lands in state.
-    2. agent transfers to `validation_critic` (native ADK mechanism).
-    3. validation_critic reads state, runs pipeline, escalates back.
-    4. agent reads `state['app:validation_result']`.
+    1. agent calls ``assemble_sow_payload(stage=...)`` — returns the SOW
+       payload as a dict in ``data.sow_data``.
+    2. agent calls ``stage_sow(sow_data=<that dict>, stage=...)`` —
+       payload lands in ``state['app:sow:current']``.
+    3. agent calls the ``sow_quality_loop`` AgentTool.
+    4. agent reads ``state['app:sow:quality_loop_result']`` to decide
+       the next step.
 
-The legacy `validate_sow_content` tool remains available for callers
-that only need a deterministic check without involving the critic.
+The legacy ``validate_sow_content`` helper remains available for
+non-agent callers that only need a deterministic structural check.
 """
 
 import json
@@ -24,7 +25,12 @@ from google.adk.tools import ToolContext
 
 from ...shared.errors import safe_tool
 from ...shared.types import ToolError, ToolSuccess
-from ...sub_agents.validation.schema import STATE_SOW, STATE_STAGE
+from ...sub_agents.validation.schema import (
+    STATE_PRIOR_BLOCKING_FINGERPRINTS,
+    STATE_ROUND_COUNT,
+    STATE_SOW,
+    STATE_STAGE,
+)
 from ._sow_helpers import sow_data_hash
 
 logger = structlog.get_logger()
@@ -32,32 +38,44 @@ logger = structlog.get_logger()
 _LANGUAGE_STATE_KEY = 'app:language'
 
 
+_VALID_STAGES: frozenset[str] = frozenset({'content', 'full'})
+
+
 @safe_tool
 async def stage_sow(
-    sow_data: str,
-    stage: str = 'full',
+    sow_data: dict[str, Any],
+    stage: str,
     language: str = '',
     tool_context: ToolContext = None,
 ) -> dict[str, Any]:
-    """Stage the SOW JSON in session state so the Validation Critic can read it.
+    """Stage the SOW payload in session state for downstream validation.
 
-    Call this tool **before** transferring control to `validation_critic`.
-    After this returns, your next step is to transfer to
-    `validation_critic`. The result will arrive in
-    `state['app:validation_result']` once the critic escalates back.
+    Accepts the dict returned by ``assemble_sow_payload`` (under its
+    ``data.sow_data`` field). The signature is intentionally NOT
+    ``Union[str, dict]`` — Gemini's function-calling schema rejects
+    ``any_of`` combined with other fields (description), and that
+    combination is what an annotated Union produces. Keeping a single
+    concrete type sidesteps the API constraint cleanly.
 
     Args:
-        sow_data: The SOW JSON string. Same schema as
-            `generate_sow_document`.
-        stage: "content" for Phase 2 Step 1.5 (no architecture yet) or
-            "full" for Phase 4 (full payload). Defaults to "full".
+        sow_data: SOW payload dict in the schema accepted by
+            ``generate_sow_document``. Pass the ``sow_data`` field returned
+            by ``assemble_sow_payload``.
+        stage: ``"content"`` for the Phase 2 content stage (architecture
+            and narrative still absent) or ``"full"`` for the complete
+            payload. **Required** — there is no safe default. The previous
+            behaviour silently fell back to ``"full"`` when the argument
+            was missing or invalid, which let the revision_agent promote a
+            content-stage SOW to full mid-loop. That reset
+            ``STATE_ROUND_COUNT`` / ``STATE_PRIOR_BLOCKING_FINGERPRINTS``
+            and re-introduced architecture / narrative findings that the
+            content-stage validation correctly ignored.
         language: Optional language tag (e.g. "pt-BR", "en") so the
             validation summary matches the conversation language.
 
     Returns:
-        A success dict. The validation result is NOT returned by this
-        tool — read it from `state['app:validation_result']` after
-        transferring to `validation_critic` and getting control back.
+        Success dict. Validation runs separately via ``sow_quality_loop``;
+        read its outcome from ``state['app:sow:quality_loop_result']``.
     """
     if tool_context is None:
         return ToolError(
@@ -71,27 +89,86 @@ async def stage_sow(
             ),
         )
 
-    try:
-        data = json.loads(sow_data)
-    except json.JSONDecodeError as exc:
+    if not isinstance(sow_data, dict):
         return ToolError(
             status='error',
-            error=f'Invalid JSON: {exc}',
+            error=(
+                f"'sow_data' must be a dict, got {type(sow_data).__name__}."
+            ),
             retryable=False,
             tool='stage_sow',
-            suggestion='Fix the JSON syntax and call this tool again.',
+            suggestion=(
+                "Pass the 'sow_data' field returned by assemble_sow_payload."
+            ),
         )
 
-    stage_normalized = (stage or 'full').strip().lower()
-    if stage_normalized not in ('content', 'full'):
-        stage_normalized = 'full'
+    stage_normalized = (stage or '').strip().lower()
+    if stage_normalized not in _VALID_STAGES:
+        previous_stage = tool_context.state.get(STATE_STAGE)
+        return ToolError(
+            status='error',
+            error=(
+                f"'stage' must be 'content' or 'full', got {stage!r}."
+            ),
+            retryable=False,
+            tool='stage_sow',
+            suggestion=(
+                'Pass the stage explicitly. The revision_agent must copy '
+                f"the current stage value (currently {previous_stage!r}) "
+                'from `<current_stage>` in its prompt; the orchestrator '
+                'passes `content` during Phase 2 content review and `full` '
+                'for the architecture review and Phase 3. There is no '
+                'safe default — silently promoting the stage resets the '
+                "QualityLoopAgent's round tracking."
+            ),
+        )
 
-    tool_context.state[STATE_SOW] = data
+    # Detect stage transitions BEFORE writing the new stage. The aggregator
+    # increments STATE_ROUND_COUNT monotonically across critic runs within a
+    # single staged payload — that signal is meaningful only while the staged
+    # SOW (and its `stage`) is unchanged. The moment we re-stage with a
+    # different stage value (typically `content` -> `full` after the user
+    # approves the Content Review and the architecture / narrative bundles
+    # join the payload), the previous round_count and the persistent
+    # fingerprint set refer to a SOW that no longer exists. Carrying them
+    # forward poisons persistence detection on the new payload and inflates
+    # the round counter in telemetry. Reset both keys here so the next
+    # `sow_quality_loop` run starts from a clean budget.
+    previous_stage = tool_context.state.get(STATE_STAGE)
+    stage_changed = previous_stage is not None and previous_stage != stage_normalized
+
+    tool_context.state[STATE_SOW] = sow_data
     tool_context.state[STATE_STAGE] = stage_normalized
+    if stage_changed:
+        tool_context.state[STATE_ROUND_COUNT] = 0
+        tool_context.state[STATE_PRIOR_BLOCKING_FINGERPRINTS] = []
+        logger.info(
+            'stage_sow_reset_round_state',
+            previous_stage=previous_stage,
+            new_stage=stage_normalized,
+        )
+    # Language is owned by the orchestrator (the root sets it from the
+    # user's first turn) — sub-agents that re-stage during the quality
+    # loop must NOT clobber it. Production incident: the revision_agent
+    # called stage_sow(..., language='en') between rounds and overrode
+    # the user's 'pt-BR', flipping the root's subsequent responses to
+    # English. The rule: set only when the slot is empty; ignore any
+    # non-empty argument that disagrees with the value already in state.
     if language:
-        tool_context.state[_LANGUAGE_STATE_KEY] = language
+        existing_language = tool_context.state.get(_LANGUAGE_STATE_KEY)
+        if not existing_language:
+            tool_context.state[_LANGUAGE_STATE_KEY] = language
+        elif existing_language != language:
+            logger.info(
+                'stage_sow_language_override_ignored',
+                existing_language=existing_language,
+                attempted_language=language,
+            )
 
-    sow_hash = sow_data_hash(sow_data)
+    # Stable serialization for the hash regardless of dict ordering.
+    sow_hash = sow_data_hash(
+        json.dumps(sow_data, sort_keys=True, ensure_ascii=False),
+    )
     logger.info(
         'sow_staged_for_validation',
         sow_data_hash=sow_hash,
@@ -105,9 +182,9 @@ async def stage_sow(
             'stage': stage_normalized,
             'sow_data_hash': sow_hash,
             'next_step': (
-                'Transfer to the `validation_critic` sub-agent. The '
-                'final ValidationReport will land in '
-                'state["app:validation_result"].'
+                'SOW staged in session state. The caller is responsible '
+                'for invoking the next validation step (typically the '
+                '`sow_quality_loop` sub-agent).'
             ),
         },
     )

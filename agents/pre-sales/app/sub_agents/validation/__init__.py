@@ -4,12 +4,12 @@ Separates SOW validation into deterministic checks, five modular
 semantic skills running in parallel, and a Python-only gate decision.
 LLM never decides pass/fail.
 
-The critic is invoked from the root via ``AgentTool`` (not via
-``transfer_to_agent``) so its internal events stay out of the chat and
-control returns to the root in the same turn. The 4-round correction
-loop is owned by the root agent's prompt: when ``validation_critic``
-returns ``blocked``, the root applies edits using the ``sow-generator``
-SkillToolset (already loaded) and re-invokes the tool.
+The critic is invoked from inside :class:`QualityLoopAgent` (see
+``app/sub_agents/quality_loop``), which is the single ``AgentTool``
+the root exposes for SOW validation. The loop owns the round budget
+and decides — based on ``overall_status`` — whether to invoke the
+``revision_agent`` for a surgical patch before re-running the critic.
+The root never calls the critic or the revision agent directly.
 """
 
 from .agent import validation_critic

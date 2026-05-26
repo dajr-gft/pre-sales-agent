@@ -416,6 +416,57 @@ class TestFinalize:
         assert len(stored['extracted_items']) == 3
         assert len(stored['inventory']) == 2
 
+    async def test_finalize_writes_conversation_language_to_app_language(
+        self, initialized_context
+    ):
+        """Phase 2 section workers run BEFORE ``stage_sow`` (the other
+        writer of ``app:language``), so the manifest tool must publish
+        the conversation language as soon as discovery finalises. Without
+        this write, requirements/delivery/scope agents would have to
+        infer the output language from manifest prose, which is fragile
+        in mixed-language sessions."""
+        await append_extraction_items(
+            items=[
+                _identity_item(),
+                _make_item(2, artifact_id='A1'),
+                _make_item(3, artifact_id='A2'),
+            ],
+            tool_context=initialized_context,
+        )
+
+        # Precondition: nobody has written app:language yet.
+        assert initialized_context.state.get('app:language') is None
+
+        result = await finalize_extraction_manifest(
+            gaps=_valid_gaps(),
+            self_audit=_valid_self_audit(),
+            tool_context=initialized_context,
+        )
+
+        assert result['status'] == 'ok'
+        # initialized_context fixture seeded conversation_language='pt-BR'.
+        assert initialized_context.state['app:language'] == 'pt-BR'
+
+    async def test_finalize_does_not_write_app_language_on_validation_error(
+        self, initialized_context
+    ):
+        """If the manifest fails validation, the buffer stays put AND no
+        partial state should leak — ``app:language`` must remain absent
+        so a later successful finalize is the sole writer."""
+        # Missing Identity item → engagement_shape cross-check fails.
+        await append_extraction_items(
+            items=[_make_item(1)], tool_context=initialized_context
+        )
+
+        result = await finalize_extraction_manifest(
+            gaps=_valid_gaps(),
+            self_audit=_valid_self_audit(),
+            tool_context=initialized_context,
+        )
+
+        assert result['status'] == 'error'
+        assert initialized_context.state.get('app:language') is None
+
     async def test_finalize_without_buffer_returns_error(
         self, mock_tool_context
     ):
