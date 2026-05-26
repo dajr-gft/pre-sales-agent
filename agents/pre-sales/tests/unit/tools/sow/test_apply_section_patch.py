@@ -695,15 +695,21 @@ class TestAnchorDropWarning:
     """
 
     async def test_update_field_diffs_string_list_anchor_ids(
-        self, mock_tool_context
+        self, mock_tool_context, caplog,
     ):
-        """``out_of_scope`` quoted ``FR-99`` (a placeholder anchor that
-        does NOT exist in any other collection in the seed). Dropping
-        it via ``update_field`` now refuses the patch — pin that
-        behavior so the warning regression is captured."""
+        """``out_of_scope`` quoted ``FR-99`` (a cross-section anchor —
+        ``FR-*`` is owned by ``requirements``, not ``scope_boundaries``).
+        Under section-ownership enforcement, dropping a cross-section
+        anchor commits with a warning instead of refusing — the FR-99
+        item, if it existed, would live in the requirements bundle
+        anyway. Refusing here was the false-positive bug observed in
+        the production trace (runs 56-58)."""
         mock_tool_context.state[
             SOW_BUNDLE_STATE_KEYS['scope_boundaries']
         ] = _seed_scope_boundaries_bundle()
+
+        import logging
+        caplog.set_level(logging.WARNING)
 
         result = await apply_scope_boundaries_patch(
             ops=[
@@ -716,8 +722,14 @@ class TestAnchorDropWarning:
             ],
             tool_context=mock_tool_context,
         )
-        assert result['status'] == 'error'
-        assert 'FR-99' in result['error']
+        assert result['status'] == 'success'
+        # Cross-section drop is captured in a structured warning so
+        # operators still see it without blocking the patch.
+        messages = [r.getMessage() for r in caplog.records]
+        assert any(
+            'section_patch_cross_section_anchor_dropped' in m
+            for m in messages
+        )
 
     async def test_no_warning_when_no_anchor_drops(self, mock_tool_context):
         mock_tool_context.state[
@@ -1085,25 +1097,34 @@ class TestOpsExecutedTelemetry:
 
 
 class TestNetDropRefusal:
-    """The patch tool refuses a batch that loses anchor ids from the
-    bundle unless the loss is covered by a ``remove_item`` op with
-    explicit ``coverage_transferred_to``. This is the structural fix
-    for the observed Class-D cascade where worker text edits silently
-    dropped manifest-anchored references, the next critic round flagged
-    them as uncovered, and the loop spent a round restoring them.
+    """The patch tool refuses a batch that loses an anchor id THIS SECTION
+    OWNS from the bundle unless the loss is covered by a ``remove_item``
+    op with explicit ``coverage_transferred_to``. Drops of anchors
+    owned by OTHER sections (e.g. a deliverable's description that
+    mentioned ``FR-01`` and now does not) commit with a structured
+    warning instead — preserving cross-reference editing flexibility
+    while still protecting the manifest-coverage contract for items
+    this section owns.
     """
 
-    async def test_update_item_dropping_anchor_with_no_remove_is_refused(
-        self, mock_tool_context,
+    async def test_cross_section_anchor_drop_is_warned_not_refused(
+        self, mock_tool_context, caplog,
     ):
+        """Dropping a cross-section anchor (``FR-01`` inside a
+        deliverable's text) commits with a warning. ``FR-01`` lives
+        in the requirements bundle as an item — the deliverable's
+        description merely cited it, and editing prose to lose the
+        citation is legitimate. This is the false-positive regression
+        we hit in the production trace (runs 56-58): the worker kept
+        retrying because the patch was being refused on a textual
+        reference change."""
         mock_tool_context.state[
             SOW_BUNDLE_STATE_KEYS['delivery_plan']
         ] = _seed_delivery_plan_bundle()
 
-        # WS-01.description references FR-01. Updating to text with no
-        # anchor strips FR-01 from the bundle if FR-01 is not present
-        # anywhere else. The seed has FR-01 only inside WS-01, so the
-        # net drop fires and the patch is refused.
+        import logging
+        caplog.set_level(logging.WARNING)
+
         result = await apply_delivery_plan_patch(
             ops=[
                 {
@@ -1117,13 +1138,99 @@ class TestNetDropRefusal:
             tool_context=mock_tool_context,
         )
 
-        assert result['status'] == 'error'
-        assert 'FR-01' in result['error']
-        # State must be untouched after refusal.
+        assert result['status'] == 'success'
+        # State committed with the new description.
         bundle = mock_tool_context.state[
             SOW_BUNDLE_STATE_KEYS['delivery_plan']
         ]
-        assert bundle['deliverables'][0]['description'] == 'FR-01 spec.'
+        assert bundle['deliverables'][0]['description'] == 'Generic spec doc.'
+        # Cross-section warning surfaces in the log with the owning
+        # section named so the operator can trace where the anchor
+        # actually lives.
+        warnings = [
+            r for r in caplog.records
+            if 'section_patch_cross_section_anchor_dropped' in r.getMessage()
+        ]
+        assert warnings, 'cross-section drop must emit a structured warning'
+
+    def test_classify_anchor_owner_recognizes_each_section(self):
+        """Pin the ownership map so a future schema change cannot
+        silently move an anchor type out of its owning section without
+        the tests noticing."""
+        from app.tools.sow.apply_section_patch import _classify_anchor_owner
+
+        # FR / NFR owned by requirements.
+        for anchor in ('FR-01', 'NFR-09'):
+            is_owned, owning = _classify_anchor_owner(anchor, 'requirements')
+            assert is_owned, anchor
+            assert owning == 'requirements', anchor
+            for other in ('delivery_plan', 'scope_boundaries',
+                          'architecture', 'narrative'):
+                is_owned_other, owning_other = _classify_anchor_owner(
+                    anchor, other,
+                )
+                assert is_owned_other is False, (anchor, other)
+                # owning_section is still reported so cross-section
+                # warnings can name the canonical owner.
+                assert owning_other == 'requirements', (anchor, other)
+
+        # WS (dashed + dotted) owned by delivery_plan.
+        for anchor in ('WS-01', 'WS01.1', 'WS03.7'):
+            is_owned, owning = _classify_anchor_owner(anchor, 'delivery_plan')
+            assert is_owned, anchor
+            assert owning == 'delivery_plan', anchor
+
+        # R owned by scope_boundaries.
+        is_owned, owning = _classify_anchor_owner('R-01', 'scope_boundaries')
+        assert is_owned
+        assert owning == 'scope_boundaries'
+
+    def test_classify_anchor_owner_returns_none_for_unmapped_prefix(self):
+        """Defensive: unknown / reserved prefixes (A-, I-, etc.) have
+        no current owner. Worker drops of those should not refuse and
+        should report ``owning_section=None`` in the cross-section
+        warning."""
+        from app.tools.sow.apply_section_patch import _classify_anchor_owner
+
+        for anchor in ('A-01', 'I-01', 'OOS-03', 'T-01', 'G-01', 'P-01'):
+            is_owned, owning = _classify_anchor_owner(anchor, 'requirements')
+            assert is_owned is False, anchor
+            assert owning is None, anchor
+
+    async def test_owned_anchor_drop_via_remove_without_coverage_is_refused(
+        self, mock_tool_context,
+    ):
+        """Removing a deliverable WS-01 (which delivery_plan OWNS)
+        without declaring coverage IS refused — the manifest entry
+        attached to WS-01 needs a new home. This pins the strict
+        contract for owned items."""
+        mock_tool_context.state[
+            SOW_BUNDLE_STATE_KEYS['delivery_plan']
+        ] = _seed_delivery_plan_bundle()
+
+        result = await apply_delivery_plan_patch(
+            ops=[
+                {
+                    'op': 'remove_item',
+                    'finding_id': 'f-9',
+                    'collection': 'deliverables',
+                    'item_id': 'WS-01',
+                    'coverage_transferred_to': None,
+                },
+            ],
+            tool_context=mock_tool_context,
+        )
+
+        assert result['status'] == 'error'
+        assert 'WS-01' in result['error']
+        assert 'coverage_transferred_to' in result['error']
+        # State unchanged.
+        bundle = mock_tool_context.state[
+            SOW_BUNDLE_STATE_KEYS['delivery_plan']
+        ]
+        assert any(
+            d['number'] == 'WS-01' for d in bundle['deliverables']
+        )
 
     async def test_update_item_dropping_anchor_with_replacement_in_same_batch_allowed(
         self, mock_tool_context,
