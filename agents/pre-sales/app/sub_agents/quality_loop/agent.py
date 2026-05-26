@@ -58,17 +58,21 @@ The state keys this agent reads / writes:
 from __future__ import annotations
 
 import json
-import re
 from typing import Any, AsyncGenerator, ClassVar, Mapping, Optional
 
 import structlog
-from google.adk.agents import BaseAgent
+from google.adk.agents import BaseAgent, SequentialAgent
 from google.adk.agents.base_agent_config import BaseAgentConfig
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event, EventActions
 from google.genai import types
 from pydantic import ConfigDict, Field
 
+from ...shared.logging_config import is_verbose_sow_logging
+from ...tools.sow._anchor_utils import (
+    ANCHOR_ID_PATTERN as _BUNDLE_ANCHOR_ID_PATTERN,
+    extract_anchor_ids as _extract_anchor_ids,
+)
 from ...tools.sow._sow_helpers import apply_sow_assembly_to_state, sow_data_hash
 from ...tools.sow.assemble_payload import AssemblyError
 # Section agents are imported directly from their ``agent.py`` modules
@@ -76,14 +80,21 @@ from ...tools.sow.assemble_payload import AssemblyError
 # ``app/sub_agents/__init__.py`` importing both ``quality_loop`` and
 # the sections is avoided — direct imports bypass the parent package's
 # mid-init attribute lookup.
-from ..architecture.agent import architecture_agent
-from ..delivery_plan.agent import delivery_plan_agent
-from ..narrative.agent import narrative_agent
-from ..requirements.agent import requirements_agent
+from ..architecture.agent import architecture_agent, architecture_repair_agent
+from ..delivery_plan.agent import (
+    delivery_plan_agent,
+    delivery_plan_repair_agent,
+)
+from ..narrative.agent import narrative_agent, narrative_repair_agent
+from ..requirements.agent import requirements_agent, requirements_repair_agent
 from ..revision import revision_agent
-from ..scope_boundaries.agent import scope_boundaries_agent
+from ..scope_boundaries.agent import (
+    scope_boundaries_agent,
+    scope_boundaries_repair_agent,
+)
 from .._section_agent import STATE_REPAIR_FINDINGS
 from ..validation import validation_critic
+from ..validation.field_vocabulary import BUNDLE_OWNED_FIELDS_BY_SECTION
 from ..validation.schema import STATE_SOW, STATE_STAGE, STATE_VALIDATION_RESULT
 
 logger = structlog.get_logger()
@@ -182,41 +193,13 @@ _SECTION_ORDER: tuple[str, ...] = (
 # Map every top-level ``sow_data`` field to its owning section. Used by
 # :func:`_sections_for_finding` to derive cross-bundle targets from
 # ``Finding.fields`` — a finding whose fields cross sections needs every
-# involved section to patch its own side. Keys are the exact field names
-# the section agents emit in their bundles (see
-# ``app.sub_agents.schemas``); adding a new SOW field means adding a
-# row here. The lint table at the bottom of this module's test file
-# pins the coverage so a future schema change cannot silently drop a
-# field out of routing.
-_FIELD_TO_SECTION: dict[str, str] = {
-    # requirements bundle
-    'functional_requirements': 'requirements',
-    'non_functional_requirements': 'requirements',
-    # delivery_plan bundle
-    'activity_phases': 'delivery_plan',
-    'deliverables': 'delivery_plan',
-    'timeline': 'delivery_plan',
-    'partner_roles': 'delivery_plan',
-    'customer_roles': 'delivery_plan',
-    'success_criteria': 'delivery_plan',
-    'objectives': 'delivery_plan',
-    # scope_boundaries bundle
-    'assumptions': 'scope_boundaries',
-    'out_of_scope': 'scope_boundaries',
-    'risks': 'scope_boundaries',
-    'handover_disclaimers': 'scope_boundaries',
-    'change_request_policy_text': 'scope_boundaries',
-    # architecture bundle
-    'architecture_description': 'architecture',
-    'architecture_components': 'architecture',
-    'architecture_integrations': 'architecture',
-    'technology_stack': 'architecture',
-    # narrative bundle
-    'executive_summary': 'narrative',
-    'partner_overview': 'narrative',
-    'customer_overview': 'narrative',
-    'customer_primary_domain': 'narrative',
-}
+# involved section to patch its own side.
+#
+# Canonical source: ``validation.field_vocabulary.BUNDLE_OWNED_FIELDS_BY_SECTION``.
+# Adding a SOW field to a bundle schema means adding a row THERE, not
+# here — both the router (this module) and the aggregator's lint pass
+# read from the same dict so the writer / linter / router cannot drift.
+_FIELD_TO_SECTION: dict[str, str] = dict(BUNDLE_OWNED_FIELDS_BY_SECTION)
 
 
 def _sections_for_finding(
@@ -308,62 +291,12 @@ _SECTION_BUNDLE_KEYS: dict[str, str] = {
 }
 
 
-# Anchor extraction — used by the per-section and per-reviser diff logs
-# to detect "anchor drop": a patch that removes (or implicitly renames)
-# a stable item id that was present BEFORE the call. The shape mirrors
-# the evidence-side pattern in
-# :data:`app.sub_agents.validation.aggregator._ANCHOR_PATTERN`, but the
-# use is different — there it discriminates findings by the ids quoted
-# in evidence prose; here it walks a structured bundle / SOW dict to
-# pull every id the section actually carries. Comparing the BEFORE set
-# against the AFTER set surfaces the disappearance directly, without
-# waiting for the next critic round to flag the resulting uncovered
-# manifest item as a finding.
-#
-# The pattern is duplicated rather than imported because the two uses
-# may evolve independently (e.g., one may add prefixes the other does
-# not need). Keep both regexes in sync until that divergence happens.
-_BUNDLE_ANCHOR_ID_PATTERN = re.compile(
-    r'\b(?:FR|NFR|WS|OOS|A|I|R|T|G|P)-\d{1,4}\b',
-    flags=re.IGNORECASE,
-)
-
-
-def _extract_anchor_ids(value: Any) -> set[str]:
-    """Recursively pull stable item ids from a bundle / SOW value.
-
-    Walks every string inside lists, dicts, and tuples and matches
-    against :data:`_BUNDLE_ANCHOR_ID_PATTERN`. Returns the set of
-    UPPERCASED matches so casing drift (``fr-01`` vs ``FR-01``) does
-    not produce spurious diffs.
-
-    Returns an empty set for ``None``, non-collection scalars without
-    any matching token, or any value the walker cannot traverse.
-
-    Why this helps with anchor-drop detection: the typical anchor-drop
-    failure is "section agent rewrote the description of FR-03 in a way
-    that removed the keyword anchoring manifest item A2-08, OR removed
-    FR-03 itself". Either case shows up here as a missing id between
-    pre- and post-call snapshots. The next critic round then surfaces
-    A2-08 as ``coverage/manifest_item_uncovered`` — but by then the
-    causal link to the offending section is gone. Capturing the diff
-    inline preserves that link in the log.
-    """
-    ids: set[str] = set()
-
-    def _walk(node: Any) -> None:
-        if isinstance(node, str):
-            for match in _BUNDLE_ANCHOR_ID_PATTERN.findall(node):
-                ids.add(match.upper())
-        elif isinstance(node, dict):
-            for child in node.values():
-                _walk(child)
-        elif isinstance(node, (list, tuple)):
-            for child in node:
-                _walk(child)
-
-    _walk(value)
-    return ids
+# Anchor extraction (``_BUNDLE_ANCHOR_ID_PATTERN`` / ``_extract_anchor_ids``)
+# was extracted to :mod:`app.tools.sow._anchor_utils` so the section
+# patch engine can reuse the exact same walker without importing from
+# this module (which would create an import cycle). They are re-imported
+# under the original private names at the top of the module so the
+# function bodies below continue to work unchanged.
 
 
 def _finding_digest(finding: dict) -> dict:
@@ -493,6 +426,28 @@ class QualityLoopAgent(BaseAgent):
         # new``) — we want consecutive non-progress, not lifetime counts.
         # Compared against ``NO_PROGRESS_WINDOW`` after each blocked round.
         consecutive_no_progress_rounds = 0
+
+        # ----- Manifest snapshot (one-shot per loop invocation) ----------
+        # Verbose-only — the full Extraction Manifest is ~20-50 KB and
+        # only useful when we are diagnosing a specific finding's
+        # ``manifest_item_id`` against the actual manifest entry. Gated
+        # by ``SOW_VERBOSE_LOGGING=1`` so default sessions stay lean.
+        # See ``app.shared.logging_config.is_verbose_sow_logging`` for
+        # the contract.
+        if is_verbose_sow_logging():
+            manifest = ctx.session.state.get('extraction_manifest')
+            if isinstance(manifest, dict):
+                logger.info(
+                    'quality_loop_manifest_snapshot',
+                    manifest_version=manifest.get('manifest_version'),
+                    inventory_count=len(manifest.get('inventory', []) or []),
+                    extracted_items_count=len(
+                        manifest.get('extracted_items', []) or []
+                    ),
+                    manifest=manifest,
+                )
+        # ------------------------------------------------------------------
+
         for round_idx in range(self.max_rounds):
             round_number = round_idx + 1
             logger.info(
@@ -500,6 +455,24 @@ class QualityLoopAgent(BaseAgent):
                 round=round_number,
                 max_rounds=self.max_rounds,
             )
+
+            # ----- SOW snapshot at round start (verbose only) ----------
+            # Full staged SOW entering the critic. With the post-round
+            # snapshot below, the pair is the forensic record per round.
+            # Verbose-only because a SOW is 5-15 KB and we already log
+            # the bundle hash + anchor-drop diff at structural level on
+            # every patch, which is enough for everyday debugging.
+            if is_verbose_sow_logging():
+                pre_round_sow = ctx.session.state.get(STATE_SOW)
+                if isinstance(pre_round_sow, dict) and pre_round_sow:
+                    logger.info(
+                        'quality_loop_sow_snapshot_pre_round',
+                        round=round_number,
+                        sow_hash=sow_data_hash(pre_round_sow),
+                        top_level_keys=sorted(pre_round_sow.keys()),
+                        sow=pre_round_sow,
+                    )
+            # ------------------------------------------------------------
 
             async for event in critic.run_async(ctx):
                 self._apply_state_delta(ctx, event)
@@ -673,6 +646,18 @@ class QualityLoopAgent(BaseAgent):
 
             current_stage = ctx.session.state.get(STATE_STAGE) or 'content'
             section_repaired_count = 0
+            # Phase 5 telemetry — per-round mechanism counters. After
+            # Phase 3 every wired ``repair_section_agents`` entry is a
+            # tool-based ``Agent`` (the section's ``*_repair_agent``); a
+            # non-zero ``legacy_regenerate`` count means a future change
+            # accidentally wired back a first-gen ``SequentialAgent`` and
+            # the loop is regenerating bundles again. Pinning this to
+            # zero in production logs is the anti-regression signal the
+            # plan calls for.
+            mechanism_counts: dict[str, int] = {
+                'tool_based': 0, 'legacy_regenerate': 0,
+            }
+            mechanism_by_section: dict[str, str] = {}
             for section_name in _SECTION_ORDER:
                 section_findings = by_section.get(section_name)
                 if not section_findings:
@@ -683,6 +668,18 @@ class QualityLoopAgent(BaseAgent):
                     # against ``available_sections``; this branch only
                     # fires if the mapping mutated between check and use.
                     continue
+                # Discriminate by ADK agent type: the tool-based repair
+                # builder returns a single ``Agent`` (LlmAgent); the
+                # first-gen builder returns a ``SequentialAgent``. This
+                # is the same classification ``test_quality_loop`` pins,
+                # so the metric and the test stay coupled by construction.
+                mechanism = (
+                    'legacy_regenerate'
+                    if isinstance(section_agent, SequentialAgent)
+                    else 'tool_based'
+                )
+                mechanism_counts[mechanism] += 1
+                mechanism_by_section[section_name] = mechanism
 
                 # Hand the section its repair packet via the canonical
                 # state slot ``STATE_REPAIR_FINDINGS``. The factory wired
@@ -756,6 +753,7 @@ class QualityLoopAgent(BaseAgent):
                     pre_hash=pre_bundle_hash,
                     post_hash=post_bundle_hash,
                     changed=pre_bundle_hash != post_bundle_hash,
+                    mechanism=mechanism,
                 )
 
                 # D1 — anchor-drop detection. Compare the set of stable
@@ -809,6 +807,39 @@ class QualityLoopAgent(BaseAgent):
                         reason=err.reason,
                         missing_keys=err.missing_keys,
                         sentinel_keys=err.sentinel_keys,
+                    )
+
+            # Phase 5 — emit one summary per round naming the mechanism
+            # each section used to repair. After Phase 3,
+            # ``legacy_regenerate`` should always be zero in production.
+            # Grep query for the anti-regression check:
+            #   grep quality_loop_repair_mechanism_used logs/agent.log \
+            #     | jq 'select(.legacy_regenerate > 0)'
+            # An empty result means no section regenerated a bundle this
+            # run; any hit is a regression to investigate.
+            if mechanism_by_section:
+                logger.info(
+                    'quality_loop_repair_mechanism_used',
+                    round=round_number,
+                    tool_based=mechanism_counts['tool_based'],
+                    legacy_regenerate=mechanism_counts['legacy_regenerate'],
+                    by_section=mechanism_by_section,
+                )
+
+            # ----- SOW snapshot post-repair (verbose only) -------------
+            # SOW after section repairs + re-assembly. Diff vs. the pre-
+            # round snapshot tells us what the worker actually changed
+            # end-to-end this round. Gated for the same reason as the
+            # pre-round snapshot.
+            if is_verbose_sow_logging():
+                post_round_sow = ctx.session.state.get(STATE_SOW)
+                if isinstance(post_round_sow, dict) and post_round_sow:
+                    logger.info(
+                        'quality_loop_sow_snapshot_post_round',
+                        round=round_number,
+                        sow_hash=sow_data_hash(post_round_sow),
+                        top_level_keys=sorted(post_round_sow.keys()),
+                        sow=post_round_sow,
                     )
 
             # ----- mechanical residue → reviser ----------------------------
@@ -1144,11 +1175,15 @@ sow_quality_loop = QualityLoopAgent(
     # section means adding entries to BOTH (the routing table tells the
     # loop which findings belong here; this map tells it which agent to
     # invoke).
+    # Phase 3 rollout — every repair route now goes through the
+    # tool-based ``apply_<section>_patch`` flow. The first-gen
+    # SequentialAgents stay defined for root-side generation only;
+    # the loop never regenerates a bundle in repair mode.
     repair_section_agents={
-        'requirements': requirements_agent,
-        'delivery_plan': delivery_plan_agent,
-        'scope_boundaries': scope_boundaries_agent,
-        'architecture': architecture_agent,
-        'narrative': narrative_agent,
+        'requirements': requirements_repair_agent,
+        'delivery_plan': delivery_plan_repair_agent,
+        'scope_boundaries': scope_boundaries_repair_agent,
+        'architecture': architecture_repair_agent,
+        'narrative': narrative_repair_agent,
     },
 )

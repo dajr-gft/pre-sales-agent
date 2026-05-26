@@ -113,6 +113,15 @@ class AgentConfig(BaseSettings):
         default=True,
         description='JSON output for Cloud Logging (False for dev console)',
     )
+    LOG_FILE: str | None = Field(
+        default=None,
+        description=(
+            'Optional path to a log file. When set, every log line is '
+            'mirrored to this file in JSON regardless of LOG_JSON (the '
+            'file is always grep/jq-friendly). Left unset means stdout '
+            'only — the production default for Cloud Logging.'
+        ),
+    )
 
     # Logo
     LOGO_DEV_PUBLISHABLE_KEY: str | None = Field(

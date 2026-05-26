@@ -38,7 +38,11 @@ from .tools.sow.assemble_payload import assemble_sow_payload
 from .tools.sow.stage_sow import stage_sow
 
 # --- Bootstrap ---
-setup_logging(level=config.LOG_LEVEL, json_output=config.LOG_JSON)
+setup_logging(
+    level=config.LOG_LEVEL,
+    json_output=config.LOG_JSON,
+    log_file=config.LOG_FILE,
+)
 logger = structlog.get_logger()
 
 _genai_patches.apply()

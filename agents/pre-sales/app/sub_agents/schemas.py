@@ -22,9 +22,9 @@ discovery sub-agent migration formalizes that contract.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 _FORBID = ConfigDict(extra='forbid')
@@ -56,6 +56,7 @@ class ActivityPhase(BaseModel):
 
 class Deliverable(BaseModel):
     model_config = _FORBID
+    number: str = Field(description='Stable id, e.g. "WS-01".')
     activity: str
     name: str
     description: str
@@ -77,6 +78,7 @@ class Role(BaseModel):
 
 class Risk(BaseModel):
     model_config = _FORBID
+    number: str = Field(description='Stable id, e.g. "R-01".')
     description: str
     mitigation: str
 
@@ -113,7 +115,18 @@ class RequirementsBundle(BaseModel):
 
 
 class DeliveryPlanBundle(BaseModel):
-    """Output of ``delivery_plan_agent`` — work breakdown + timeline + roles."""
+    """Output of ``delivery_plan_agent`` — work breakdown + timeline + roles.
+
+    The bundle-level ``model_validator(mode='before')`` injects the
+    ``number`` field for any deliverable that lacks one (e.g. a legacy
+    bundle written to state before ``Deliverable.number`` became a
+    required field, or a first-gen draft from an LLM that forgot to
+    emit the id). Numbering is bundle-aware — see
+    :func:`app.tools.sow._sow_helpers.ensure_collection_numbers`. The
+    validator is the *primary* numbering path; the migration helper in
+    ``apply_sow_assembly_to_state`` covers raw-dict reads that never
+    pass through Pydantic.
+    """
 
     model_config = _FORBID
     activity_phases: list[ActivityPhase]
@@ -124,9 +137,28 @@ class DeliveryPlanBundle(BaseModel):
     success_criteria: list[str]
     objectives: list[str] = Field(default_factory=list)
 
+    @model_validator(mode='before')
+    @classmethod
+    def _inject_deliverable_numbers(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            # Local import: schemas.py is imported very early in the
+            # tool/agent graph, so we keep ``_sow_helpers`` lazy to
+            # avoid pulling docx-template machinery at module load.
+            from ..tools.sow._sow_helpers import ensure_collection_numbers
+
+            ensure_collection_numbers(data, 'deliverables', 'WS')
+        return data
+
 
 class ScopeBoundariesBundle(BaseModel):
-    """Output of ``scope_boundaries_agent`` — assumptions, OOS, CR, handover, risks."""
+    """Output of ``scope_boundaries_agent`` — assumptions, OOS, CR, handover, risks.
+
+    The bundle-level ``model_validator(mode='before')`` injects the
+    ``number`` field for any risk that lacks one. See
+    :class:`DeliveryPlanBundle` for the rationale and
+    :func:`app.tools.sow._sow_helpers.ensure_collection_numbers` for
+    the numbering implementation.
+    """
 
     model_config = _FORBID
     assumptions: list[str]
@@ -134,6 +166,15 @@ class ScopeBoundariesBundle(BaseModel):
     risks: list[Risk] = Field(default_factory=list)
     handover_disclaimers: list[str] = Field(default_factory=list)
     change_request_policy_text: str = ''
+
+    @model_validator(mode='before')
+    @classmethod
+    def _inject_risk_numbers(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            from ..tools.sow._sow_helpers import ensure_collection_numbers
+
+            ensure_collection_numbers(data, 'risks', 'R')
+        return data
 
 
 class ArchitectureBundle(BaseModel):

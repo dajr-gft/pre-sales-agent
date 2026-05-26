@@ -1683,19 +1683,23 @@ class TestProductionSingletonWiring:
         )
 
     def test_each_wired_agent_matches_the_canonical_section_module(self):
-        from app.sub_agents.architecture import architecture_agent
-        from app.sub_agents.delivery_plan import delivery_plan_agent
-        from app.sub_agents.narrative import narrative_agent
+        """Phase 3 completed the rollout — every repair route goes
+        through the section's tool-based repair agent. The first-gen
+        SequentialAgents stay defined for root-side generation only;
+        the loop never regenerates a bundle in repair mode anymore."""
+        from app.sub_agents.architecture import architecture_repair_agent
+        from app.sub_agents.delivery_plan import delivery_plan_repair_agent
+        from app.sub_agents.narrative import narrative_repair_agent
         from app.sub_agents.quality_loop.agent import sow_quality_loop
-        from app.sub_agents.requirements import requirements_agent
-        from app.sub_agents.scope_boundaries import scope_boundaries_agent
+        from app.sub_agents.requirements import requirements_repair_agent
+        from app.sub_agents.scope_boundaries import scope_boundaries_repair_agent
 
         wired = sow_quality_loop.repair_section_agents
-        assert wired['requirements'] is requirements_agent
-        assert wired['delivery_plan'] is delivery_plan_agent
-        assert wired['scope_boundaries'] is scope_boundaries_agent
-        assert wired['architecture'] is architecture_agent
-        assert wired['narrative'] is narrative_agent
+        assert wired['requirements'] is requirements_repair_agent
+        assert wired['delivery_plan'] is delivery_plan_repair_agent
+        assert wired['scope_boundaries'] is scope_boundaries_repair_agent
+        assert wired['architecture'] is architecture_repair_agent
+        assert wired['narrative'] is narrative_repair_agent
 
     def test_every_route_section_is_in_the_wiring(self):
         """Coupling guard: ``_CROSS_SECTION_REPAIR_ROUTES`` and the
@@ -1717,6 +1721,162 @@ class TestProductionSingletonWiring:
                 'Add it to repair_section_agents (or remove the route '
                 'if the section is intentionally unsupported).'
             )
+
+
+class TestRepairMechanismTelemetry:
+    """Phase 5 — the loop emits ``quality_loop_repair_mechanism_used``
+    once per round summarising whether each invoked section repair was
+    tool-based (``Agent``) or legacy regenerate (``SequentialAgent``).
+    Pinning ``legacy_regenerate=0`` in production logs is the
+    anti-regression signal called for by the plan.
+    """
+
+    def _build_loop_with_sections(
+        self,
+        *,
+        critic,
+        sections: dict[str, BaseAgent],
+        max_rounds: int = 2,
+    ) -> tuple[QualityLoopAgent, FakeReviser]:
+        reviser = FakeReviser(name='fake_reviser')
+        loop = QualityLoopAgent(
+            name='sow_quality_loop',
+            description='test',
+            sub_agents=[critic, reviser],
+            max_rounds=max_rounds,
+            repair_section_agents=sections,
+        )
+        return loop, reviser
+
+    async def test_tool_based_section_emits_mechanism_event(
+        self, monkeypatch,
+    ):
+        """Default ``FakeSectionAgent`` extends BaseAgent (not
+        SequentialAgent), so the loop must classify it as ``tool_based``
+        and emit the summary event accordingly."""
+        from app.sub_agents.quality_loop import agent as quality_loop_module
+
+        delivery = FakeSectionAgent(
+            name='delivery_plan_agent',
+            output_key='app:sow:delivery_plan',
+            repair_payload_per_call=[],
+        )
+        critic = _critic_emitting([
+            {
+                'id': 'c-1',
+                'skill': 'contradictions',
+                'category': 'activities_vs_deliverables',
+                'severity': 'MAJOR',
+                'fields': ['activity_phases'],
+                'evidence': 'x',
+                'recommendation': 'y',
+            },
+        ])
+        loop, _ = self._build_loop_with_sections(
+            critic=critic, sections={'delivery_plan': delivery},
+        )
+
+        # Capture logger.info call_args so we can assert on the
+        # structured event we just added.
+        captured: list[tuple[str, dict]] = []
+        original_info = quality_loop_module.logger.info
+
+        def _capturing_info(event_name, **kwargs):
+            captured.append((event_name, kwargs))
+            return original_info(event_name, **kwargs)
+
+        monkeypatch.setattr(quality_loop_module.logger, 'info', _capturing_info)
+
+        ctx = _fake_ctx()
+        _seed_assembly_state(ctx.session.state)
+
+        await _run_loop(loop, ctx)
+
+        mechanism_events = [
+            kwargs for (name, kwargs) in captured
+            if name == 'quality_loop_repair_mechanism_used'
+        ]
+        assert mechanism_events, (
+            'quality_loop_repair_mechanism_used must be emitted at least '
+            'once when a section repair runs.'
+        )
+        first = mechanism_events[0]
+        assert first['tool_based'] == 1
+        assert first['legacy_regenerate'] == 0
+        assert first['by_section'] == {'delivery_plan': 'tool_based'}
+        assert first['round'] == 1
+
+    def test_production_repair_agents_are_all_classified_as_tool_based(self):
+        """Pin the classification expression the loop relies on:
+        every wired ``repair_section_agents`` entry in the production
+        singleton is an ``Agent`` (LlmAgent), not a ``SequentialAgent``.
+
+        The loop uses ``isinstance(section_agent, SequentialAgent)``
+        to discriminate the mechanism. If a future change accidentally
+        wires a first-gen agent into the repair map, this test fails
+        with the offending section named — same signal the runtime
+        ``quality_loop_repair_mechanism_used`` log would emit, but
+        caught at import time."""
+        from google.adk.agents import SequentialAgent
+        from app.sub_agents.quality_loop.agent import sow_quality_loop
+
+        offending = {
+            name: type(agent).__name__
+            for name, agent in sow_quality_loop.repair_section_agents.items()
+            if isinstance(agent, SequentialAgent)
+        }
+        assert not offending, (
+            f'These sections are wired to a SequentialAgent (legacy '
+            f'regenerate flow): {offending}. They must be the section '
+            "repair agent (built by build_section_repair_agent), not "
+            'the first-gen agent.'
+        )
+
+    async def test_no_event_emitted_when_no_section_dispatched(
+        self, monkeypatch,
+    ):
+        """If a round has no section repairs (e.g. only mechanical
+        residue), the summary event must NOT fire — emitting an empty
+        summary every round would dilute the signal."""
+        from app.sub_agents.quality_loop import agent as quality_loop_module
+
+        critic = _critic_emitting([
+            {
+                # No structural ``fields``; routes to the reviser only.
+                'id': 'm-1',
+                'skill': 'semantic_quality',
+                'category': 'vague_phrasing',
+                'severity': 'MINOR',
+                'fields': [],
+                'evidence': 'x',
+                'recommendation': 'y',
+            },
+        ])
+        loop, _ = self._build_loop_with_sections(
+            critic=critic, sections={},
+        )
+
+        captured: list[tuple[str, dict]] = []
+        original_info = quality_loop_module.logger.info
+
+        def _capturing_info(event_name, **kwargs):
+            captured.append((event_name, kwargs))
+            return original_info(event_name, **kwargs)
+
+        monkeypatch.setattr(quality_loop_module.logger, 'info', _capturing_info)
+
+        ctx = _fake_ctx()
+        _seed_assembly_state(ctx.session.state)
+
+        await _run_loop(loop, ctx)
+
+        mechanism_events = [
+            kwargs for (name, kwargs) in captured
+            if name == 'quality_loop_repair_mechanism_used'
+        ]
+        assert not mechanism_events, (
+            'mechanism event must only fire when ≥1 section repair runs.'
+        )
 
 
 class TestApplyStateDeltaHelper:

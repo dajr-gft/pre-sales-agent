@@ -67,6 +67,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections import Counter
+from dataclasses import dataclass, field
 from typing import AsyncGenerator, ClassVar, Iterable
 
 import structlog
@@ -75,6 +76,7 @@ from google.adk.agents.base_agent_config import BaseAgentConfig
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event, EventActions
 
+from .field_vocabulary import classify_finding_fields
 from .schema import (
     PERSISTENCE_WINDOW_ROUNDS,
     PRIOR_FINGERPRINTS_CAP,
@@ -177,8 +179,16 @@ _POLICY_FORCED_AUTO_FIXABLE: frozenset[tuple[str, str]] = frozenset(
 # leading ``\b`` matches between non-word ``S`` neighbours but the next
 # captured group is ``A`` so the position must be a word boundary BEFORE
 # an A/I/etc — ``AES-256`` does not satisfy that).
+# Kept in sync with ``app.tools.sow._anchor_utils.ANCHOR_ID_PATTERN``.
+# Two formats: the legacy dashed form (``FR-NN``, ``NFR-NN``, ``WS-NN``,
+# ``R-NN``, …) AND the dotted deliverable form (``WS<phase>.<seq>``,
+# e.g. ``WS01.1``, ``WS03.6``) which is what the model actually emits
+# for deliverables.
 _ANCHOR_PATTERN = re.compile(
-    r'\b(?:FR|NFR|WS|OOS|A|I|R|T|G|P)-\d{1,4}\b',
+    r'\b(?:'
+    r'(?:FR|NFR|WS|OOS|A|I|R|T|G|P)-\d{1,4}'
+    r'|WS\d{1,3}\.\d{1,3}'
+    r')\b',
     flags=re.IGNORECASE,
 )
 
@@ -327,6 +337,165 @@ def _normalize_findings(raw: Iterable[dict] | None) -> list[Finding]:
                 evidence_excerpt=(item.get('evidence') or '')[:120],
             )
     return out
+
+
+@dataclass(slots=True)
+class _LintReport:
+    """Findings + structural diagnosis produced by :func:`_lint_field_vocabulary`.
+
+    The aggregator emits the counters and drift sets as a single
+    ``validation_field_vocabulary_summary`` event per round. Visibility
+    of these classes is the whole point of running the lint: a
+    high orphan count round-after-round is a signal that the critic
+    is cunhing new vocabulary the schema does not carry; a high
+    manifest-only count signals the critic is mislabeling re-discovery
+    work as auto-fixable.
+
+    Vocabulary drift sets are stable-sorted so identical rounds produce
+    identical payloads in the log — easy to diff across runs.
+    """
+
+    findings: list[Finding] = field(default_factory=list)
+    reclassified_manifest_only: int = 0
+    reclassified_orphan_only: int = 0
+    fields_trimmed: int = 0
+    untouched: int = 0
+    # Set of distinct field names observed in each non-writable class.
+    # When the same orphan name (e.g. ``"project_identity"``) recurs
+    # across rounds, the drift set is the deterministic signal to
+    # promote it into the canonical vocabulary or fix the critic's
+    # emission template.
+    unique_manifest_fields_seen: list[str] = field(default_factory=list)
+    unique_orphan_fields_seen: list[str] = field(default_factory=list)
+    # Per-skill breakdown of which crítico emits the most lint-worthy
+    # vocabulary. Helps narrow which SKILL.md prompt to harden first.
+    actions_by_skill: dict[str, dict[str, int]] = field(default_factory=dict)
+
+
+def _lint_field_vocabulary(findings: list[Finding]) -> _LintReport:
+    """Post-calibration pass: align ``fields`` with the writable vocabulary.
+
+    Every finding entering the quality loop must carry a ``fields`` list
+    the patch pipeline can act on. The patch surface is closed:
+
+    - Section repair agents write bundle-owned fields (one per section).
+    - The reviser's ``apply_sow_global_patch`` refuses bundle-owned
+      fields (cross-writer divergence) AND manifest-derived fields (the
+      manifest is upstream input, not patchable) AND brand-new top-
+      level keys.
+
+    Findings whose ``fields`` cite no writable target are therefore
+    structurally unfixable by the agent — leaving them as
+    ``auto_fixable`` burns rounds on impossible work. The lint
+    reclassifies them to ``not_fixable_by_agent`` so the gate can
+    surface them for human review instead of looping.
+
+    Three classes of action, partitioned by
+    :func:`classify_finding_fields`:
+
+    - **Manifest-only** (every cited field is manifest-derived) →
+      ``resolution_mode = not_fixable_by_agent``,
+      ``requires_human_review = True``. The fix lives in the manifest /
+      discovery loop, not in the SOW.
+    - **Orphan-only** (every cited field is unknown to both vocabularies)
+      → same reclassification. The finding cites a field no writer owns;
+      the agent cannot patch it. Most often a critic typo or a stale
+      field name the schema no longer carries.
+    - **Mixed** (at least one bundle-owned field plus some manifest or
+      orphan noise) → trim ``fields`` to the bundle-owned subset and
+      leave the resolution mode intact. The router now has a clean
+      writable list to dispatch; the section agent will patch what it
+      owns.
+
+    Findings with empty ``fields`` are LEFT UNTOUCHED — the router falls
+    back to ``_CROSS_SECTION_REPAIR_ROUTES`` for those, and trimming an
+    already-empty list would only add noise to telemetry.
+
+    Order in the aggregator: the lint runs AFTER :func:`_calibrate`'s
+    policy-table override on purpose. Structural impossibility (no
+    writer for the cited fields) is the final word; a policy claim
+    that the category is mechanically fixable cannot conjure a writer
+    that does not exist. The lint freely overrides any ``auto_fixable``
+    set by the policy table when the fields make the fix structurally
+    impossible.
+    """
+    report = _LintReport()
+    manifest_seen: set[str] = set()
+    orphan_seen: set[str] = set()
+    actions: dict[str, dict[str, int]] = {}
+
+    def _bump(skill: str, action: str) -> None:
+        actions.setdefault(skill, {}).setdefault(action, 0)
+        actions[skill][action] += 1
+
+    for f in findings:
+        classification = classify_finding_fields(f.fields)
+        update: dict = {}
+        action: str | None = None
+        if classification.is_manifest_only or classification.is_orphan_only:
+            # Structurally unfixable — no writer can act on these fields.
+            if f.resolution_mode != 'not_fixable_by_agent':
+                update['resolution_mode'] = 'not_fixable_by_agent'
+            if not f.requires_human_review:
+                update['requires_human_review'] = True
+            if classification.is_manifest_only:
+                action = 'reclassified_manifest_only'
+                report.reclassified_manifest_only += 1
+            else:
+                action = 'reclassified_orphan_only'
+                report.reclassified_orphan_only += 1
+            logger.warning(
+                'finding_field_lint_applied',
+                finding_id=f.id,
+                skill=f.skill,
+                category=f.category,
+                original_fields=list(f.fields or []),
+                manifest_derived=list(classification.manifest_derived),
+                orphan=list(classification.orphan),
+                action='reclassified_not_fixable',
+                reason=action,
+            )
+        elif classification.needs_trim:
+            # At least one writable field remains; drop the noise so the
+            # router and the section agent see a clean target list.
+            trimmed = list(classification.bundle_owned)
+            if trimmed != list(f.fields or []):
+                update['fields'] = trimmed
+            action = 'fields_trimmed'
+            report.fields_trimmed += 1
+            logger.info(
+                'finding_field_lint_applied',
+                finding_id=f.id,
+                skill=f.skill,
+                category=f.category,
+                original_fields=list(f.fields or []),
+                writable_fields=list(classification.bundle_owned),
+                dropped_manifest=list(classification.manifest_derived),
+                dropped_orphan=list(classification.orphan),
+                action=action,
+                reason='mixed_writable_and_unwritable',
+            )
+        else:
+            action = 'untouched'
+            report.untouched += 1
+        # Drift sets accumulate from ALL findings — even ``untouched``
+        # ones may have cited manifest-derived names alongside writable
+        # ones (those go via the trim path, but the manifest names show
+        # up too). For untouched findings ``classification.manifest_derived``
+        # and ``.orphan`` are empty by construction, so the union below
+        # only grows when the field actually IS non-writable.
+        manifest_seen.update(classification.manifest_derived)
+        orphan_seen.update(classification.orphan)
+        if action is not None:
+            _bump(f.skill, action)
+        if update:
+            f = f.model_copy(update=update)
+        report.findings.append(f)
+
+    report.unique_manifest_fields_seen = sorted(manifest_seen)
+    report.unique_orphan_fields_seen = sorted(orphan_seen)
+    report.actions_by_skill = actions
+    return report
 
 
 def _calibrate(findings: list[Finding]) -> list[Finding]:
@@ -536,6 +705,10 @@ class ValidationAggregatorAgent(BaseAgent):
         skills_run: list[SkillRunMetadata] = []
         skills_not_run: list[str] = []
         skills_failed_critical = False
+        # ``round_count`` is incremented later in this method; compute the
+        # value the current round WILL have so the raw-emission log is
+        # tagged consistently with the post-lint summary below.
+        provisional_round_count = int(state.get(STATE_ROUND_COUNT) or 0) + 1
 
         for name in SKILL_NAMES:
             payload = state.get(skill_findings_state_key(name)) or {}
@@ -556,12 +729,64 @@ class ValidationAggregatorAgent(BaseAgent):
                         finding_count=len(findings),
                     )
                 )
+                # Raw emission snapshot — captures what the LLM-backed
+                # skill actually returned, BEFORE policy override,
+                # severity downgrade, lint, or dedupe. This is the post-
+                # mortem trail when ``validation_field_vocabulary_summary``
+                # shows orphan/manifest noise: we can correlate which
+                # skill emitted which field at which round and harden
+                # the SKILL.md prompt at the source.
+                logger.info(
+                    'validation_raw_skill_emission',
+                    round_count=provisional_round_count,
+                    skill=name,
+                    raw_finding_count=len(findings),
+                    raw_findings=[
+                        {
+                            'id': f.id,
+                            'category': f.category,
+                            'severity': f.severity,
+                            'confidence': round(f.confidence, 2),
+                            'resolution_mode': f.resolution_mode,
+                            'fields': list(f.fields or [])[:6],
+                            'manifest_item_id': f.manifest_item_id,
+                        }
+                        for f in findings
+                    ],
+                )
             else:
                 skills_not_run.append(name)
                 if name in _CRITICAL_SKILLS:
                     skills_failed_critical = True
 
-        findings = _dedupe(_calibrate(all_findings))
+        # Order matters: ``_calibrate`` applies the policy-table override,
+        # then ``_lint_field_vocabulary`` has the FINAL word — structural
+        # impossibility (no writer for the cited fields) always beats a
+        # policy claim that the category is "mechanically fixable". A
+        # finding whose fields are entirely manifest-derived or orphan
+        # ends up ``not_fixable_by_agent`` even when the policy table
+        # would normally have forced ``auto_fixable``.
+        lint_report = _lint_field_vocabulary(_calibrate(all_findings))
+        findings = _dedupe(lint_report.findings)
+
+        # Vocabulary drift telemetry — one event per round so dashboards
+        # can chart class counts over time and surface recurring orphan
+        # names (e.g. ``project_identity`` repeating across runs is the
+        # signal to either promote the name into the canonical
+        # vocabulary OR fix the SKILL.md prompt that emits it). Distinct
+        # field names are sorted for diffability across runs.
+        logger.info(
+            'validation_field_vocabulary_summary',
+            round_count=provisional_round_count,
+            total_findings_examined=len(lint_report.findings),
+            reclassified_manifest_only=lint_report.reclassified_manifest_only,
+            reclassified_orphan_only=lint_report.reclassified_orphan_only,
+            fields_trimmed=lint_report.fields_trimmed,
+            untouched=lint_report.untouched,
+            unique_manifest_fields_seen=lint_report.unique_manifest_fields_seen,
+            unique_orphan_fields_seen=lint_report.unique_orphan_fields_seen,
+            actions_by_skill=lint_report.actions_by_skill,
+        )
         overall_status, requires_human = _decide_status(
             det, findings, skills_failed_critical
         )

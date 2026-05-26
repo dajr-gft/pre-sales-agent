@@ -311,3 +311,75 @@ class TestAssemblyErrors:
         assert STATE_SOW not in state
         assert STATE_STAGE not in state
         assert state['unrelated_key'] == 'untouched'
+
+
+class TestLegacyBundleMigration:
+    """Phase 0.5 added required ``number`` ids to ``Deliverable`` and
+    ``Risk``. Sessions that wrote bundles to state before the deploy
+    must still re-assemble — the migration path runs
+    ``ensure_collection_numbers`` on the raw bundle dict before
+    :func:`build_sow_data_from_state` validates anything."""
+
+    def test_migrates_deliverables_without_number(self):
+        state = _populated_state('content')
+        # Wipe ``number`` from the seeded deliverable to simulate a
+        # legacy bundle.
+        for d in state[SOW_BUNDLE_STATE_KEYS['delivery_plan']]['deliverables']:
+            d.pop('number', None)
+
+        result = apply_sow_assembly_to_state(state, 'content')
+
+        # Migration path injected the id, both in the in-state bundle
+        # and in the assembled flat SOW.
+        injected_numbers = [
+            d['number']
+            for d in state[SOW_BUNDLE_STATE_KEYS['delivery_plan']]['deliverables']
+        ]
+        assert all(n.startswith('WS-') for n in injected_numbers)
+        assert result['deliverables'][0]['number'] == injected_numbers[0]
+
+    def test_migrates_risks_without_number(self):
+        state = _populated_state('content')
+        for r in state[SOW_BUNDLE_STATE_KEYS['scope_boundaries']]['risks']:
+            r.pop('number', None)
+
+        result = apply_sow_assembly_to_state(state, 'content')
+
+        injected = [
+            r['number']
+            for r in state[SOW_BUNDLE_STATE_KEYS['scope_boundaries']]['risks']
+        ]
+        assert all(n.startswith('R-') for n in injected)
+        assert result['risks'][0]['number'] == injected[0]
+
+
+def _populated_state_with_numbers(stage: str = 'content') -> dict[str, Any]:
+    return _populated_state(stage)
+
+
+class TestFlatSowCarriesNumbers:
+    """Downstream impact pin: the assembled flat ``sow_data`` carries
+    the ``number`` field for each deliverable and risk. The DOCX
+    template renders these ids in the final document — confirm here
+    that assembly does not strip them."""
+
+    def test_deliverable_numbers_appear_in_assembled_sow(self):
+        state = _populated_state('content')
+        # Seed an explicit number so the test is deterministic.
+        state[SOW_BUNDLE_STATE_KEYS['delivery_plan']]['deliverables'][0][
+            'number'
+        ] = 'WS-42'
+
+        result = apply_sow_assembly_to_state(state, 'content')
+
+        assert result['deliverables'][0]['number'] == 'WS-42'
+
+    def test_risk_numbers_appear_in_assembled_sow(self):
+        state = _populated_state('content')
+        state[SOW_BUNDLE_STATE_KEYS['scope_boundaries']]['risks'][0][
+            'number'
+        ] = 'R-07'
+
+        result = apply_sow_assembly_to_state(state, 'content')
+
+        assert result['risks'][0]['number'] == 'R-07'

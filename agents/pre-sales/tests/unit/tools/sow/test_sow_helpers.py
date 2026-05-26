@@ -9,6 +9,7 @@ import pytest
 
 from app.tools.sow._sow_helpers import (
     QUALITY_GATES,
+    ensure_collection_numbers,
     load_logo,
     sow_data_hash,
     sow_data_preview,
@@ -147,6 +148,85 @@ class TestSowDataPreview:
         out = sow_data_preview(data)
         parsed = json.loads(out)
         assert parsed['items']['_first'].startswith('first item')
+
+
+class TestEnsureCollectionNumbers:
+    """The helper is the single source of truth for ``number`` injection
+    in :class:`DeliveryPlanBundle` / :class:`ScopeBoundariesBundle` and in
+    the legacy-state migration path of ``apply_sow_assembly_to_state``.
+    """
+
+    def test_assigns_sequential_numbers_when_all_items_lack_them(self):
+        bundle = {'deliverables': [
+            {'name': 'A'}, {'name': 'B'}, {'name': 'C'},
+        ]}
+        ensure_collection_numbers(bundle, 'deliverables', 'WS')
+        assert [d['number'] for d in bundle['deliverables']] == [
+            'WS-01', 'WS-02', 'WS-03',
+        ]
+
+    def test_preserves_existing_numbers(self):
+        bundle = {'deliverables': [
+            {'number': 'WS-05', 'name': 'A'},
+            {'number': 'WS-03', 'name': 'B'},
+        ]}
+        ensure_collection_numbers(bundle, 'deliverables', 'WS')
+        assert bundle['deliverables'][0]['number'] == 'WS-05'
+        assert bundle['deliverables'][1]['number'] == 'WS-03'
+
+    def test_injected_numbers_do_not_collide_with_existing(self):
+        bundle = {'deliverables': [
+            {'number': 'WS-03', 'name': 'A'},  # already at slot 3
+            {'name': 'B'},                      # unassigned
+            {'name': 'C'},                      # unassigned
+        ]}
+        ensure_collection_numbers(bundle, 'deliverables', 'WS')
+        numbers = [d['number'] for d in bundle['deliverables']]
+        # Existing WS-03 stays, others fill the gaps starting at 1
+        assert 'WS-03' in numbers
+        assert len(set(numbers)) == 3
+
+    def test_idempotent(self):
+        bundle = {'deliverables': [
+            {'name': 'A'}, {'name': 'B'},
+        ]}
+        ensure_collection_numbers(bundle, 'deliverables', 'WS')
+        snapshot = [dict(d) for d in bundle['deliverables']]
+        ensure_collection_numbers(bundle, 'deliverables', 'WS')
+        assert [dict(d) for d in bundle['deliverables']] == snapshot
+
+    def test_noop_on_missing_collection(self):
+        bundle = {'other': []}
+        ensure_collection_numbers(bundle, 'deliverables', 'WS')
+        assert bundle == {'other': []}
+
+    def test_noop_on_empty_collection(self):
+        bundle = {'deliverables': []}
+        ensure_collection_numbers(bundle, 'deliverables', 'WS')
+        assert bundle == {'deliverables': []}
+
+    def test_noop_on_non_dict_bundle(self):
+        # Should not raise — the helper guards on type so callers don't
+        # have to.
+        ensure_collection_numbers([], 'deliverables', 'WS')  # type: ignore[arg-type]
+
+    def test_skips_items_with_unparseable_number_but_reserves_them(self):
+        """A legacy bundle with a custom-shaped id (``CUSTOM-X``) is
+        not re-numbered; injection still happens for siblings."""
+        bundle = {'deliverables': [
+            {'number': 'CUSTOM-X', 'name': 'A'},
+            {'name': 'B'},
+        ]}
+        ensure_collection_numbers(bundle, 'deliverables', 'WS')
+        assert bundle['deliverables'][0]['number'] == 'CUSTOM-X'
+        assert bundle['deliverables'][1]['number'] == 'WS-01'
+
+    def test_works_for_risk_prefix(self):
+        bundle = {'risks': [
+            {'description': 'A', 'mitigation': 'X'},
+        ]}
+        ensure_collection_numbers(bundle, 'risks', 'R')
+        assert bundle['risks'][0]['number'] == 'R-01'
 
 
 class TestLoadLogo:

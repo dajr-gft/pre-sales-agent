@@ -13,9 +13,10 @@ from __future__ import annotations
 
 from google.adk.tools.agent_tool import AgentTool
 
+from ...tools.sow.apply_section_patch import apply_narrative_patch
 from ..schemas import NarrativeBundle, SOW_BUNDLE_STATE_KEYS
 from ..web_search import google_search_agent
-from .._section_agent import build_section_agent
+from .._section_agent import build_section_agent, build_section_repair_agent
 
 NARRATIVE_OUTPUT_KEY: str = SOW_BUNDLE_STATE_KEYS['narrative']
 
@@ -41,6 +42,35 @@ narrative_agent = build_section_agent(
     output_key=NARRATIVE_OUTPUT_KEY,
     output_example=_OUTPUT_EXAMPLE,
     extra_tools=[AgentTool(agent=google_search_agent)],
+    state_inputs=(
+        ('extraction_manifest', SOW_BUNDLE_STATE_KEYS['manifest']),
+        ('prior_requirements', SOW_BUNDLE_STATE_KEYS['requirements']),
+        ('prior_delivery_plan', SOW_BUNDLE_STATE_KEYS['delivery_plan']),
+        ('prior_scope_boundaries', SOW_BUNDLE_STATE_KEYS['scope_boundaries']),
+        ('prior_architecture', SOW_BUNDLE_STATE_KEYS['architecture']),
+    ),
+)
+
+
+# ``google_search_agent`` is deliberately NOT passed to the repair
+# agent. Web search exists only to seed the first-gen overviews with
+# external context; in repair mode the bundle text is already grounded
+# and findings are edits, not research prompts. If a finding calls for
+# new market data, the orchestrator should re-run the first-gen agent
+# from the root rather than burn search quota inside the loop.
+narrative_repair_agent = build_section_repair_agent(
+    name='narrative_repair_agent',
+    description=(
+        'Repair-mode counterpart of `narrative_agent`. Applies a batch '
+        'of patch ops to the in-state NarrativeBundle via '
+        '`apply_narrative_patch` instead of regenerating the bundle. '
+        'Does NOT run web search — repair mode operates on the bundle '
+        'text already present. Invoked exclusively by the QualityLoopAgent.'
+    ),
+    section_name='narrative',
+    skill_name='sow-narrative',
+    bundle_key=NARRATIVE_OUTPUT_KEY,
+    patch_tool=apply_narrative_patch,
     state_inputs=(
         ('extraction_manifest', SOW_BUNDLE_STATE_KEYS['manifest']),
         ('prior_requirements', SOW_BUNDLE_STATE_KEYS['requirements']),
