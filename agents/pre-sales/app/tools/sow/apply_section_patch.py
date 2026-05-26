@@ -397,6 +397,76 @@ _LIST_TEXT_FIELDS_FOR_ANCHOR_DIFF: frozenset[str] = frozenset({
 })
 
 
+# Section-ownership of anchor-id prefixes. The owning section is the one
+# whose bundle carries the *item* that holds the id — not every place
+# the id might be mentioned in prose. This distinction matters for the
+# net-drop enforcement (see ``_classify_anchor_owner``):
+#
+# - Owned drop  → REJECT the patch. The worker is taking out the item
+#   that owns the manifest coverage, and that demands an explicit
+#   ``remove_item`` with ``coverage_transferred_to``.
+# - Cross-section drop → WARN. The worker rewrote some prose and lost
+#   a textual cross-reference to an item that lives in ANOTHER bundle.
+#   The item itself is intact in its owning section, so this is at
+#   most a coverage-recall concern surfaced to the critic in the next
+#   round, not a structural break of the SOW.
+#
+# Architecture / narrative own no anchored items today (they hold free-
+# form prose). They are still listed for documentation / future use.
+_SECTION_OWNED_ANCHOR_PREFIXES: dict[str, frozenset[str]] = {
+    'requirements': frozenset({'FR', 'NFR'}),
+    'delivery_plan': frozenset({'WS'}),
+    'scope_boundaries': frozenset({'R'}),
+    'architecture': frozenset(),
+    'narrative': frozenset(),
+}
+
+
+def _anchor_prefix(anchor_id: str) -> str:
+    """Extract the canonical alphabetic prefix from an anchor id.
+
+    Handles both the dashed form (``FR-01`` → ``FR``) and the dotted
+    deliverable form (``WS01.1`` → ``WS``). Returns the empty string
+    if the id has no leading alpha run.
+    """
+    leading: list[str] = []
+    for ch in anchor_id:
+        if ch.isalpha():
+            leading.append(ch.upper())
+            continue
+        break
+    return ''.join(leading)
+
+
+def _classify_anchor_owner(
+    anchor_id: str, section_name: str,
+) -> tuple[bool, str | None]:
+    """Return ``(is_owned_here, owning_section_name)``.
+
+    The first element is True when ``section_name`` is the canonical
+    owner of the anchor (i.e. an item with this id lives in this
+    bundle). The second element names the owning section if known,
+    regardless of whether it matches ``section_name`` — useful for the
+    cross-section warning ("FR-15 is owned by the requirements
+    section, not by this one"). ``None`` means no owning section is
+    declared for this prefix (the prefix may be reserved but no schema
+    consumes it yet).
+    """
+    prefix = _anchor_prefix(anchor_id)
+    if not prefix:
+        return False, None
+    owning_section: str | None = None
+    for section, owned in _SECTION_OWNED_ANCHOR_PREFIXES.items():
+        if prefix in owned:
+            owning_section = section
+            break
+    is_owned_here = (
+        owning_section is not None
+        and owning_section == section_name
+    )
+    return is_owned_here, owning_section
+
+
 def _detect_anchor_drops(
     op: UpdateItemOp | UpdateFieldOp,
     before_bundle: dict[str, Any],
@@ -754,29 +824,31 @@ def _build_apply_section_patch(
             for anchor in impact['dropped_anchors']
         })
 
-        # Step 5b — net-drop enforcement. Compare the COMPLETE bundle's
-        # anchor-id set before vs. after applying every op. Any id that
-        # disappears must be matched by an explicit ``remove_item`` in
-        # this batch — that is the only authorised path for taking an
-        # anchored item out of the bundle. If the diff surfaces an
-        # anchor that no ``remove_item`` named, the patch is refused
-        # transactionally (state unchanged) so the next critic round
-        # does not see an uncovered manifest entry.
+        # Step 5b — ownership-scoped anchor enforcement. Compare the
+        # bundle's anchor-id set before/after applying every op, then
+        # PARTITION the missing anchors by who owns them:
         #
-        # Why net-drop and not per-op: a legit worker patch sometimes
-        # edits item A's description to drop a reference to FR-NN, then
-        # adds FR-NN back into item B in the same batch. Net delta = 0
-        # → allowed. Per-op delta would refuse the first op.
+        # - Owned drop (this section IS the canonical owner of the
+        #   anchor prefix — e.g. ``requirements`` owns ``FR-NN`` /
+        #   ``NFR-NN``): refuse the patch unless the drop is
+        #   authorised by an explicit ``remove_item`` with
+        #   ``coverage_transferred_to``. Taking out an item that owns
+        #   manifest coverage is the operation that must be declared.
+        # - Cross-section drop (anchor prefix is owned by ANOTHER
+        #   section — e.g. ``requirements`` dropping ``WS03.7`` from
+        #   FR-15's description): emit a structured warning. The item
+        #   itself remains intact in its owning bundle, so this is at
+        #   most a cross-reference change the critic may flag next
+        #   round; it is NOT a structural break and refusing it would
+        #   block legitimate prose edits (the false-positive failure
+        #   mode observed in run 55-59 of the production trace).
         #
-        # ``coverage_transferred_to`` semantics for ``remove_item`` are
-        # also enforced here: when the removed item id matches the
-        # anchor pattern, ``coverage_transferred_to`` MUST be a non-empty
-        # list naming the item(s) that absorb the coverage. A ``None``
-        # value used to be the "no coverage at stake" escape hatch; that
-        # claim is incoherent for a manifest-anchored item and we now
-        # reject it with a precise error so the worker can declare the
-        # transfer (or restore the anchor via ``update_item`` in the
-        # same batch).
+        # ``coverage_transferred_to`` semantics for ``remove_item``:
+        # when the removed item id matches the anchor pattern AND the
+        # section owns it, ``coverage_transferred_to`` MUST be non-empty.
+        # ``None`` used to be the "no coverage at stake" escape hatch;
+        # that claim is incoherent for an item whose anchor IS the
+        # manifest coverage.
         before_anchor_set = extract_anchor_ids(current_bundle)
         after_anchor_set = extract_anchor_ids(after_bundle_dict)
         net_dropped_anchors = before_anchor_set - after_anchor_set
@@ -795,6 +867,16 @@ def _build_apply_section_patch(
                 # there is no manifest anchor at stake.
                 continue
             anchor_upper = normalised_item_id.upper()
+            is_owned_here, _ = _classify_anchor_owner(
+                anchor_upper, section_name,
+            )
+            if not is_owned_here:
+                # Removing a cross-section anchor by id is unusual
+                # (the worker shouldn't be doing that — its own
+                # collections only carry its own ids) but we let it
+                # through here: the owned-vs-cross partition below
+                # will flag the drop as cross-section warning.
+                continue
             # Layer 2 — anchored removes must declare coverage. ``None``
             # / empty value is incoherent for a manifest-anchored item.
             if not op.coverage_transferred_to:
@@ -808,10 +890,8 @@ def _build_apply_section_patch(
             # lived inside the removed item's content. Without the
             # collateral expansion, an item whose ``description`` quoted
             # other anchors (e.g. WS-01.description = "FR-01 spec.")
-            # would trip the net-drop refusal on the collateral anchor
-            # even when the worker has done its homework. The worker's
-            # ``coverage_transferred_to`` is the explicit handoff for
-            # the WHOLE item, not just the id sticker.
+            # would trip the per-bundle drop check on the collateral
+            # anchor even when the worker has done its homework.
             authorized_drop_ids.add(anchor_upper)
             removed_item = _find_removed_item_payload(
                 current_bundle, op.collection, op.item_id,
@@ -819,33 +899,66 @@ def _build_apply_section_patch(
             if removed_item is not None:
                 authorized_drop_ids.update(extract_anchor_ids(removed_item))
 
-        unauthorized_drops = sorted(net_dropped_anchors - authorized_drop_ids)
+        unauthorized_drops = net_dropped_anchors - authorized_drop_ids
 
-        if anchored_remove_violations or unauthorized_drops:
+        # Partition unauthorised drops by ownership.
+        unauthorized_owned: list[str] = []
+        cross_section_drops: list[dict[str, str | None]] = []
+        for anchor in sorted(unauthorized_drops):
+            is_owned_here, owning_section = _classify_anchor_owner(
+                anchor, section_name,
+            )
+            if is_owned_here:
+                unauthorized_owned.append(anchor)
+            else:
+                cross_section_drops.append({
+                    'anchor': anchor,
+                    'owning_section': owning_section,
+                })
+
+        # Cross-section drops never refuse — they just warn so the
+        # observability trail captures the change without preventing
+        # legitimate prose edits. The next critic round is the right
+        # place to flag coverage recall if any.
+        if cross_section_drops:
+            logger.warning(
+                'section_patch_cross_section_anchor_dropped',
+                section=section_name,
+                bundle_key=bundle_key,
+                cross_section_drops=cross_section_drops,
+                ops=op_impacts,
+            )
+
+        if anchored_remove_violations or unauthorized_owned:
             logger.warning(
                 'section_patch_refused_anchor_loss',
                 section=section_name,
                 bundle_key=bundle_key,
-                unauthorized_drops=unauthorized_drops,
+                unauthorized_drops=unauthorized_owned,
                 anchored_removes_without_coverage=anchored_remove_violations,
+                cross_section_drops=cross_section_drops,
                 ops=op_impacts,
             )
             error_parts: list[str] = []
-            if unauthorized_drops:
+            if unauthorized_owned:
                 error_parts.append(
-                    f'Anchor ids dropped from the bundle without an '
-                    f'explicit remove_item: {unauthorized_drops}.'
+                    f'This section owns anchor id(s) {unauthorized_owned} '
+                    f'and the patch removes them from the bundle without '
+                    f'an explicit `remove_item`. Preserve the id in '
+                    f'another item or emit a `remove_item` that names '
+                    f'`coverage_transferred_to`.'
                 )
             if anchored_remove_violations:
                 violation_ids = sorted({
                     v['item_id'] for v in anchored_remove_violations
                 })
                 error_parts.append(
-                    f'remove_item on manifest-anchored item(s) '
+                    f'`remove_item` on manifest-anchored item(s) '
                     f'{violation_ids} must declare '
                     f'`coverage_transferred_to` naming the item(s) that '
-                    f'absorb the manifest coverage (None is not a valid '
-                    f'acknowledgement for anchored items).'
+                    f'absorb the manifest coverage (`None` is not a '
+                    f'valid acknowledgement for anchored items in the '
+                    f'owning section).'
                 )
             return ToolError(
                 status='error',
@@ -854,16 +967,22 @@ def _build_apply_section_patch(
                 tool=f'apply_{section_name}_patch',
                 suggestion=(
                     'Either (a) restore the dropped anchor by adding/'
-                    'updating another item in the same batch to reference '
-                    'it, (b) emit a `remove_item` op whose `item_id` is '
-                    'the dropped anchor and whose `coverage_transferred_to` '
-                    'lists the item(s) that now cover the manifest entry, '
-                    'or (c) drop the offending op and reformulate the '
-                    'fix to preserve the anchors.'
+                    'updating another item in the same batch to '
+                    'reference it, (b) emit a `remove_item` op whose '
+                    '`item_id` is the dropped anchor and whose '
+                    '`coverage_transferred_to` lists the item(s) that '
+                    'now cover the manifest entry, or (c) drop the '
+                    'offending op and reformulate the fix to preserve '
+                    'the anchor. Cross-section anchors (anchors owned '
+                    'by another section, e.g. WS-IDs cited inside a '
+                    'requirements FR) are NOT enforced here and may be '
+                    'edited freely; they appear as `cross_section_drops` '
+                    'in the warning log when removed.'
                 ),
                 data={
-                    'unauthorized_drops': unauthorized_drops,
+                    'unauthorized_drops': unauthorized_owned,
                     'anchored_removes_without_coverage': anchored_remove_violations,
+                    'cross_section_drops': cross_section_drops,
                 },
             )
 
