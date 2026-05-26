@@ -49,6 +49,24 @@ class TestExtractAnchorIds:
         for prefix in ('FR', 'NFR', 'WS', 'OOS', 'A', 'I', 'R', 'T', 'G', 'P'):
             assert ANCHOR_ID_PATTERN.search(f'{prefix}-01'), prefix
 
+    def test_pattern_covers_dotted_deliverable_format(self):
+        """Deliverables are emitted as ``WS<phase>.<seq>`` (``WS01.1``,
+        ``WS03.6``) — the dashed form ``WS-NN`` is the test-fixture
+        legacy. The regex must accept BOTH so production removes are
+        not silent in anchor-drop telemetry.
+        """
+        assert extract_anchor_ids('Deliverable WS01.1 covers it.') == {'WS01.1'}
+        assert extract_anchor_ids('See WS03.6 and WS06.4.') == {'WS03.6', 'WS06.4'}
+        # Case-insensitive in source, uppercased in output.
+        assert extract_anchor_ids('ws02.3 mentioned') == {'WS02.3'}
+
+    def test_pattern_does_not_match_unrelated_dotted_tokens(self):
+        """Defensive: arbitrary ``X.Y`` numerics must not match. Only
+        the documented anchor prefixes do."""
+        assert extract_anchor_ids('Version 1.5 of GCP product 3.14.') == set()
+        # AES-256 inside FR-03 description shouldn't be confused for an anchor.
+        assert extract_anchor_ids('AES-256 encryption') == set()
+
 
 class TestDiffAnchorIds:
     def test_dropped_and_added_are_disjoint_per_side(self):

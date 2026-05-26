@@ -68,6 +68,7 @@ from google.adk.events import Event, EventActions
 from google.genai import types
 from pydantic import ConfigDict, Field
 
+from ...shared.logging_config import is_verbose_sow_logging
 from ...tools.sow._anchor_utils import (
     ANCHOR_ID_PATTERN as _BUNDLE_ANCHOR_ID_PATTERN,
     extract_anchor_ids as _extract_anchor_ids,
@@ -93,6 +94,7 @@ from ..scope_boundaries.agent import (
 )
 from .._section_agent import STATE_REPAIR_FINDINGS
 from ..validation import validation_critic
+from ..validation.field_vocabulary import BUNDLE_OWNED_FIELDS_BY_SECTION
 from ..validation.schema import STATE_SOW, STATE_STAGE, STATE_VALIDATION_RESULT
 
 logger = structlog.get_logger()
@@ -191,41 +193,13 @@ _SECTION_ORDER: tuple[str, ...] = (
 # Map every top-level ``sow_data`` field to its owning section. Used by
 # :func:`_sections_for_finding` to derive cross-bundle targets from
 # ``Finding.fields`` — a finding whose fields cross sections needs every
-# involved section to patch its own side. Keys are the exact field names
-# the section agents emit in their bundles (see
-# ``app.sub_agents.schemas``); adding a new SOW field means adding a
-# row here. The lint table at the bottom of this module's test file
-# pins the coverage so a future schema change cannot silently drop a
-# field out of routing.
-_FIELD_TO_SECTION: dict[str, str] = {
-    # requirements bundle
-    'functional_requirements': 'requirements',
-    'non_functional_requirements': 'requirements',
-    # delivery_plan bundle
-    'activity_phases': 'delivery_plan',
-    'deliverables': 'delivery_plan',
-    'timeline': 'delivery_plan',
-    'partner_roles': 'delivery_plan',
-    'customer_roles': 'delivery_plan',
-    'success_criteria': 'delivery_plan',
-    'objectives': 'delivery_plan',
-    # scope_boundaries bundle
-    'assumptions': 'scope_boundaries',
-    'out_of_scope': 'scope_boundaries',
-    'risks': 'scope_boundaries',
-    'handover_disclaimers': 'scope_boundaries',
-    'change_request_policy_text': 'scope_boundaries',
-    # architecture bundle
-    'architecture_description': 'architecture',
-    'architecture_components': 'architecture',
-    'architecture_integrations': 'architecture',
-    'technology_stack': 'architecture',
-    # narrative bundle
-    'executive_summary': 'narrative',
-    'partner_overview': 'narrative',
-    'customer_overview': 'narrative',
-    'customer_primary_domain': 'narrative',
-}
+# involved section to patch its own side.
+#
+# Canonical source: ``validation.field_vocabulary.BUNDLE_OWNED_FIELDS_BY_SECTION``.
+# Adding a SOW field to a bundle schema means adding a row THERE, not
+# here — both the router (this module) and the aggregator's lint pass
+# read from the same dict so the writer / linter / router cannot drift.
+_FIELD_TO_SECTION: dict[str, str] = dict(BUNDLE_OWNED_FIELDS_BY_SECTION)
 
 
 def _sections_for_finding(
@@ -452,6 +426,28 @@ class QualityLoopAgent(BaseAgent):
         # new``) — we want consecutive non-progress, not lifetime counts.
         # Compared against ``NO_PROGRESS_WINDOW`` after each blocked round.
         consecutive_no_progress_rounds = 0
+
+        # ----- Manifest snapshot (one-shot per loop invocation) ----------
+        # Verbose-only — the full Extraction Manifest is ~20-50 KB and
+        # only useful when we are diagnosing a specific finding's
+        # ``manifest_item_id`` against the actual manifest entry. Gated
+        # by ``SOW_VERBOSE_LOGGING=1`` so default sessions stay lean.
+        # See ``app.shared.logging_config.is_verbose_sow_logging`` for
+        # the contract.
+        if is_verbose_sow_logging():
+            manifest = ctx.session.state.get('extraction_manifest')
+            if isinstance(manifest, dict):
+                logger.info(
+                    'quality_loop_manifest_snapshot',
+                    manifest_version=manifest.get('manifest_version'),
+                    inventory_count=len(manifest.get('inventory', []) or []),
+                    extracted_items_count=len(
+                        manifest.get('extracted_items', []) or []
+                    ),
+                    manifest=manifest,
+                )
+        # ------------------------------------------------------------------
+
         for round_idx in range(self.max_rounds):
             round_number = round_idx + 1
             logger.info(
@@ -459,6 +455,24 @@ class QualityLoopAgent(BaseAgent):
                 round=round_number,
                 max_rounds=self.max_rounds,
             )
+
+            # ----- SOW snapshot at round start (verbose only) ----------
+            # Full staged SOW entering the critic. With the post-round
+            # snapshot below, the pair is the forensic record per round.
+            # Verbose-only because a SOW is 5-15 KB and we already log
+            # the bundle hash + anchor-drop diff at structural level on
+            # every patch, which is enough for everyday debugging.
+            if is_verbose_sow_logging():
+                pre_round_sow = ctx.session.state.get(STATE_SOW)
+                if isinstance(pre_round_sow, dict) and pre_round_sow:
+                    logger.info(
+                        'quality_loop_sow_snapshot_pre_round',
+                        round=round_number,
+                        sow_hash=sow_data_hash(pre_round_sow),
+                        top_level_keys=sorted(pre_round_sow.keys()),
+                        sow=pre_round_sow,
+                    )
+            # ------------------------------------------------------------
 
             async for event in critic.run_async(ctx):
                 self._apply_state_delta(ctx, event)
@@ -811,6 +825,22 @@ class QualityLoopAgent(BaseAgent):
                     legacy_regenerate=mechanism_counts['legacy_regenerate'],
                     by_section=mechanism_by_section,
                 )
+
+            # ----- SOW snapshot post-repair (verbose only) -------------
+            # SOW after section repairs + re-assembly. Diff vs. the pre-
+            # round snapshot tells us what the worker actually changed
+            # end-to-end this round. Gated for the same reason as the
+            # pre-round snapshot.
+            if is_verbose_sow_logging():
+                post_round_sow = ctx.session.state.get(STATE_SOW)
+                if isinstance(post_round_sow, dict) and post_round_sow:
+                    logger.info(
+                        'quality_loop_sow_snapshot_post_round',
+                        round=round_number,
+                        sow_hash=sow_data_hash(post_round_sow),
+                        top_level_keys=sorted(post_round_sow.keys()),
+                        sow=post_round_sow,
+                    )
 
             # ----- mechanical residue → reviser ----------------------------
             # If section repairs ran AND there is no mechanical residue,

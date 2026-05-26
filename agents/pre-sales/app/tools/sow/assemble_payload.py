@@ -45,6 +45,9 @@ from ...sub_agents.schemas import (
     FULL_STAGE_KEYS,
     SOW_BUNDLE_STATE_KEYS,
 )
+from ...sub_agents.validation.field_vocabulary import (
+    MANIFEST_DERIVED_FIELDS_TUPLE,
+)
 
 logger = structlog.get_logger()
 
@@ -75,21 +78,12 @@ def _contains_missing_sentinel(value: Any) -> bool:
     return False
 
 
-_PROJECT_METADATA_KEYS: tuple[str, ...] = (
-    'partner_name',
-    'customer_name',
-    'partner_short_name',
-    'customer_short_name',
-    'project_title',
-    'date',
-    'author',
-    'funding_type',
-    'funding_type_short',
-    'project_start_date',
-    'project_end_date',
-    'engagement_type',
-    'organization_term',
-)
+# Canonical source: ``validation.field_vocabulary.MANIFEST_DERIVED_FIELDS_TUPLE``.
+# The aggregator's field-lint pass and ``apply_sow_global_patch``'s
+# blocklist read from the same constant — adding a manifest-derived
+# field MUST be a one-line change there so the writer / blocker /
+# linter cannot drift.
+_PROJECT_METADATA_KEYS: tuple[str, ...] = MANIFEST_DERIVED_FIELDS_TUPLE
 
 # F-07: project-level fields the docx template + validation pipeline
 # treat as load-bearing. Empty strings here mean the template renders a

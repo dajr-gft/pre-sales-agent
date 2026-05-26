@@ -53,7 +53,8 @@ from pydantic import BaseModel, ValidationError
 
 from ...shared.errors import safe_tool
 from ...shared.types import ToolError, ToolSuccess
-from ._anchor_utils import diff_anchor_ids, extract_anchor_ids
+from ...shared.logging_config import is_verbose_sow_logging
+from ._anchor_utils import ANCHOR_ID_PATTERN, diff_anchor_ids, extract_anchor_ids
 from ._patch_models import (
     AddItemOp,
     CollectionSpec,
@@ -401,7 +402,16 @@ def _detect_anchor_drops(
     before_bundle: dict[str, Any],
     after_bundle: dict[str, Any],
 ) -> list[str]:
-    """Return the sorted list of anchor ids that disappeared after the op."""
+    """Return the sorted list of anchor ids that disappeared after the op.
+
+    Narrow scope: only ``UpdateItemOp`` and ``UpdateFieldOp`` on list-text
+    fields. ``RemoveItemOp`` is intentionally ignored here because
+    removing an item is the op's whole purpose — the broader
+    :func:`_classify_op_anchor_impact` is the place that surfaces
+    ``RemoveItemOp`` drops as a separate observability signal so an
+    intentional remove still shows up when the dropped id matches the
+    manifest anchor pattern (FR/NFR/WS/R/etc.).
+    """
     if isinstance(op, UpdateItemOp):
         before_ids = extract_anchor_ids(before_bundle.get(op.collection))
         after_ids = extract_anchor_ids(after_bundle.get(op.collection))
@@ -415,6 +425,121 @@ def _detect_anchor_drops(
         return []
     dropped, _ = diff_anchor_ids(before_ids, after_ids)
     return sorted(dropped)
+
+
+def _find_removed_item_payload(
+    bundle: dict[str, Any], collection: str, item_id: str | None,
+) -> Any:
+    """Return the item dict from ``bundle[collection]`` whose identity
+    field matches ``item_id``, or ``None`` if not found.
+
+    Tries every plausible identity key (``number``, ``role``, ``name``,
+    ``id``) so the helper works across schemas that use different
+    discriminators. Returning ``None`` is safe — the caller treats a
+    missing payload as "no collateral anchors to authorise" and falls
+    back to the item_id-only path.
+    """
+    if not item_id:
+        return None
+    items = bundle.get(collection)
+    if not isinstance(items, list):
+        return None
+    target = item_id.strip()
+    if not target:
+        return None
+    for candidate in items:
+        if not isinstance(candidate, dict):
+            continue
+        for identity_field in ('number', 'role', 'name', 'id'):
+            value = candidate.get(identity_field)
+            if isinstance(value, str) and value.strip() == target:
+                return candidate
+    return None
+
+
+def _classify_op_anchor_impact(
+    op: UpdateItemOp | AddItemOp | RemoveItemOp | UpdateFieldOp,
+    before_bundle: dict[str, Any],
+    after_bundle: dict[str, Any],
+) -> dict[str, Any]:
+    """Rich per-op anchor diagnosis for the ``section_patch_ops_executed`` log.
+
+    Always returns a dict so the log shape is stable regardless of op
+    type. Fields:
+
+    - ``op_kind`` — ``update_item`` / ``add_item`` / ``remove_item`` /
+      ``update_field``.
+    - ``finding_id`` — finding the worker claimed motivates this op.
+    - ``collection`` / ``item_id`` / ``field`` — op target (None when
+      not applicable).
+    - ``dropped_anchors`` — anchor ids (FR-NN, NFR-NN, WS-NN, R-NN, …)
+      that disappeared from the touched container as a side effect. For
+      ``RemoveItemOp`` whose ``item_id`` itself matches the anchor
+      pattern, the item_id is reported here; for the other op types we
+      reuse the narrow detector.
+    - ``removes_manifest_anchored_item`` — True iff this is a
+      ``RemoveItemOp`` whose ``item_id`` matches the anchor pattern.
+      That single boolean is the structural signal we need to decide
+      whether to enforce later: a remove on FR-15 deserves a different
+      treatment than a remove on an unanchored OOS bullet.
+    """
+    info: dict[str, Any] = {
+        'op_kind': op.op,
+        'finding_id': op.finding_id,
+        'collection': None,
+        'item_id': None,
+        'field': None,
+        'payload': None,
+        'dropped_anchors': [],
+        'removes_manifest_anchored_item': False,
+    }
+    if isinstance(op, (UpdateItemOp, AddItemOp, RemoveItemOp)):
+        info['collection'] = op.collection
+    if isinstance(op, (UpdateItemOp, RemoveItemOp)):
+        info['item_id'] = op.item_id
+    if isinstance(op, UpdateFieldOp):
+        info['field'] = op.field
+
+    # ``payload`` carries the actual content the worker is writing —
+    # the field shape matches the op kind. This is the smoking-gun
+    # diagnostic when a finding persists across rounds: we can compare
+    # the worker's value against the manifest item it was supposed to
+    # anchor and see whether the patch was substantive, off-target, or
+    # too generic to count as an anchor.
+    #
+    # Gated by ``SOW_VERBOSE_LOGGING`` because the payload can be large
+    # (an ``add_item`` for a deliverable carries the full item dict).
+    # In default mode ``payload`` stays ``None`` so the log shape is
+    # stable while keeping the structural columns (op_kind, finding_id,
+    # collection, item_id, dropped_anchors, removes_manifest_anchored_item)
+    # available for everyday triage.
+    if is_verbose_sow_logging():
+        if isinstance(op, UpdateItemOp):
+            info['payload'] = {'fields': op.fields}
+        elif isinstance(op, AddItemOp):
+            info['payload'] = {
+                'item': op.item,
+                'after_item_id': op.after_item_id,
+            }
+        elif isinstance(op, RemoveItemOp):
+            info['payload'] = {
+                'coverage_transferred_to': op.coverage_transferred_to,
+            }
+        elif isinstance(op, UpdateFieldOp):
+            info['payload'] = {'value': op.value}
+
+    if isinstance(op, RemoveItemOp):
+        # An intentional removal — but if the item carried a manifest-
+        # anchor id, the next critic round will flag the manifest item
+        # as uncovered. Surface it explicitly so the loop can correlate.
+        if op.item_id and ANCHOR_ID_PATTERN.fullmatch(op.item_id.strip()):
+            info['removes_manifest_anchored_item'] = True
+            info['dropped_anchors'] = [op.item_id.upper()]
+    elif isinstance(op, (UpdateItemOp, UpdateFieldOp)):
+        info['dropped_anchors'] = _detect_anchor_drops(
+            op, before_bundle, after_bundle,
+        )
+    return info
 
 
 # ---------------------------------------------------------------------------
@@ -612,6 +737,136 @@ def _build_apply_section_patch(
                 )
         anchor_drops = sorted(set(anchor_drops))
 
+        # Rich per-op classification — runs over ALL ops (including
+        # RemoveItemOp / AddItemOp) so the executed-ops log carries a
+        # uniform anchor-impact column. Distinct from the narrow
+        # ``anchor_drops`` set above, which preserves the pre-existing
+        # "side-effect-only" semantics for the ``section_patch_applied``
+        # event (and downstream consumers / tests that key off it).
+        op_impacts = [
+            _classify_op_anchor_impact(op, current_bundle, after_bundle_dict)
+            for op in parsed_ops
+        ]
+        manifest_anchored_removes = sorted({
+            anchor
+            for impact in op_impacts
+            if impact['removes_manifest_anchored_item']
+            for anchor in impact['dropped_anchors']
+        })
+
+        # Step 5b — net-drop enforcement. Compare the COMPLETE bundle's
+        # anchor-id set before vs. after applying every op. Any id that
+        # disappears must be matched by an explicit ``remove_item`` in
+        # this batch — that is the only authorised path for taking an
+        # anchored item out of the bundle. If the diff surfaces an
+        # anchor that no ``remove_item`` named, the patch is refused
+        # transactionally (state unchanged) so the next critic round
+        # does not see an uncovered manifest entry.
+        #
+        # Why net-drop and not per-op: a legit worker patch sometimes
+        # edits item A's description to drop a reference to FR-NN, then
+        # adds FR-NN back into item B in the same batch. Net delta = 0
+        # → allowed. Per-op delta would refuse the first op.
+        #
+        # ``coverage_transferred_to`` semantics for ``remove_item`` are
+        # also enforced here: when the removed item id matches the
+        # anchor pattern, ``coverage_transferred_to`` MUST be a non-empty
+        # list naming the item(s) that absorb the coverage. A ``None``
+        # value used to be the "no coverage at stake" escape hatch; that
+        # claim is incoherent for a manifest-anchored item and we now
+        # reject it with a precise error so the worker can declare the
+        # transfer (or restore the anchor via ``update_item`` in the
+        # same batch).
+        before_anchor_set = extract_anchor_ids(current_bundle)
+        after_anchor_set = extract_anchor_ids(after_bundle_dict)
+        net_dropped_anchors = before_anchor_set - after_anchor_set
+
+        authorized_drop_ids: set[str] = set()
+        anchored_remove_violations: list[dict[str, Any]] = []
+        for op in parsed_ops:
+            if not isinstance(op, RemoveItemOp):
+                continue
+            normalised_item_id = (op.item_id or '').strip()
+            if not normalised_item_id:
+                continue
+            if not ANCHOR_ID_PATTERN.fullmatch(normalised_item_id):
+                # Unanchored items keep the legacy contract — None
+                # ``coverage_transferred_to`` is still allowed because
+                # there is no manifest anchor at stake.
+                continue
+            anchor_upper = normalised_item_id.upper()
+            # Layer 2 — anchored removes must declare coverage. ``None``
+            # / empty value is incoherent for a manifest-anchored item.
+            if not op.coverage_transferred_to:
+                anchored_remove_violations.append({
+                    'finding_id': op.finding_id,
+                    'item_id': anchor_upper,
+                    'collection': op.collection,
+                })
+                continue
+            # Authorised: the explicit item id PLUS every anchor that
+            # lived inside the removed item's content. Without the
+            # collateral expansion, an item whose ``description`` quoted
+            # other anchors (e.g. WS-01.description = "FR-01 spec.")
+            # would trip the net-drop refusal on the collateral anchor
+            # even when the worker has done its homework. The worker's
+            # ``coverage_transferred_to`` is the explicit handoff for
+            # the WHOLE item, not just the id sticker.
+            authorized_drop_ids.add(anchor_upper)
+            removed_item = _find_removed_item_payload(
+                current_bundle, op.collection, op.item_id,
+            )
+            if removed_item is not None:
+                authorized_drop_ids.update(extract_anchor_ids(removed_item))
+
+        unauthorized_drops = sorted(net_dropped_anchors - authorized_drop_ids)
+
+        if anchored_remove_violations or unauthorized_drops:
+            logger.warning(
+                'section_patch_refused_anchor_loss',
+                section=section_name,
+                bundle_key=bundle_key,
+                unauthorized_drops=unauthorized_drops,
+                anchored_removes_without_coverage=anchored_remove_violations,
+                ops=op_impacts,
+            )
+            error_parts: list[str] = []
+            if unauthorized_drops:
+                error_parts.append(
+                    f'Anchor ids dropped from the bundle without an '
+                    f'explicit remove_item: {unauthorized_drops}.'
+                )
+            if anchored_remove_violations:
+                violation_ids = sorted({
+                    v['item_id'] for v in anchored_remove_violations
+                })
+                error_parts.append(
+                    f'remove_item on manifest-anchored item(s) '
+                    f'{violation_ids} must declare '
+                    f'`coverage_transferred_to` naming the item(s) that '
+                    f'absorb the manifest coverage (None is not a valid '
+                    f'acknowledgement for anchored items).'
+                )
+            return ToolError(
+                status='error',
+                error=' '.join(error_parts),
+                retryable=True,
+                tool=f'apply_{section_name}_patch',
+                suggestion=(
+                    'Either (a) restore the dropped anchor by adding/'
+                    'updating another item in the same batch to reference '
+                    'it, (b) emit a `remove_item` op whose `item_id` is '
+                    'the dropped anchor and whose `coverage_transferred_to` '
+                    'lists the item(s) that now cover the manifest entry, '
+                    'or (c) drop the offending op and reformulate the '
+                    'fix to preserve the anchors.'
+                ),
+                data={
+                    'unauthorized_drops': unauthorized_drops,
+                    'anchored_removes_without_coverage': anchored_remove_violations,
+                },
+            )
+
         # Step 6 — commit. We write the validated dict (not the raw
         # snapshot) so any Pydantic coercion (e.g. id injection) is
         # reflected in state.
@@ -649,6 +904,25 @@ def _build_apply_section_patch(
             before_hash=before_bundle_hash,
             after_hash=after_bundle_hash,
             anchor_drops_count=len(anchor_drops),
+            manifest_anchored_removes_count=len(manifest_anchored_removes),
+        )
+
+        # Always-on full ops log — one structured event per patch call
+        # carrying every op + finding_id + per-op anchor impact. This is
+        # the trail we follow post-mortem to answer "which finding made
+        # the worker emit which op that dropped which anchor?". The
+        # legacy ``section_patch_anchor_drops`` warning above stays put;
+        # it fires only when the narrow detector sees a drop and is what
+        # downstream consumers / dashboards already key off.
+        logger.info(
+            'section_patch_ops_executed',
+            section=section_name,
+            bundle_key=bundle_key,
+            before_hash=before_bundle_hash,
+            after_hash=after_bundle_hash,
+            ops=op_impacts,
+            anchor_drops=anchor_drops,
+            manifest_anchored_removes=manifest_anchored_removes,
         )
 
         return ToolSuccess(status='success', data=result)

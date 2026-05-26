@@ -24,8 +24,27 @@ import re
 from typing import Any
 
 
+# Two formats coexist in the SOW schema:
+#
+# - Dashed form (``FR-NN``, ``NFR-NN``, ``WS-NN``, ``R-NN``, …) used by
+#   requirements, NFRs, risks, and the test fixtures' first-gen
+#   deliverables. Matches one or more digits after the dash.
+# - Dotted form (``WS<phase>.<seq>``, e.g. ``WS01.1``, ``WS03.6``) used
+#   by the production deliverables collection — the model emits this
+#   shape consistently and the docx template renders it. Without the
+#   second branch, every remove/drop of a dotted deliverable id is
+#   silent in the anchor-drop telemetry (we lived with that until the
+#   round-46 trace surfaced WS03.5 + WS03.6 removes that the patch
+#   tool classified as ``removes_manifest_anchored_item=false``).
+#
+# Both branches anchor on word boundaries so embedded false positives
+# (e.g. ``AES-256``) stay out. Case-insensitive so ``fr-01`` and
+# ``ws01.1`` resolve to the same id after upper-casing.
 ANCHOR_ID_PATTERN: re.Pattern[str] = re.compile(
-    r'\b(?:FR|NFR|WS|OOS|A|I|R|T|G|P)-\d{1,4}\b',
+    r'\b(?:'
+    r'(?:FR|NFR|WS|OOS|A|I|R|T|G|P)-\d{1,4}'
+    r'|WS\d{1,3}\.\d{1,3}'
+    r')\b',
     flags=re.IGNORECASE,
 )
 

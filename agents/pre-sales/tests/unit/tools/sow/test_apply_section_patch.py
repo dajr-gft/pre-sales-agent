@@ -205,6 +205,9 @@ class TestUpdateItemHappyPath:
             SOW_BUNDLE_STATE_KEYS['delivery_plan']
         ] = _seed_delivery_plan_bundle()
 
+        # Preserve the FR-01 reference in the updated description so the
+        # net-drop refusal does NOT fire (this test pins hashing, not
+        # anchor enforcement).
         result = await apply_delivery_plan_patch(
             ops=[
                 {
@@ -212,7 +215,7 @@ class TestUpdateItemHappyPath:
                     'finding_id': 'f-1',
                     'collection': 'deliverables',
                     'item_id': 'WS-01',
-                    'fields': {'description': 'Something different.'},
+                    'fields': {'description': 'FR-01 spec — revised.'},
                 },
             ],
             tool_context=mock_tool_context,
@@ -313,7 +316,11 @@ class TestAddItem:
 
 
 class TestRemoveItem:
-    async def test_removes_with_explicit_none_coverage(self, mock_tool_context):
+    async def test_removes_with_explicit_coverage_transfer(self, mock_tool_context):
+        """Removing an anchored item REQUIRES naming the item that
+        absorbs the manifest coverage. ``None`` is no longer a valid
+        acknowledgement for anchored ids — see :class:`TestNetDropRefusal`
+        for the failure-mode coverage."""
         mock_tool_context.state[
             SOW_BUNDLE_STATE_KEYS['delivery_plan']
         ] = _seed_delivery_plan_bundle()
@@ -325,7 +332,7 @@ class TestRemoveItem:
                     'finding_id': 'f-1',
                     'collection': 'deliverables',
                     'item_id': 'WS-02',
-                    'coverage_transferred_to': None,
+                    'coverage_transferred_to': 'WS-01',
                 },
             ],
             tool_context=mock_tool_context,
@@ -673,39 +680,31 @@ class TestPerSectionIsolation:
 
 
 class TestAnchorDropWarning:
-    async def test_update_item_returns_ok_with_warnings_when_anchor_drops(
-        self, mock_tool_context
-    ):
-        mock_tool_context.state[
-            SOW_BUNDLE_STATE_KEYS['delivery_plan']
-        ] = _seed_delivery_plan_bundle()
+    """Anchor-drop refusal contract.
 
-        # WS-01.description references FR-01 — replace with text that
-        # has no anchor.
-        result = await apply_delivery_plan_patch(
-            ops=[
-                {
-                    'op': 'update_item',
-                    'finding_id': 'f-1',
-                    'collection': 'deliverables',
-                    'item_id': 'WS-01',
-                    'fields': {'description': 'Generic spec doc.'},
-                },
-            ],
-            tool_context=mock_tool_context,
-        )
-        assert result['status'] == 'success'
-        assert result['data']['status'] == 'ok_with_warnings'
-        assert 'FR-01' in result['data']['anchor_drops']
+    Under the post-Phase-4 contract, anchor drops that escape the
+    bundle without an explicit ``remove_item`` (with valid coverage)
+    are REFUSED, not warned. The ``ok_with_warnings`` status remains
+    reserved for the residual case where the per-collection detector
+    sees an anchor leave the touched collection but the bundle as a
+    whole still carries the anchor in another collection — that case
+    commits successfully but surfaces the per-collection drop for
+    diagnostic visibility.
+
+    See :class:`TestNetDropRefusal` for the stricter refusal paths.
+    """
 
     async def test_update_field_diffs_string_list_anchor_ids(
         self, mock_tool_context
     ):
+        """``out_of_scope`` quoted ``FR-99`` (a placeholder anchor that
+        does NOT exist in any other collection in the seed). Dropping
+        it via ``update_field`` now refuses the patch — pin that
+        behavior so the warning regression is captured."""
         mock_tool_context.state[
             SOW_BUNDLE_STATE_KEYS['scope_boundaries']
         ] = _seed_scope_boundaries_bundle()
 
-        # out_of_scope had "FR-99" — drop it via update_field
         result = await apply_scope_boundaries_patch(
             ops=[
                 {
@@ -717,9 +716,8 @@ class TestAnchorDropWarning:
             ],
             tool_context=mock_tool_context,
         )
-        assert result['status'] == 'success'
-        assert result['data']['status'] == 'ok_with_warnings'
-        assert 'FR-99' in result['data']['anchor_drops']
+        assert result['status'] == 'error'
+        assert 'FR-99' in result['error']
 
     async def test_no_warning_when_no_anchor_drops(self, mock_tool_context):
         mock_tool_context.state[
@@ -743,6 +741,577 @@ class TestAnchorDropWarning:
         assert result['status'] == 'success'
         assert result['data']['status'] == 'ok'
         assert result['data']['anchor_drops'] == []
+
+
+# ---------------------------------------------------------------------------
+# Ops telemetry — section_patch_ops_executed event + per-op classification
+# ---------------------------------------------------------------------------
+
+
+class TestOpsExecutedTelemetry:
+    """Observability contract for the always-on ops log.
+
+    The ``section_patch_ops_executed`` event is the post-mortem trail
+    that answers "which finding made the worker emit which op that
+    dropped which anchor?" — it must fire on every patch call (success
+    or warning) and carry a stable shape: one dict per op with
+    ``op_kind``, ``finding_id``, target descriptors, ``dropped_anchors``,
+    and ``removes_manifest_anchored_item``.
+    """
+
+    async def test_event_fires_on_every_patch_call(
+        self, mock_tool_context, caplog,
+    ):
+        mock_tool_context.state[
+            SOW_BUNDLE_STATE_KEYS['delivery_plan']
+        ] = _seed_delivery_plan_bundle()
+
+        import logging
+        caplog.set_level(logging.INFO)
+        await apply_delivery_plan_patch(
+            ops=[
+                {
+                    'op': 'update_item',
+                    'finding_id': 'f-1',
+                    'collection': 'deliverables',
+                    'item_id': 'WS-01',
+                    'fields': {'description': 'Detailed FR-01 spec.'},
+                },
+            ],
+            tool_context=mock_tool_context,
+        )
+
+        messages = [r.getMessage() for r in caplog.records]
+        assert any('section_patch_ops_executed' in m for m in messages)
+
+    async def test_remove_anchored_item_flagged_manifest_anchored(
+        self, mock_tool_context, caplog,
+    ):
+        """The structural signal this whole pass exists to surface.
+        Authorised remove (coverage transferred) commits; telemetry
+        carries the manifest-anchored signal."""
+        mock_tool_context.state[
+            SOW_BUNDLE_STATE_KEYS['delivery_plan']
+        ] = _seed_delivery_plan_bundle()
+
+        import logging
+        caplog.set_level(logging.INFO)
+        result = await apply_delivery_plan_patch(
+            ops=[
+                {
+                    'op': 'remove_item',
+                    'finding_id': 'f-9',
+                    'collection': 'deliverables',
+                    'item_id': 'WS-01',
+                    'coverage_transferred_to': 'WS-02',
+                },
+            ],
+            tool_context=mock_tool_context,
+        )
+
+        assert result['status'] == 'success'
+        # New top-level counter on the existing event surfaces the
+        # manifest-anchored remove count without parsing the ops payload.
+        # We rely on logger.info call structure: scrape caplog records.
+        rec = next(
+            r for r in caplog.records
+            if 'section_patch_ops_executed' in r.getMessage()
+        )
+        # structlog renders kwargs into the record dict via the event
+        # key — _structured_event_payload below digs them out.
+        payload = _structured_event_payload(rec)
+        assert payload['manifest_anchored_removes'] == ['WS-01']
+        assert len(payload['ops']) == 1
+        op_entry = payload['ops'][0]
+        assert op_entry['op_kind'] == 'remove_item'
+        assert op_entry['finding_id'] == 'f-9'
+        assert op_entry['item_id'] == 'WS-01'
+        assert op_entry['removes_manifest_anchored_item'] is True
+        assert op_entry['dropped_anchors'] == ['WS-01']
+
+    async def test_remove_unanchored_item_not_flagged_manifest_anchored(
+        self, mock_tool_context, caplog,
+    ):
+        """Removing a plain-text bullet (no FR/NFR/WS/R id) is NOT a
+        manifest-anchored drop — the classifier must distinguish.
+        """
+        mock_tool_context.state[
+            SOW_BUNDLE_STATE_KEYS['scope_boundaries']
+        ] = {
+            'assumptions': ['Customer provides access.'],
+            'out_of_scope': ['Hardware procurement.'],
+            'risks': [],
+            'handover_disclaimers': [],
+            'change_request_policy_text': '',
+        }
+        # Remove the assumption via update_field (it's a list[str]).
+        import logging
+        caplog.set_level(logging.INFO)
+        result = await apply_scope_boundaries_patch(
+            ops=[
+                {
+                    'op': 'update_field',
+                    'finding_id': 'f-2',
+                    'field': 'assumptions',
+                    'value': [],
+                },
+            ],
+            tool_context=mock_tool_context,
+        )
+
+        assert result['status'] == 'success'
+        rec = next(
+            r for r in caplog.records
+            if 'section_patch_ops_executed' in r.getMessage()
+        )
+        payload = _structured_event_payload(rec)
+        assert payload['manifest_anchored_removes'] == []
+        op_entry = payload['ops'][0]
+        assert op_entry['removes_manifest_anchored_item'] is False
+
+    async def test_op_payload_is_none_in_default_mode(
+        self, mock_tool_context, caplog, monkeypatch,
+    ):
+        """Default mode (no ``SOW_VERBOSE_LOGGING``) keeps the log lean:
+        ``payload`` is ``None`` so the op log row stays at structural
+        columns only (op_kind, finding_id, target, drop signals). The
+        key is still present so downstream consumers can rely on the
+        shape."""
+        monkeypatch.delenv('SOW_VERBOSE_LOGGING', raising=False)
+        mock_tool_context.state[
+            SOW_BUNDLE_STATE_KEYS['delivery_plan']
+        ] = _seed_delivery_plan_bundle()
+
+        import logging
+        caplog.set_level(logging.INFO)
+        await apply_delivery_plan_patch(
+            ops=[
+                {
+                    'op': 'update_item',
+                    'finding_id': 'coverage-001',
+                    'collection': 'deliverables',
+                    'item_id': 'WS-01',
+                    'fields': {'description': 'FR-01 detailed spec.'},
+                },
+            ],
+            tool_context=mock_tool_context,
+        )
+
+        rec = next(
+            r for r in caplog.records
+            if 'section_patch_ops_executed' in r.getMessage()
+        )
+        payload = _structured_event_payload(rec)
+        op_entry = payload['ops'][0]
+        assert 'payload' in op_entry  # shape-stable: key always present
+        assert op_entry['payload'] is None
+
+    async def test_op_payload_captures_update_item_fields_when_verbose(
+        self, mock_tool_context, caplog, monkeypatch,
+    ):
+        """Verbose mode lights up the smoking-gun trail: ``payload``
+        carries the ``fields`` the worker is writing into the touched
+        item. This is what we'll grep when a coverage finding persists —
+        does the worker's text actually anchor the manifest item?"""
+        monkeypatch.setenv('SOW_VERBOSE_LOGGING', '1')
+        mock_tool_context.state[
+            SOW_BUNDLE_STATE_KEYS['delivery_plan']
+        ] = _seed_delivery_plan_bundle()
+
+        import logging
+        caplog.set_level(logging.INFO)
+        await apply_delivery_plan_patch(
+            ops=[
+                {
+                    'op': 'update_item',
+                    'finding_id': 'coverage-001',
+                    'collection': 'deliverables',
+                    'item_id': 'WS-01',
+                    'fields': {'description': 'FR-01 detailed spec.'},
+                },
+            ],
+            tool_context=mock_tool_context,
+        )
+
+        rec = next(
+            r for r in caplog.records
+            if 'section_patch_ops_executed' in r.getMessage()
+        )
+        payload = _structured_event_payload(rec)
+        op_entry = payload['ops'][0]
+        assert op_entry['payload'] == {
+            'fields': {'description': 'FR-01 detailed spec.'},
+        }
+
+    async def test_op_payload_captures_add_item_content_when_verbose(
+        self, mock_tool_context, caplog, monkeypatch,
+    ):
+        monkeypatch.setenv('SOW_VERBOSE_LOGGING', '1')
+        mock_tool_context.state[
+            SOW_BUNDLE_STATE_KEYS['delivery_plan']
+        ] = _seed_delivery_plan_bundle()
+
+        import logging
+        caplog.set_level(logging.INFO)
+        await apply_delivery_plan_patch(
+            ops=[
+                {
+                    'op': 'add_item',
+                    'finding_id': 'coverage-002',
+                    'collection': 'deliverables',
+                    'item': {
+                        'number': 'WS-99',
+                        'activity': 'Phase 1',
+                        'name': 'Extra',
+                        'description': 'NFR-01 reinforcement.',
+                        'format': 'Document',
+                    },
+                    'after_item_id': None,
+                },
+            ],
+            tool_context=mock_tool_context,
+        )
+
+        rec = next(
+            r for r in caplog.records
+            if 'section_patch_ops_executed' in r.getMessage()
+        )
+        payload = _structured_event_payload(rec)
+        op_entry = payload['ops'][0]
+        assert op_entry['payload']['item']['number'] == 'WS-99'
+        assert op_entry['payload']['after_item_id'] is None
+
+    async def test_op_payload_captures_update_field_value_when_verbose(
+        self, mock_tool_context, caplog, monkeypatch,
+    ):
+        monkeypatch.setenv('SOW_VERBOSE_LOGGING', '1')
+        mock_tool_context.state[
+            SOW_BUNDLE_STATE_KEYS['scope_boundaries']
+        ] = {
+            'assumptions': ['Customer provides access.'],
+            'out_of_scope': [],
+            'risks': [],
+            'handover_disclaimers': [],
+            'change_request_policy_text': '',
+        }
+
+        import logging
+        caplog.set_level(logging.INFO)
+        await apply_scope_boundaries_patch(
+            ops=[
+                {
+                    'op': 'update_field',
+                    'finding_id': 'contractual_exposure-001',
+                    'field': 'assumptions',
+                    'value': ['Customer provides access.', 'New assumption.'],
+                },
+            ],
+            tool_context=mock_tool_context,
+        )
+
+        rec = next(
+            r for r in caplog.records
+            if 'section_patch_ops_executed' in r.getMessage()
+        )
+        payload = _structured_event_payload(rec)
+        op_entry = payload['ops'][0]
+        assert op_entry['payload'] == {
+            'value': ['Customer provides access.', 'New assumption.'],
+        }
+
+    async def test_event_payload_keys_are_stable_across_op_kinds(
+        self, mock_tool_context, caplog,
+    ):
+        """A heterogeneous batch produces uniform per-op dicts — the log
+        consumer can parse the payload without branching on op_kind.
+        """
+        mock_tool_context.state[
+            SOW_BUNDLE_STATE_KEYS['delivery_plan']
+        ] = _seed_delivery_plan_bundle()
+
+        import logging
+        caplog.set_level(logging.INFO)
+        await apply_delivery_plan_patch(
+            ops=[
+                {
+                    'op': 'update_item',
+                    'finding_id': 'f-1',
+                    'collection': 'deliverables',
+                    'item_id': 'WS-01',
+                    'fields': {'description': 'Updated FR-01 spec.'},
+                },
+                {
+                    'op': 'add_item',
+                    'finding_id': 'f-2',
+                    'collection': 'deliverables',
+                    'item': {
+                        'number': 'WS-99',
+                        'activity': 'Phase 1',
+                        'name': 'Extra',
+                        'description': 'NFR-01 reinforcement.',
+                        'format': 'Document',
+                    },
+                    'after_item_id': None,
+                },
+                {
+                    'op': 'update_field',
+                    'finding_id': 'f-3',
+                    'field': 'success_criteria',
+                    'value': ['Plan accepted.', 'Tests pass.'],
+                },
+            ],
+            tool_context=mock_tool_context,
+        )
+
+        rec = next(
+            r for r in caplog.records
+            if 'section_patch_ops_executed' in r.getMessage()
+        )
+        payload = _structured_event_payload(rec)
+        assert len(payload['ops']) == 3
+        expected_keys = {
+            'op_kind', 'finding_id', 'collection', 'item_id', 'field',
+            'payload', 'dropped_anchors', 'removes_manifest_anchored_item',
+        }
+        for entry in payload['ops']:
+            assert expected_keys <= entry.keys(), (
+                f'op entry missing keys: {expected_keys - entry.keys()}'
+            )
+
+
+# ---------------------------------------------------------------------------
+# Net-drop enforcement — refuses patches that lose anchors without consent
+# ---------------------------------------------------------------------------
+
+
+class TestNetDropRefusal:
+    """The patch tool refuses a batch that loses anchor ids from the
+    bundle unless the loss is covered by a ``remove_item`` op with
+    explicit ``coverage_transferred_to``. This is the structural fix
+    for the observed Class-D cascade where worker text edits silently
+    dropped manifest-anchored references, the next critic round flagged
+    them as uncovered, and the loop spent a round restoring them.
+    """
+
+    async def test_update_item_dropping_anchor_with_no_remove_is_refused(
+        self, mock_tool_context,
+    ):
+        mock_tool_context.state[
+            SOW_BUNDLE_STATE_KEYS['delivery_plan']
+        ] = _seed_delivery_plan_bundle()
+
+        # WS-01.description references FR-01. Updating to text with no
+        # anchor strips FR-01 from the bundle if FR-01 is not present
+        # anywhere else. The seed has FR-01 only inside WS-01, so the
+        # net drop fires and the patch is refused.
+        result = await apply_delivery_plan_patch(
+            ops=[
+                {
+                    'op': 'update_item',
+                    'finding_id': 'f-1',
+                    'collection': 'deliverables',
+                    'item_id': 'WS-01',
+                    'fields': {'description': 'Generic spec doc.'},
+                },
+            ],
+            tool_context=mock_tool_context,
+        )
+
+        assert result['status'] == 'error'
+        assert 'FR-01' in result['error']
+        # State must be untouched after refusal.
+        bundle = mock_tool_context.state[
+            SOW_BUNDLE_STATE_KEYS['delivery_plan']
+        ]
+        assert bundle['deliverables'][0]['description'] == 'FR-01 spec.'
+
+    async def test_update_item_dropping_anchor_with_replacement_in_same_batch_allowed(
+        self, mock_tool_context,
+    ):
+        """Net-drop = empty when another op in the same batch restores
+        the anchor. The worker's legitimate "move FR-01 reference from
+        WS-01 to WS-02" pattern must keep working.
+        """
+        mock_tool_context.state[
+            SOW_BUNDLE_STATE_KEYS['delivery_plan']
+        ] = _seed_delivery_plan_bundle()
+
+        result = await apply_delivery_plan_patch(
+            ops=[
+                {
+                    'op': 'update_item',
+                    'finding_id': 'f-1',
+                    'collection': 'deliverables',
+                    'item_id': 'WS-01',
+                    'fields': {'description': 'Generic spec doc.'},
+                },
+                {
+                    'op': 'update_item',
+                    'finding_id': 'f-1',
+                    'collection': 'deliverables',
+                    'item_id': 'WS-02',
+                    'fields': {'description': 'FR-01 + NFR-01 covered here.'},
+                },
+            ],
+            tool_context=mock_tool_context,
+        )
+
+        assert result['status'] == 'success'
+
+    async def test_remove_anchored_item_without_coverage_is_refused(
+        self, mock_tool_context,
+    ):
+        """``coverage_transferred_to: None`` is incoherent for an
+        anchored item — the manifest entry needs a new home, not an
+        acknowledgement that "no coverage was at stake".
+        """
+        mock_tool_context.state[
+            SOW_BUNDLE_STATE_KEYS['delivery_plan']
+        ] = _seed_delivery_plan_bundle()
+
+        result = await apply_delivery_plan_patch(
+            ops=[
+                {
+                    'op': 'remove_item',
+                    'finding_id': 'f-9',
+                    'collection': 'deliverables',
+                    'item_id': 'WS-01',
+                    'coverage_transferred_to': None,
+                },
+            ],
+            tool_context=mock_tool_context,
+        )
+
+        assert result['status'] == 'error'
+        # Message names the offending item and the contract.
+        assert 'WS-01' in result['error']
+        assert 'coverage_transferred_to' in result['error']
+
+    async def test_remove_anchored_item_with_coverage_is_allowed(
+        self, mock_tool_context,
+    ):
+        mock_tool_context.state[
+            SOW_BUNDLE_STATE_KEYS['delivery_plan']
+        ] = _seed_delivery_plan_bundle()
+
+        result = await apply_delivery_plan_patch(
+            ops=[
+                {
+                    'op': 'remove_item',
+                    'finding_id': 'f-9',
+                    'collection': 'deliverables',
+                    'item_id': 'WS-01',
+                    'coverage_transferred_to': 'WS-02',
+                },
+            ],
+            tool_context=mock_tool_context,
+        )
+
+        assert result['status'] == 'success'
+
+    async def test_remove_unanchored_item_with_none_coverage_still_allowed(
+        self, mock_tool_context,
+    ):
+        """The new check only fires for items whose id matches the
+        anchor pattern. Removing a plain-text bullet (no id) keeps the
+        legacy ``coverage_transferred_to: None`` escape hatch.
+        """
+        mock_tool_context.state[
+            SOW_BUNDLE_STATE_KEYS['scope_boundaries']
+        ] = {
+            'assumptions': [],
+            'out_of_scope': [],
+            'risks': [
+                # R-01 is anchored, but we won't remove it. We'll
+                # remove an entry from a non-anchored collection via
+                # update_field below — this test confirms the policy
+                # narrows to anchored remove_item.
+            ],
+            'handover_disclaimers': [],
+            'change_request_policy_text': '',
+        }
+        result = await apply_scope_boundaries_patch(
+            ops=[
+                {
+                    'op': 'update_field',
+                    'finding_id': 'f-1',
+                    'field': 'assumptions',
+                    'value': ['Customer provides AWS S3 access.'],
+                },
+            ],
+            tool_context=mock_tool_context,
+        )
+
+        assert result['status'] == 'success'
+
+    async def test_deliverable_dotted_anchor_drop_refused(
+        self, mock_tool_context,
+    ):
+        """``WS03.6`` is now a recognised anchor. Removing it without
+        coverage is refused exactly like ``WS-01``.
+        """
+        mock_tool_context.state[
+            SOW_BUNDLE_STATE_KEYS['delivery_plan']
+        ] = {
+            'activity_phases': [
+                {'name': 'Phase 1', 'description': 'D.', 'tasks': []},
+            ],
+            'deliverables': [
+                {
+                    'number': 'WS03.6',
+                    'activity': 'Phase 1',
+                    'name': 'Event publishing',
+                    'description': 'Setup.',
+                    'format': 'Code',
+                },
+            ],
+            'timeline': [],
+            'partner_roles': [],
+            'customer_roles': [],
+            'success_criteria': [],
+            'objectives': [],
+        }
+
+        result = await apply_delivery_plan_patch(
+            ops=[
+                {
+                    'op': 'remove_item',
+                    'finding_id': 'f-1',
+                    'collection': 'deliverables',
+                    'item_id': 'WS03.6',
+                    'coverage_transferred_to': None,
+                },
+            ],
+            tool_context=mock_tool_context,
+        )
+
+        assert result['status'] == 'error'
+        assert 'WS03.6' in result['error']
+        assert 'coverage_transferred_to' in result['error']
+
+
+def _structured_event_payload(record) -> dict[str, Any]:
+    """Extract the structured kwargs dict from a structlog log record.
+
+    structlog renders the original ``key=value`` pairs into the LogRecord
+    via the standard library handler; the most reliable cross-version
+    access is via ``record.__dict__`` filtered against the message body.
+    """
+    # structlog ships the rendered payload via the `event_dict` attr in
+    # some versions and via record.msg in others. Cover both.
+    if isinstance(record.msg, dict):
+        return record.msg
+    # Last resort: parse from JSON-renderered message (the project's
+    # structlog config uses JSONRenderer; tests should still resolve
+    # via __dict__).
+    import json
+    if isinstance(record.msg, str) and record.msg.startswith('{'):
+        return json.loads(record.msg)
+    return {
+        k: v
+        for k, v in record.__dict__.items()
+        if not k.startswith('_') and k not in {'msg', 'args', 'levelname'}
+    }
 
 
 # ---------------------------------------------------------------------------
