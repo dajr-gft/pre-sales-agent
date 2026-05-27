@@ -4,9 +4,6 @@ A "placeholder" is a SOW field whose literal value is a sanctioned
 deferral marker such as ``[TO BE DEFINED]`` or ``[A DEFINIR]``. These
 markers appear when:
 
-- The Extraction Manifest's ``gaps.to_be_defined`` or
-  ``gaps.hard_gaps[blocks_sow_generation=false]`` recorded the field
-  as intentionally deferred at discovery time;
 - The user explicitly approved deferring the value during a review
   gate (e.g., "leave the sponsor names as ``[A DEFINIR]`` and we'll
   fill them later");
@@ -21,19 +18,18 @@ semantic skills would otherwise emit findings asking the user to fill
 the field that they already approved deferring.
 
 Whether a placeholder is *approved* (vs an unsanctioned fabrication
-hiding a real coverage gap) is decided by the validation skills with
-the help of the manifest's gap list — see ``manifest_prefilter`` and
-the ``_RESOLUTION_MODE_GUIDE`` "Approved placeholders" block. The
-helpers in this module are pattern-matching only; they do not by
-themselves authorize a placeholder.
+hiding a real coverage gap) is decided by the validation skills via the
+``_RESOLUTION_MODE_GUIDE`` "Approved placeholders" block (contractual
+fill-on-signature fields are sanctioned; everything else is an
+auto_fixable finding). The helpers in this module are pattern-matching
+only; they do not by themselves authorize a placeholder.
 
 Why a module
 ------------
-Centralising the pattern in one file avoids the drift problem that
-caused the prefilter bug shipped before this change: each layer
-(deterministic validator, prefilter, skill prompt, root prompt) was
-recognising placeholders differently or — worse — not at all. The
-regex below is the single source of truth.
+Centralising the pattern in one file avoids a drift problem: each layer
+(deterministic validator, skill prompt, root prompt) was recognising
+placeholders differently or — worse — not at all. The regex below is
+the single source of truth.
 """
 
 from __future__ import annotations
@@ -108,58 +104,3 @@ def strip_placeholders(value: str) -> str:
     the remaining content reflects the real authored text.
     """
     return PLACEHOLDER_PATTERN.sub('', value).strip()
-
-
-def collect_approved_deferrals(manifest: dict) -> list[str]:
-    """Collect human-readable deferral descriptions from a manifest.
-
-    Returns the concatenation of:
-
-    - ``manifest.gaps.to_be_defined[].item`` — short descriptions the
-      discovery agent rolled up specifically because they should appear
-      as placeholders in the final SOW.
-    - ``manifest.gaps.hard_gaps[].description`` where
-      ``blocks_sow_generation`` is false — questions discovery asked
-      the user that were left deferred without blocking the SOW.
-
-    Returned strings are deduplicated and stripped. The list is meant
-    to be injected verbatim into the validator's instruction prompt so
-    the LLM can match a SOW placeholder against the original deferral
-    context.
-
-    ``manifest`` is the discovery agent's output dict shape. Anything
-    that doesn't fit the schema is silently skipped — this helper is
-    called on every validation round, must never crash the pipeline.
-    """
-    if not isinstance(manifest, dict):
-        return []
-    gaps = manifest.get('gaps') or {}
-    if not isinstance(gaps, dict):
-        return []
-
-    out: list[str] = []
-    seen: set[str] = set()
-
-    def _push(text: object) -> None:
-        if not isinstance(text, str):
-            return
-        clean = text.strip()
-        if not clean or clean in seen:
-            return
-        seen.add(clean)
-        out.append(clean)
-
-    for tbd in gaps.get('to_be_defined') or []:
-        if isinstance(tbd, dict):
-            _push(tbd.get('item'))
-
-    for hg in gaps.get('hard_gaps') or []:
-        if not isinstance(hg, dict):
-            continue
-        if hg.get('blocks_sow_generation'):
-            # Blocking gaps are not approved deferrals — the agent
-            # should not let the SOW carry a placeholder in their place.
-            continue
-        _push(hg.get('description'))
-
-    return out

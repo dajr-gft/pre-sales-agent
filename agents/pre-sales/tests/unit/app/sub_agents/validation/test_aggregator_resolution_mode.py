@@ -74,7 +74,6 @@ def _finding(
         'evidence': evidence,
         'recommendation': 'Apply the calibrated fix.',
         'fields': list(fields),
-        'manifest_item_id': None,
         'persistent': False,
         'resolution_mode': resolution_mode,
         'requires_human_review': requires_human_review,
@@ -284,38 +283,7 @@ async def test_out_of_source_drift_is_auto_fixable_blocked():
 
 
 # ---------------------------------------------------------------------------
-# 6. Missing manifest coverage → blocked + auto_fixable
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-async def test_missing_manifest_coverage_is_auto_fixable_blocked():
-    """A manifest item (System-X) has no SOW anchor. Restore it = auto-fix."""
-    state = _state_with(
-        {
-            'coverage': [
-                _finding(
-                    fid='coverage-002',
-                    skill='coverage',
-                    category='manifest_item_uncovered',
-                    severity='MAJOR',
-                    evidence=(
-                        "Manifest item I-07: 'System-X integration'. No "
-                        "FR/NFR/Architecture row references it."
-                    ),
-                    resolution_mode='auto_fixable',
-                ),
-            ]
-        }
-    )
-    report = await _run(state)
-
-    assert report.overall_status == 'blocked'
-    assert report.findings[0].resolution_mode == 'auto_fixable'
-
-
-# ---------------------------------------------------------------------------
-# 7. Generic OOS vs explicitly-included scope → blocked + auto_fixable
+# 6. Generic OOS vs explicitly-included scope → blocked + auto_fixable
 # ---------------------------------------------------------------------------
 
 
@@ -679,7 +647,6 @@ async def test_invented_quantitative_commitment_must_be_decision_required():
 # tests fails loudly. If the policy table changes, this list must change
 # in lockstep AND a code review must justify the move.
 _EXPECTED_POLICY_PAIRS: tuple[tuple[str, str], ...] = (
-    ('coverage', 'manifest_item_uncovered'),
     ('contradictions', 'scope_vs_oos'),
     ('contradictions', 'timeline_vs_deliverables'),
     ('contradictions', 'activities_vs_deliverables'),

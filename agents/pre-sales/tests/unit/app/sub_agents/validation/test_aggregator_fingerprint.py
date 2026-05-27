@@ -161,7 +161,6 @@ def _make_finding(
     severity: str = 'MAJOR',
     evidence: str = '',
     fields: list[str] | None = None,
-    manifest_item_id: str | None = None,
 ) -> Finding:
     return Finding(
         id='test-001',
@@ -172,7 +171,6 @@ def _make_finding(
         evidence=evidence,
         recommendation='Reconcile the offending items.',
         fields=fields or ['activity_phases', 'deliverables'],
-        manifest_item_id=manifest_item_id,
     )
 
 
@@ -252,96 +250,10 @@ class TestFingerprintStabilityAcrossRounds:
         )
         assert _fingerprint(a) != _fingerprint(b)
 
-    def test_fingerprint_changes_when_manifest_item_id_changes(self):
-        """Coverage findings carry ``manifest_item_id`` — different
-        manifest items are different findings even if everything else
-        looks the same."""
-        a = _make_finding(
-            skill='coverage',
-            category='manifest_item_uncovered',
-            evidence='Item I-001 has no anchor',
-            fields=['functional_requirements'],
-            manifest_item_id='I-001',
-        )
-        b = _make_finding(
-            skill='coverage',
-            category='manifest_item_uncovered',
-            evidence='Item I-002 has no anchor',
-            fields=['functional_requirements'],
-            manifest_item_id='I-002',
-        )
-        assert _fingerprint(a) != _fingerprint(b)
-
 
 # ---------------------------------------------------------------------------
 # Canonical-identity fingerprinting — by-category rules
 # ---------------------------------------------------------------------------
-
-
-class TestCanonicalManifestIdFingerprint:
-    """``coverage/manifest_item_uncovered`` keys on ``manifest_item_id``
-    alone. The critic's evidence prose and the ``fields`` list are
-    dropped because they drift between rounds even when the same
-    manifest gap is being flagged. The production failure surfaced as
-    ``persistent_blocking_finding_count = 0`` on a manifest item that
-    appeared in 4 of 5 rounds (4 distinct fingerprints) — this rule is
-    the fix."""
-
-    def test_same_manifest_id_different_evidence_shares_fingerprint(self):
-        a = _make_finding(
-            skill='coverage',
-            category='manifest_item_uncovered',
-            evidence='The activity row references no anchor for this item.',
-            fields=['activity_phases'],
-            manifest_item_id='I-042',
-        )
-        b = _make_finding(
-            skill='coverage',
-            category='manifest_item_uncovered',
-            evidence='Item I-042 is not covered by any deliverable row.',
-            fields=['deliverables'],
-            manifest_item_id='I-042',
-        )
-        assert _fingerprint(a) == _fingerprint(b)
-
-    def test_same_manifest_id_different_fields_shares_fingerprint(self):
-        """The patcher may attribute the gap to different fields between
-        rounds (was a missing FR, now a missing deliverable). The
-        underlying defect — manifest item I-042 is uncovered — is the
-        same, so the fingerprint must match."""
-        a = _make_finding(
-            skill='coverage',
-            category='manifest_item_uncovered',
-            evidence='whatever',
-            fields=['functional_requirements'],
-            manifest_item_id='I-042',
-        )
-        b = _make_finding(
-            skill='coverage',
-            category='manifest_item_uncovered',
-            evidence='whatever',
-            fields=['deliverables', 'out_of_scope'],
-            manifest_item_id='I-042',
-        )
-        assert _fingerprint(a) == _fingerprint(b)
-
-    def test_empty_manifest_id_does_not_collapse_with_populated(self):
-        """A coverage finding emitted without a manifest_item_id (data
-        bug upstream) must not silently collide with another. Keying on
-        an empty string is still distinct from keying on 'I-001'."""
-        empty = _make_finding(
-            skill='coverage',
-            category='manifest_item_uncovered',
-            evidence='unspecified',
-            manifest_item_id=None,
-        )
-        populated = _make_finding(
-            skill='coverage',
-            category='manifest_item_uncovered',
-            evidence='unspecified',
-            manifest_item_id='I-001',
-        )
-        assert _fingerprint(empty) != _fingerprint(populated)
 
 
 class TestCanonicalFieldFingerprint:

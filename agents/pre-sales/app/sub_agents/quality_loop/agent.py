@@ -297,11 +297,11 @@ def _finding_digest(finding: dict) -> dict:
     """Compact digest of a finding for diagnostic logging.
 
     Keeps only the fields a human reading the log needs to trace a
-    finding's lifecycle round-to-round: identity, classification,
-    manifest anchor (for coverage tracking), and the first three
-    ``fields`` (the bundle keys the patcher would touch). Drops
-    ``evidence`` and ``recommendation`` — those are long prose, and the
-    fingerprint is what we use to track identity across rounds anyway.
+    finding's lifecycle round-to-round: identity, classification, and
+    the first three ``fields`` (the bundle keys the patcher would
+    touch). Drops ``evidence`` and ``recommendation`` — those are long
+    prose, and the fingerprint is what we use to track identity across
+    rounds anyway.
     """
     return {
         'id': finding.get('id'),
@@ -309,7 +309,6 @@ def _finding_digest(finding: dict) -> dict:
         'category': finding.get('category'),
         'severity': finding.get('severity'),
         'resolution_mode': finding.get('resolution_mode'),
-        'manifest_item_id': finding.get('manifest_item_id'),
         'fields': list(finding.get('fields') or [])[:3],
         'persistent': finding.get('persistent'),
     }
