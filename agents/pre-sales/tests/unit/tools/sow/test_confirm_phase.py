@@ -1,14 +1,12 @@
 """Unit tests for the phase-confirmation runtime gate.
 
-Covers the eight acceptance criteria:
+Covers the acceptance criteria:
 
-1. ``confirm_phase_completion('inference_summary_confirmed')`` works
-   without prerequisites.
-2. ``confirm_phase_completion('content_review_approved')`` returns a
-   ToolError when the prior phase is missing, and works after it.
-3. ``confirm_phase_completion('architecture_review_approved')`` returns
-   a ToolError when the prior phase is missing, and works after the
-   full sequence.
+1. ``confirm_phase_completion('content_review_approved')`` works
+   without prerequisites (it is the first phase).
+2. ``confirm_phase_completion('architecture_review_approved')`` returns
+   a ToolError when ``content_review_approved`` is missing, and works
+   after it.
 4. An invalid phase_key returns a ToolError with ``retryable=False``.
 5. ``validate_sow_content(stage='content')`` is never blocked by the
    architecture-review gate.
@@ -54,48 +52,15 @@ def _state_key(phase_key: str) -> str:
 class TestConfirmPhaseCompletionOrder:
     async def test_first_phase_has_no_prerequisites(self, mock_tool_context):
         result = await confirm_phase_completion(
-            phase_key='inference_summary_confirmed',
+            phase_key='content_review_approved',
             tool_context=mock_tool_context,
         )
         assert result['status'] == 'success'
         assert (
             result['data']['phase_confirmed']
-            == 'inference_summary_confirmed'
+            == 'content_review_approved'
         )
         assert result['data']['all_phases_confirmed'] is False
-        assert (
-            mock_tool_context.state[_state_key('inference_summary_confirmed')]
-            is True
-        )
-
-    async def test_content_review_blocked_without_manifest_confirmation(
-        self, mock_tool_context
-    ):
-        result = await confirm_phase_completion(
-            phase_key='content_review_approved',
-            tool_context=mock_tool_context,
-        )
-        assert result['status'] == 'error'
-        assert result['retryable'] is True
-        assert 'inference_summary_confirmed' in result['error']
-        # Nothing was persisted on the failed call.
-        assert (
-            _state_key('content_review_approved')
-            not in mock_tool_context.state
-        )
-
-    async def test_content_review_succeeds_after_manifest_confirmation(
-        self, mock_tool_context
-    ):
-        await confirm_phase_completion(
-            phase_key='inference_summary_confirmed',
-            tool_context=mock_tool_context,
-        )
-        result = await confirm_phase_completion(
-            phase_key='content_review_approved',
-            tool_context=mock_tool_context,
-        )
-        assert result['status'] == 'success'
         assert (
             mock_tool_context.state[_state_key('content_review_approved')]
             is True
@@ -104,11 +69,7 @@ class TestConfirmPhaseCompletionOrder:
     async def test_architecture_review_blocked_without_content_review(
         self, mock_tool_context
     ):
-        # Confirm only the first phase — content_review_approved is missing.
-        await confirm_phase_completion(
-            phase_key='inference_summary_confirmed',
-            tool_context=mock_tool_context,
-        )
+        # No phase confirmed yet — content_review_approved is the prereq.
         result = await confirm_phase_completion(
             phase_key='architecture_review_approved',
             tool_context=mock_tool_context,
@@ -119,6 +80,23 @@ class TestConfirmPhaseCompletionOrder:
         assert (
             _state_key('architecture_review_approved')
             not in mock_tool_context.state
+        )
+
+    async def test_architecture_review_succeeds_after_content_review(
+        self, mock_tool_context
+    ):
+        await confirm_phase_completion(
+            phase_key='content_review_approved',
+            tool_context=mock_tool_context,
+        )
+        result = await confirm_phase_completion(
+            phase_key='architecture_review_approved',
+            tool_context=mock_tool_context,
+        )
+        assert result['status'] == 'success'
+        assert (
+            mock_tool_context.state[_state_key('architecture_review_approved')]
+            is True
         )
 
     async def test_full_workflow_in_order_sets_all_keys_and_flag(
@@ -219,7 +197,7 @@ class TestArchitectureReviewGate:
 
     def test_other_tools_not_affected(self, mock_tool_context):
         out = before_tool_callback(
-            _mock_tool('load_extraction_manifest'),
+            _mock_tool('save_sow_metadata'),
             {},
             mock_tool_context,
         )
@@ -259,7 +237,6 @@ class TestArchitectureReviewAccessor:
 
     def test_returns_false_when_other_phases_set(self):
         state = {
-            _state_key('inference_summary_confirmed'): True,
             _state_key('content_review_approved'): True,
         }
         assert is_architecture_review_approved(state) is False
@@ -288,17 +265,17 @@ class TestIdempotency:
 
     async def test_re_confirming_same_phase_succeeds(self, mock_tool_context):
         first = await confirm_phase_completion(
-            phase_key='inference_summary_confirmed',
+            phase_key='content_review_approved',
             tool_context=mock_tool_context,
         )
         second = await confirm_phase_completion(
-            phase_key='inference_summary_confirmed',
+            phase_key='content_review_approved',
             tool_context=mock_tool_context,
         )
         assert first['status'] == 'success'
         assert second['status'] == 'success'
         assert (
-            mock_tool_context.state[_state_key('inference_summary_confirmed')]
+            mock_tool_context.state[_state_key('content_review_approved')]
             is True
         )
 

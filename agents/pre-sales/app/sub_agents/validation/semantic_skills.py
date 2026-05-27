@@ -1,10 +1,10 @@
-"""Step 3 of validation_critic — five semantic skills running in parallel.
+"""Step 2 of validation_critic — four semantic skills running in parallel.
 
 Each skill is an `LlmAgent` whose ``instruction`` is the body of its
-`SKILL.md` plus a runtime payload (SOW + manifest residual + stage)
-resolved per invocation. Every skill writes its findings into a
-**dedicated** state key — `app:skill_findings:{name}` — so the
-`ParallelAgent` runs without any chance of a write race.
+`SKILL.md` plus a runtime payload (SOW + stage) resolved per invocation.
+Every skill writes its findings into a **dedicated** state key —
+`app:skill_findings:{name}` — so the `ParallelAgent` runs without any
+chance of a write race.
 
 Anti-monolith gates (`SKILL.md` ≤ 200 lines) are enforced at startup so
 a bloated prompt cannot quietly regress the architecture.
@@ -22,22 +22,13 @@ from google.adk.models import Gemini
 from google.genai import types
 
 from ...config import config
-from ...shared.placeholders import collect_approved_deferrals
 from .schema import (
     SKILL_NAMES,
-    STATE_MANIFEST_RESIDUAL,
     STATE_SOW,
     STATE_STAGE,
     SkillFindings,
     skill_findings_state_key,
 )
-
-# Manifest is written to state by ``load_extraction_manifest`` under
-# this key (see ``app.tools.sow.manifest_tools``). Reading the raw
-# manifest — not just the prefiltered residual — gives the validator
-# access to ``gaps.to_be_defined`` and the non-blocking ``hard_gaps``
-# entries that authorise specific placeholder fields in the SOW.
-_MANIFEST_STATE_KEY = 'extraction_manifest'
 
 logger = structlog.get_logger()
 
@@ -62,22 +53,6 @@ def _read_with_gate(path: Path) -> str:
             f'lines (limit: {_MAX_SKILL_LINES}). Trim the SKILL.md.'
         )
     return text
-
-
-def _trim_manifest(items: list[dict] | None) -> list[dict]:
-    """Keep the residual lean so each skill's prompt stays focused."""
-    out: list[dict] = []
-    for item in items or []:
-        out.append(
-            {
-                'item_id': item.get('item_id'),
-                'category': item.get('category'),
-                'priority': item.get('priority'),
-                'value': item.get('value'),
-                'value_detail': item.get('value_detail'),
-            }
-        )
-    return out
 
 
 # Shared block injected into every skill's instruction. Centralised here
@@ -357,19 +332,7 @@ def _make_instruction_provider(skill_name: str, skill_body: str):
     def _provider(ctx: ReadonlyContext) -> str:
         state = ctx.state
         sow = state.get(STATE_SOW) or {}
-        residual = _trim_manifest(state.get(STATE_MANIFEST_RESIDUAL) or [])
         stage = state.get(STATE_STAGE) or 'full'
-
-        # Approved placeholders block — sourced from manifest.gaps so
-        # the LLM has a concrete list of deferral descriptions to
-        # match against any ``[TO BE DEFINED]`` / ``[A DEFINIR]``
-        # literal it finds in the SOW. Empty list is fine: when no
-        # deferrals are approved, every placeholder in the SOW is by
-        # definition unapproved (and the "Approved placeholders" block
-        # in the GUIDE tells the skill to emit an auto_fixable finding
-        # asking the revision_agent to populate or remove the field).
-        manifest = state.get(_MANIFEST_STATE_KEY) or {}
-        approved_deferrals = collect_approved_deferrals(manifest)
 
         payload = (
             '\n\n---\n\n'
@@ -378,12 +341,6 @@ def _make_instruction_provider(skill_name: str, skill_body: str):
             '<sow_data>\n'
             f'{json.dumps(sow, ensure_ascii=False, indent=2)}\n'
             '</sow_data>\n\n'
-            '<manifest_residual>\n'
-            f'{json.dumps(residual, ensure_ascii=False, indent=2)}\n'
-            '</manifest_residual>\n\n'
-            '<approved_deferrals>\n'
-            f'{json.dumps(approved_deferrals, ensure_ascii=False, indent=2)}\n'
-            '</approved_deferrals>\n\n'
             'Return ONLY a JSON object matching the schema: '
             f'`{{"findings": [Finding, ...]}}` with `skill="{skill_name}"` '
             'on every finding. Each finding MUST include a '
@@ -425,7 +382,6 @@ def _make_skill_agent(skill_name: str) -> LlmAgent:
     )
 
 
-coverage_skill_agent = _make_skill_agent('coverage')
 contradictions_skill_agent = _make_skill_agent('contradictions')
 contractual_exposure_skill_agent = _make_skill_agent('contractual_exposure')
 disclosures_skill_agent = _make_skill_agent('disclosures')
@@ -435,11 +391,10 @@ semantic_quality_skill_agent = _make_skill_agent('semantic_quality')
 semantic_skills_parallel = ParallelAgent(
     name='semantic_skills',
     description=(
-        'Runs the five semantic validation skills concurrently. Each skill '
+        'Runs the four semantic validation skills concurrently. Each skill '
         'writes into its own state key — no race condition possible.'
     ),
     sub_agents=[
-        coverage_skill_agent,
         contradictions_skill_agent,
         contractual_exposure_skill_agent,
         disclosures_skill_agent,
@@ -449,7 +404,6 @@ semantic_skills_parallel = ParallelAgent(
 
 
 __all__ = [
-    'coverage_skill_agent',
     'contradictions_skill_agent',
     'contractual_exposure_skill_agent',
     'disclosures_skill_agent',

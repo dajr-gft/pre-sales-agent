@@ -50,15 +50,14 @@ from app.sub_agents.validation.schema import (
 
 def _finding(
     *,
-    fid: str = 'coverage-001',
-    skill: str = 'coverage',
-    category: str = 'manifest_item_uncovered',
+    fid: str = 'sq-001',
+    skill: str = 'semantic_quality',
+    category: str = 'naming_drift',
     severity: str = 'MAJOR',
     confidence: float = 0.9,
-    evidence: str = "Manifest item 'M-01' has no anchor in the SOW",
-    recommendation: str = 'Anchor the item.',
+    evidence: str = "SOW field cites an entity not present in the sources",
+    recommendation: str = 'Remove the ungrounded item.',
     fields: tuple[str, ...] = (),
-    manifest_item_id: str | None = 'M-01',
     resolution_mode: str = 'auto_fixable',
     requires_human_review: bool = False,
 ) -> dict[str, Any]:
@@ -71,7 +70,6 @@ def _finding(
         'evidence': evidence,
         'recommendation': recommendation,
         'fields': list(fields),
-        'manifest_item_id': manifest_item_id,
         'persistent': False,
         'resolution_mode': resolution_mode,
         'requires_human_review': requires_human_review,
@@ -95,7 +93,6 @@ def _state_with(skill_findings: dict[str, list[dict[str, Any]]]) -> dict[str, An
         STATE_STAGE: 'full',
     }
     for name in (
-        'coverage',
         'contradictions',
         'contractual_exposure',
         'disclosures',
@@ -229,21 +226,21 @@ def test_lint_does_not_touch_all_writable_findings():
 
 @pytest.mark.unit
 async def test_manifest_only_finding_for_policy_category_routes_to_human_review():
-    """`(coverage, manifest_item_uncovered)` is in the policy auto-fix
-    table. A finding emitting that category with ALL fields manifest-
+    """`(semantic_quality, naming_drift)` is in the policy auto-fix
+    table. A finding emitting that category with ALL fields metadata-
     derived is still structurally unfixable (no section writes the
-    manifest). The lint must override the policy claim — the agent
-    cannot conjure a writer that does not exist.
+    administrative metadata). The lint must override the policy claim —
+    the agent cannot conjure a writer that does not exist.
     """
-    assert ('coverage', 'manifest_item_uncovered') in _POLICY_FORCED_AUTO_FIXABLE
+    assert ('semantic_quality', 'naming_drift') in _POLICY_FORCED_AUTO_FIXABLE
 
     state = _state_with(
         {
-            'coverage': [
+            'semantic_quality': [
                 _finding(
-                    fid='coverage-001',
-                    skill='coverage',
-                    category='manifest_item_uncovered',
+                    fid='sq-001',
+                    skill='semantic_quality',
+                    category='naming_drift',
                     severity='MAJOR',
                     fields=(_sample_manifest_field(),),
                     resolution_mode='auto_fixable',
@@ -267,11 +264,11 @@ async def test_orphan_finding_for_policy_category_routes_to_human_review():
     """
     state = _state_with(
         {
-            'coverage': [
+            'semantic_quality': [
                 _finding(
-                    fid='coverage-002',
-                    skill='coverage',
-                    category='manifest_item_uncovered',
+                    fid='sq-002',
+                    skill='semantic_quality',
+                    category='naming_drift',
                     severity='MAJOR',
                     fields=('project_identity',),
                     resolution_mode='auto_fixable',
@@ -292,11 +289,11 @@ async def test_writable_finding_for_policy_category_remains_auto_fixable():
     bundle_field = _sample_bundle_field()
     state = _state_with(
         {
-            'coverage': [
+            'semantic_quality': [
                 _finding(
-                    fid='coverage-003',
-                    skill='coverage',
-                    category='manifest_item_uncovered',
+                    fid='sq-003',
+                    skill='semantic_quality',
+                    category='naming_drift',
                     severity='MAJOR',
                     fields=(bundle_field,),
                     # LLM emitted decision_required; policy must force
@@ -319,11 +316,11 @@ async def test_mixed_fields_finding_keeps_only_writable_after_lint():
     bundle_field = _sample_bundle_field()
     state = _state_with(
         {
-            'coverage': [
+            'semantic_quality': [
                 _finding(
-                    fid='coverage-004',
-                    skill='coverage',
-                    category='manifest_item_uncovered',
+                    fid='sq-004',
+                    skill='semantic_quality',
+                    category='naming_drift',
                     severity='MAJOR',
                     fields=(bundle_field, 'unknown', _sample_manifest_field()),
                 ),

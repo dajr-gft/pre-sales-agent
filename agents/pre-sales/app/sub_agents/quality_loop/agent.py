@@ -80,18 +80,12 @@ from ...tools.sow.assemble_payload import AssemblyError
 # ``app/sub_agents/__init__.py`` importing both ``quality_loop`` and
 # the sections is avoided — direct imports bypass the parent package's
 # mid-init attribute lookup.
-from ..architecture.agent import architecture_agent, architecture_repair_agent
-from ..delivery_plan.agent import (
-    delivery_plan_agent,
-    delivery_plan_repair_agent,
-)
-from ..narrative.agent import narrative_agent, narrative_repair_agent
-from ..requirements.agent import requirements_agent, requirements_repair_agent
+from ..architecture.agent import architecture_repair_agent
+from ..delivery_plan.agent import delivery_plan_repair_agent
+from ..narrative.agent import narrative_repair_agent
+from ..requirements.agent import requirements_repair_agent
 from ..revision import revision_agent
-from ..scope_boundaries.agent import (
-    scope_boundaries_agent,
-    scope_boundaries_repair_agent,
-)
+from ..scope_boundaries.agent import scope_boundaries_repair_agent
 from .._section_agent import STATE_REPAIR_FINDINGS
 from ..validation import validation_critic
 from ..validation.field_vocabulary import BUNDLE_OWNED_FIELDS_BY_SECTION
@@ -303,11 +297,11 @@ def _finding_digest(finding: dict) -> dict:
     """Compact digest of a finding for diagnostic logging.
 
     Keeps only the fields a human reading the log needs to trace a
-    finding's lifecycle round-to-round: identity, classification,
-    manifest anchor (for coverage tracking), and the first three
-    ``fields`` (the bundle keys the patcher would touch). Drops
-    ``evidence`` and ``recommendation`` — those are long prose, and the
-    fingerprint is what we use to track identity across rounds anyway.
+    finding's lifecycle round-to-round: identity, classification, and
+    the first three ``fields`` (the bundle keys the patcher would
+    touch). Drops ``evidence`` and ``recommendation`` — those are long
+    prose, and the fingerprint is what we use to track identity across
+    rounds anyway.
     """
     return {
         'id': finding.get('id'),
@@ -315,7 +309,6 @@ def _finding_digest(finding: dict) -> dict:
         'category': finding.get('category'),
         'severity': finding.get('severity'),
         'resolution_mode': finding.get('resolution_mode'),
-        'manifest_item_id': finding.get('manifest_item_id'),
         'fields': list(finding.get('fields') or [])[:3],
         'persistent': finding.get('persistent'),
     }
@@ -426,27 +419,6 @@ class QualityLoopAgent(BaseAgent):
         # new``) — we want consecutive non-progress, not lifetime counts.
         # Compared against ``NO_PROGRESS_WINDOW`` after each blocked round.
         consecutive_no_progress_rounds = 0
-
-        # ----- Manifest snapshot (one-shot per loop invocation) ----------
-        # Verbose-only — the full Extraction Manifest is ~20-50 KB and
-        # only useful when we are diagnosing a specific finding's
-        # ``manifest_item_id`` against the actual manifest entry. Gated
-        # by ``SOW_VERBOSE_LOGGING=1`` so default sessions stay lean.
-        # See ``app.shared.logging_config.is_verbose_sow_logging`` for
-        # the contract.
-        if is_verbose_sow_logging():
-            manifest = ctx.session.state.get('extraction_manifest')
-            if isinstance(manifest, dict):
-                logger.info(
-                    'quality_loop_manifest_snapshot',
-                    manifest_version=manifest.get('manifest_version'),
-                    inventory_count=len(manifest.get('inventory', []) or []),
-                    extracted_items_count=len(
-                        manifest.get('extracted_items', []) or []
-                    ),
-                    manifest=manifest,
-                )
-        # ------------------------------------------------------------------
 
         for round_idx in range(self.max_rounds):
             round_number = round_idx + 1
@@ -760,8 +732,8 @@ class QualityLoopAgent(BaseAgent):
                 # item ids in the bundle BEFORE the agent ran against
                 # the AFTER set. Any id present before AND absent after
                 # is a candidate anchor drop (the section agent removed
-                # or renamed an item that may have been covering a
-                # manifest entry). Logged as WARNING when dropped is
+                # or renamed an item that another section may have been
+                # referencing). Logged as WARNING when dropped is
                 # non-empty so the event is easy to grep in a long
                 # production trace.
                 post_anchor_ids = _extract_anchor_ids(post_bundle)

@@ -35,16 +35,10 @@ def _seeded_state(
     findings: list[dict[str, Any]] | None = None,
     bundle: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    state: dict[str, Any] = {
-        SOW_BUNDLE_STATE_KEYS['manifest']: {
-            'project': {
-                'title': 'Test',
-                'customer_name': 'Acme',
-                'partner_name': 'GFT',
-                'funding_type': 'Google DAF',
-            },
-        },
-    }
+    # The requirements repair agent has no required upstream state input —
+    # it is the first section, so it patches from its own bundle +
+    # findings only.
+    state: dict[str, Any] = {}
     if findings is not None:
         state[STATE_REPAIR_FINDINGS] = findings
     if bundle is not None:
@@ -117,14 +111,6 @@ class TestInstructionProvider:
         prompt = requirements_repair_agent.instruction(ctx)
         assert 'Stop — no repair findings' in prompt
         assert 'apply_requirements_patch(ops=[' not in prompt
-
-    def test_missing_manifest_triggers_stop_inputs(self):
-        state = _seeded_state(findings=[{'id': 'F-1'}], bundle=_empty_bundle())
-        del state[SOW_BUNDLE_STATE_KEYS['manifest']]
-        ctx = _Ctx(state)
-        prompt = requirements_repair_agent.instruction(ctx)
-        assert 'STOP' in prompt
-        assert 'extraction_manifest' in prompt
 
 
 class TestQualityLoopWiring:

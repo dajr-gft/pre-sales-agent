@@ -12,7 +12,10 @@ from typing import Any
 
 import pytest
 
-from app.sub_agents.schemas import SOW_BUNDLE_STATE_KEYS
+from app.sub_agents.schemas import (
+    SOW_BUNDLE_STATE_KEYS,
+    SOW_METADATA_STATE_KEY,
+)
 from app.tools.sow.assemble_payload import assemble_sow_payload
 
 
@@ -21,36 +24,22 @@ from app.tools.sow.assemble_payload import assemble_sow_payload
 # ---------------------------------------------------------------------------
 
 
-def _manifest_nested() -> dict[str, Any]:
-    return {
-        'project': {
-            'title': 'Data Analytics Platform',
-            'customer_name': 'Acme Corp',
-            'partner_name': 'GFT Technologies',
-            'partner_short_name': 'GFT',
-            'customer_short_name': 'Acme',
-            'date': '2026-04-15',
-            'author': 'Test Author',
-            'funding_type': 'Google DAF',
-            'funding_type_short': 'DAF',
-            'start_date': '2026-05-01',
-            'end_date': '2026-07-10',
-            'engagement_type': 'project',
-            'organization_term': 'phases',
-        },
-    }
-
-
-def _manifest_flat() -> dict[str, Any]:
+def _metadata_envelope() -> dict[str, Any]:
+    """The ``app:sow:metadata`` envelope written by ``save_sow_metadata``."""
     return {
         'project_title': 'Data Analytics Platform',
         'customer_name': 'Acme Corp',
         'partner_name': 'GFT Technologies',
-        # F-07: ``funding_type`` is now a required project-metadata key —
-        # the assembler rejects payloads where the docx header would
-        # render blank. Kept in the flat-shape fixture so the existing
-        # "flat shape also works" test still exercises the happy path.
+        'partner_short_name': 'GFT',
+        'customer_short_name': 'Acme',
+        'date': '2026-04-15',
+        'author': 'Test Author',
         'funding_type': 'Google DAF',
+        'funding_type_short': 'DAF',
+        'project_start_date': '2026-05-01',
+        'project_end_date': '2026-07-10',
+        'engagement_type': 'project',
+        'organization_term': 'phases',
     }
 
 
@@ -108,7 +97,7 @@ def _narrative_bundle() -> dict[str, Any]:
 
 
 def _populate_content_state(ctx) -> None:
-    ctx.state[SOW_BUNDLE_STATE_KEYS['manifest']] = _manifest_nested()
+    ctx.state[SOW_METADATA_STATE_KEY] = _metadata_envelope()
     ctx.state[SOW_BUNDLE_STATE_KEYS['requirements']] = _requirements_bundle()
     ctx.state[SOW_BUNDLE_STATE_KEYS['delivery_plan']] = _delivery_plan_bundle()
     ctx.state[SOW_BUNDLE_STATE_KEYS['scope_boundaries']] = _scope_bundle()
@@ -172,7 +161,9 @@ class TestContentStage:
 
         assert result['status'] == 'success'
 
-    async def test_extracts_nested_project_metadata(self, mock_tool_context):
+    async def test_populates_project_metadata_from_envelope(
+        self, mock_tool_context
+    ):
         _populate_content_state(mock_tool_context)
 
         result = await assemble_sow_payload(
@@ -185,9 +176,32 @@ class TestContentStage:
         assert sow['customer_name'] == 'Acme Corp'
         assert sow['project_start_date'] == '2026-05-01'
 
-    async def test_extracts_flat_project_metadata(self, mock_tool_context):
-        """Flat manifest shape should also work — defensive against schema drift."""
-        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['manifest']] = _manifest_flat()
+
+class TestMetadataEnvelopeSource:
+    """Project metadata comes from the explicit ``app:sow:metadata``
+    envelope written by ``save_sow_metadata``."""
+
+    def _metadata_envelope(self) -> dict[str, Any]:
+        return {
+            'partner_name': 'GFT Technologies',
+            'customer_name': 'Acme Corp',
+            'partner_short_name': 'GFT',
+            'customer_short_name': 'Acme',
+            'project_title': 'Root-Skills SOW',
+            'date': '2026-05-27',
+            'author': 'Root Agent',
+            'funding_type': 'Google DAF',
+            'funding_type_short': 'DAF',
+            'project_start_date': '2026-06-01',
+            'project_end_date': '2026-08-01',
+            'engagement_type': 'project',
+            'organization_term': 'phases',
+        }
+
+    async def test_assembles_from_envelope_without_manifest(
+        self, mock_tool_context
+    ):
+        mock_tool_context.state[SOW_METADATA_STATE_KEY] = self._metadata_envelope()
         mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['requirements']] = _requirements_bundle()
         mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['delivery_plan']] = _delivery_plan_bundle()
         mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['scope_boundaries']] = _scope_bundle()
@@ -197,11 +211,25 @@ class TestContentStage:
             tool_context=mock_tool_context,
         )
 
+        assert result['status'] == 'success'
         sow = result['data']['sow_data']
-        assert sow['project_title'] == 'Data Analytics Platform'
-        # Missing optional fields default to empty string (never KeyError downstream).
-        assert sow['date'] == ''
-        assert sow['author'] == ''
+        assert sow['project_title'] == 'Root-Skills SOW'
+        assert sow['partner_name'] == 'GFT Technologies'
+        assert sow['project_start_date'] == '2026-06-01'
+
+    async def test_no_metadata_envelope_rejected(self, mock_tool_context):
+        # Bundles present but no metadata envelope.
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['requirements']] = _requirements_bundle()
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['delivery_plan']] = _delivery_plan_bundle()
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['scope_boundaries']] = _scope_bundle()
+
+        result = await assemble_sow_payload(
+            stage='content',
+            tool_context=mock_tool_context,
+        )
+
+        assert result['status'] == 'error'
+        assert 'metadata' in result['error'].lower()
 
 
 class TestFullStage:
@@ -314,18 +342,6 @@ class TestArgValidation:
     async def test_missing_tool_context_returns_error(self):
         result = await assemble_sow_payload(stage='content')
         assert result['status'] == 'error'
-
-    async def test_non_dict_manifest_rejected(self, mock_tool_context):
-        _populate_content_state(mock_tool_context)
-        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['manifest']] = 'not a dict'
-
-        result = await assemble_sow_payload(
-            stage='content',
-            tool_context=mock_tool_context,
-        )
-
-        assert result['status'] == 'error'
-        assert 'manifest' in result['error'].lower()
 
 
 # ---------------------------------------------------------------------------
@@ -468,18 +484,27 @@ class TestMissingInputSentinel:
 
 
 class TestProjectMetadataValidation:
-    def _state_with_manifest(
-        self, ctx, manifest: dict[str, Any]
+    def _state_with_envelope(
+        self, ctx, envelope: dict[str, Any]
     ) -> None:
-        ctx.state[SOW_BUNDLE_STATE_KEYS['manifest']] = manifest
+        ctx.state[SOW_METADATA_STATE_KEY] = envelope
         ctx.state[SOW_BUNDLE_STATE_KEYS['requirements']] = _requirements_bundle()
         ctx.state[SOW_BUNDLE_STATE_KEYS['delivery_plan']] = _delivery_plan_bundle()
         ctx.state[SOW_BUNDLE_STATE_KEYS['scope_boundaries']] = _scope_bundle()
 
+    def _required_only(self) -> dict[str, str]:
+        """A minimal envelope carrying just the four required keys."""
+        return {
+            'partner_name': 'GFT Technologies',
+            'customer_name': 'Acme Corp',
+            'project_title': 'Data Analytics Platform',
+            'funding_type': 'Google DAF',
+        }
+
     async def test_missing_partner_name_rejected(self, mock_tool_context):
-        manifest = _manifest_flat()
-        del manifest['partner_name']
-        self._state_with_manifest(mock_tool_context, manifest)
+        envelope = self._required_only()
+        del envelope['partner_name']
+        self._state_with_envelope(mock_tool_context, envelope)
 
         result = await assemble_sow_payload(
             stage='content', tool_context=mock_tool_context,
@@ -487,14 +512,14 @@ class TestProjectMetadataValidation:
 
         assert result['status'] == 'error'
         assert 'partner_name' in result['error']
-        # Suggestion must name the exact missing field so the discovery
-        # repair has a target — generic "metadata is broken" wastes a turn.
+        # Suggestion must name the exact missing field so the caller has a
+        # target — generic "metadata is broken" wastes a turn.
         assert 'partner_name' in result['suggestion']
 
     async def test_missing_customer_name_rejected(self, mock_tool_context):
-        manifest = _manifest_flat()
-        del manifest['customer_name']
-        self._state_with_manifest(mock_tool_context, manifest)
+        envelope = self._required_only()
+        del envelope['customer_name']
+        self._state_with_envelope(mock_tool_context, envelope)
 
         result = await assemble_sow_payload(
             stage='content', tool_context=mock_tool_context,
@@ -504,9 +529,9 @@ class TestProjectMetadataValidation:
         assert 'customer_name' in result['error']
 
     async def test_missing_project_title_rejected(self, mock_tool_context):
-        manifest = _manifest_flat()
-        del manifest['project_title']
-        self._state_with_manifest(mock_tool_context, manifest)
+        envelope = self._required_only()
+        del envelope['project_title']
+        self._state_with_envelope(mock_tool_context, envelope)
 
         result = await assemble_sow_payload(
             stage='content', tool_context=mock_tool_context,
@@ -516,9 +541,9 @@ class TestProjectMetadataValidation:
         assert 'project_title' in result['error']
 
     async def test_missing_funding_type_rejected(self, mock_tool_context):
-        manifest = _manifest_flat()
-        del manifest['funding_type']
-        self._state_with_manifest(mock_tool_context, manifest)
+        envelope = self._required_only()
+        del envelope['funding_type']
+        self._state_with_envelope(mock_tool_context, envelope)
 
         result = await assemble_sow_payload(
             stage='content', tool_context=mock_tool_context,
@@ -532,9 +557,9 @@ class TestProjectMetadataValidation:
     ):
         """``"   "`` would render an essentially-blank header; the
         assembler must strip and reject the same as ``""``."""
-        manifest = _manifest_flat()
-        manifest['customer_name'] = '   '
-        self._state_with_manifest(mock_tool_context, manifest)
+        envelope = self._required_only()
+        envelope['customer_name'] = '   '
+        self._state_with_envelope(mock_tool_context, envelope)
 
         result = await assemble_sow_payload(
             stage='content', tool_context=mock_tool_context,
@@ -545,14 +570,10 @@ class TestProjectMetadataValidation:
 
     async def test_lists_every_missing_required_field(self, mock_tool_context):
         """A single error must enumerate every blank required key — the
-        upstream discovery loop should not need N round trips to find
-        them all."""
-        manifest = {
-            # Only project_title is set; partner_name, customer_name,
-            # funding_type all missing.
-            'project_title': 'P',
-        }
-        self._state_with_manifest(mock_tool_context, manifest)
+        caller should not need N round trips to find them all."""
+        # Only project_title is set; partner_name, customer_name,
+        # funding_type all missing.
+        self._state_with_envelope(mock_tool_context, {'project_title': 'P'})
 
         result = await assemble_sow_payload(
             stage='content', tool_context=mock_tool_context,
@@ -568,11 +589,9 @@ class TestProjectMetadataValidation:
         self, mock_tool_context
     ):
         """``date``, ``author``, etc. remain optional — only the four
-        critical keys block assembly. This keeps the existing 'flat
-        shape also works' contract intact for projects where date /
-        author truly aren't captured upstream."""
-        manifest = _manifest_flat()  # has the 4 required keys + nothing else
-        self._state_with_manifest(mock_tool_context, manifest)
+        critical keys block assembly."""
+        # Envelope with just the 4 required keys + nothing else.
+        self._state_with_envelope(mock_tool_context, self._required_only())
 
         result = await assemble_sow_payload(
             stage='content', tool_context=mock_tool_context,
@@ -583,307 +602,3 @@ class TestProjectMetadataValidation:
         assert sow['date'] == ''
         assert sow['author'] == ''
         assert sow['engagement_type'] == ''
-
-
-# ---------------------------------------------------------------------------
-# F-13 — Identity primitives extraction
-#
-# Production discovery does NOT write project metadata at the manifest
-# top level or under a nested ``project`` dict (the
-# ``ExtractionManifest`` schema forbids extra fields at the root and
-# has no ``project`` sub-model). Instead it lives inside
-# ``extracted_items[*].primitives`` for items with ``category ==
-# 'Identity'``. The assembler must read THAT path or it would reject
-# every legitimate manifest discovery produces.
-# ---------------------------------------------------------------------------
-
-
-def _identity_item(primitives: dict[str, Any], item_id: str = 'I-001') -> dict:
-    """Build a minimal Identity ExtractedItem dict for tests."""
-    return {
-        'id': item_id,
-        'category': 'Identity',
-        'value': primitives.get('project_name', 'P'),
-        'value_detail': '',
-        'primitives': primitives,
-        'source': [{'artifact_id': 'A-001', 'anchor': 'page 1'}],
-        'confidence': 'stated',
-        'cross_refs': [],
-        'notes': '',
-    }
-
-
-def _manifest_with_identity(primitives: dict[str, Any]) -> dict[str, Any]:
-    """Manifest shaped the way production discovery actually writes it.
-
-    No top-level ``partner_name``, no ``project`` sub-dict — just the
-    Identity item carrying primitives under ``extracted_items``.
-    """
-    return {
-        'manifest_version': '1.0',
-        'conversation_language': 'pt-BR',
-        'inventory': [{'artifact_id': 'A-001', 'kind': 'doc'}],
-        'extracted_items': [_identity_item(primitives)],
-        'gaps': {
-            'hard_gaps': [],
-            'pending_decisions': [],
-            'ambiguities': [],
-            'to_be_defined': [],
-        },
-        'self_audit': {},
-    }
-
-
-class TestIdentityPrimitivesExtraction:
-    async def test_extracts_partner_customer_project_funding_from_identity(
-        self, mock_tool_context
-    ):
-        """The canonical happy path: discovery wrote primitives only,
-        and the assembler maps them into the flat sow_data keys."""
-        manifest = _manifest_with_identity({
-            'partner': 'GFT Technologies',
-            'customer': 'Acme Corp',
-            'project_name': 'Data Analytics Platform',
-            'funding_type': 'DAF',
-        })
-        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['manifest']] = manifest
-        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['requirements']] = _requirements_bundle()
-        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['delivery_plan']] = _delivery_plan_bundle()
-        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['scope_boundaries']] = _scope_bundle()
-
-        result = await assemble_sow_payload(
-            stage='content', tool_context=mock_tool_context,
-        )
-
-        assert result['status'] == 'success', result.get('error')
-        sow = result['data']['sow_data']
-        assert sow['partner_name'] == 'GFT Technologies'
-        assert sow['customer_name'] == 'Acme Corp'
-        assert sow['project_title'] == 'Data Analytics Platform'
-        assert sow['funding_type'] == 'DAF'
-
-    async def test_engagement_shape_maps_to_engagement_type(
-        self, mock_tool_context
-    ):
-        """``engagement_shape`` is a documented Identity primitive (per
-        extraction-rules.md §1) and is what downstream consumers expect
-        under the name ``engagement_type``."""
-        manifest = _manifest_with_identity({
-            'partner': 'GFT', 'customer': 'Acme',
-            'project_name': 'Test', 'funding_type': 'DAF',
-            'engagement_shape': 'enhance',
-        })
-        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['manifest']] = manifest
-        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['requirements']] = _requirements_bundle()
-        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['delivery_plan']] = _delivery_plan_bundle()
-        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['scope_boundaries']] = _scope_bundle()
-
-        result = await assemble_sow_payload(
-            stage='content', tool_context=mock_tool_context,
-        )
-
-        assert result['status'] == 'success'
-        assert result['data']['sow_data']['engagement_type'] == 'enhance'
-
-    async def test_not_stated_primitive_treated_as_missing(
-        self, mock_tool_context
-    ):
-        """``not_stated`` is discovery's "I looked but found nothing"
-        sentinel — the assembler must treat it as absent so the F-07
-        required-field gate fires and the user is told to re-run
-        discovery."""
-        manifest = _manifest_with_identity({
-            'partner': 'GFT',
-            'customer': 'not_stated',  # sentinel
-            'project_name': 'Test',
-            'funding_type': 'DAF',
-        })
-        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['manifest']] = manifest
-        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['requirements']] = _requirements_bundle()
-        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['delivery_plan']] = _delivery_plan_bundle()
-        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['scope_boundaries']] = _scope_bundle()
-
-        result = await assemble_sow_payload(
-            stage='content', tool_context=mock_tool_context,
-        )
-
-        assert result['status'] == 'error'
-        assert 'customer_name' in result['error']
-
-    async def test_multiple_identity_items_coalesce_with_first_value_winning(
-        self, mock_tool_context
-    ):
-        """When discovery produces multiple Identity items (e.g. one
-        per artifact), the first non-empty value wins for each
-        primitive — matches the skill's own reconciliation rules."""
-        items = [
-            _identity_item(
-                {
-                    'partner': 'GFT',
-                    'customer': 'not_stated',
-                    'project_name': 'Test',
-                    'funding_type': 'DAF',
-                },
-                item_id='I-001',
-            ),
-            # Second Identity item fills the gap left by 'not_stated'.
-            _identity_item(
-                {
-                    'customer': 'Acme Corp (from second artifact)',
-                    'funding_type': 'PSF',  # ignored — first wins
-                },
-                item_id='I-002',
-            ),
-        ]
-        manifest = _manifest_with_identity({})  # base; replace items
-        manifest['extracted_items'] = items
-
-        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['manifest']] = manifest
-        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['requirements']] = _requirements_bundle()
-        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['delivery_plan']] = _delivery_plan_bundle()
-        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['scope_boundaries']] = _scope_bundle()
-
-        result = await assemble_sow_payload(
-            stage='content', tool_context=mock_tool_context,
-        )
-
-        assert result['status'] == 'success'
-        sow = result['data']['sow_data']
-        assert sow['customer_name'] == 'Acme Corp (from second artifact)'
-        # First item's DAF wins over second item's PSF.
-        assert sow['funding_type'] == 'DAF'
-
-    async def test_non_identity_items_ignored(self, mock_tool_context):
-        """Primitives from a Briefing / Integrations item must not
-        contaminate the project metadata even if they collide on key
-        names."""
-        items = [
-            _identity_item({
-                'partner': 'GFT',
-                'customer': 'Acme',
-                'project_name': 'Test',
-                'funding_type': 'DAF',
-            }),
-            {
-                'id': 'I-002',
-                'category': 'Briefing',
-                'value': 'Decoy',
-                'value_detail': '',
-                # Briefing items don't use these keys, but if some bug
-                # ever wrote them, the assembler must NOT consult them.
-                'primitives': {
-                    'partner': 'WRONG_PARTNER',
-                    'customer': 'WRONG_CUSTOMER',
-                },
-                'source': [{'artifact_id': 'A-001', 'anchor': 'page 2'}],
-                'confidence': 'stated',
-                'cross_refs': [],
-                'notes': '',
-            },
-        ]
-        manifest = _manifest_with_identity({})
-        manifest['extracted_items'] = items
-
-        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['manifest']] = manifest
-        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['requirements']] = _requirements_bundle()
-        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['delivery_plan']] = _delivery_plan_bundle()
-        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['scope_boundaries']] = _scope_bundle()
-
-        result = await assemble_sow_payload(
-            stage='content', tool_context=mock_tool_context,
-        )
-
-        assert result['status'] == 'success'
-        sow = result['data']['sow_data']
-        assert sow['partner_name'] == 'GFT'
-        assert sow['customer_name'] == 'Acme'
-
-    async def test_nested_project_dict_still_works_as_fallback(
-        self, mock_tool_context
-    ):
-        """Legacy fallback path: a manifest that DOES carry a
-        ``project`` sub-dict (synthetic, used by older tests) still
-        feeds the assembler. We keep this branch alive on purpose so
-        test fixtures and any future discovery variant continue
-        working without touching the assembler."""
-        manifest = _manifest_nested()  # uses the 'project' sub-dict
-        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['manifest']] = manifest
-        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['requirements']] = _requirements_bundle()
-        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['delivery_plan']] = _delivery_plan_bundle()
-        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['scope_boundaries']] = _scope_bundle()
-
-        result = await assemble_sow_payload(
-            stage='content', tool_context=mock_tool_context,
-        )
-
-        assert result['status'] == 'success'
-        assert result['data']['sow_data']['partner_name'] == 'GFT Technologies'
-
-    async def test_identity_primitives_win_over_nested_project_dict(
-        self, mock_tool_context
-    ):
-        """Lookup order is canonical first: Identity primitives beat
-        the legacy nested ``project`` sub-dict when both are present.
-        This is the migration-safe order — once production discovery
-        writes Identity primitives, the legacy nested data (probably
-        stale) cannot override it."""
-        manifest = _manifest_nested()  # has nested 'project'
-        # Add an Identity item with DIFFERENT values to detect which
-        # path the extractor chose.
-        manifest['extracted_items'] = [
-            _identity_item({
-                'partner': 'PARTNER_FROM_PRIMITIVES',
-                'customer': 'CUSTOMER_FROM_PRIMITIVES',
-                'project_name': 'TITLE_FROM_PRIMITIVES',
-                'funding_type': 'DAF',
-            }),
-        ]
-
-        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['manifest']] = manifest
-        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['requirements']] = _requirements_bundle()
-        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['delivery_plan']] = _delivery_plan_bundle()
-        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['scope_boundaries']] = _scope_bundle()
-
-        result = await assemble_sow_payload(
-            stage='content', tool_context=mock_tool_context,
-        )
-
-        assert result['status'] == 'success'
-        sow = result['data']['sow_data']
-        assert sow['partner_name'] == 'PARTNER_FROM_PRIMITIVES'
-        assert sow['customer_name'] == 'CUSTOMER_FROM_PRIMITIVES'
-        assert sow['project_title'] == 'TITLE_FROM_PRIMITIVES'
-
-    async def test_blank_primitive_falls_through_to_legacy_paths(
-        self, mock_tool_context
-    ):
-        """Whitespace-only Identity primitive → fall through to nested
-        project dict if it has the value. Mirrors the discovery
-        contract where ``''`` and whitespace also count as 'unknown'."""
-        manifest = _manifest_nested()
-        manifest['extracted_items'] = [
-            _identity_item({
-                'partner': '   ',  # blank — must fall through
-                'customer': 'Acme Corp',  # wins via primitives
-                'project_name': 'not_stated',  # falls through
-                'funding_type': 'DAF',
-            }),
-        ]
-
-        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['manifest']] = manifest
-        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['requirements']] = _requirements_bundle()
-        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['delivery_plan']] = _delivery_plan_bundle()
-        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['scope_boundaries']] = _scope_bundle()
-
-        result = await assemble_sow_payload(
-            stage='content', tool_context=mock_tool_context,
-        )
-
-        assert result['status'] == 'success'
-        sow = result['data']['sow_data']
-        # Blank primitive → nested project sub-dict wins.
-        assert sow['partner_name'] == 'GFT Technologies'
-        # Real primitive wins even though nested 'project' had its own value.
-        assert sow['customer_name'] == 'Acme Corp'
-        # not_stated primitive → nested wins.
-        assert sow['project_title'] == 'Data Analytics Platform'

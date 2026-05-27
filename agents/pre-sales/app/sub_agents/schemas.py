@@ -1,11 +1,14 @@
-"""Pydantic schemas for section sub-agent outputs.
+"""Pydantic schemas for SOW section bundles + administrative metadata.
 
-Each section sub-agent (``requirements_agent``, ``delivery_plan_agent``,
-``scope_boundaries_agent``, ``architecture_agent``, ``narrative_agent``)
-returns one of the ``*Bundle`` models below via ``output_schema=`` and
-writes it to ``session.state[<output_key>]``.
+Each ``*Bundle`` model is the schema for one SOW section. In the
+root-skills variant the root generates each section inline (following
+the section skill) and persists it via ``save_<section>_bundle``, which
+validates against the matching model and writes it to
+``session.state['app:sow:<section>']``. The section *repair* agents
+read the same bundles when patching.
 
-The ``assemble_sow_payload`` tool reads these bundles from state and
+The ``assemble_sow_payload`` tool reads these bundles plus the
+``SowMetadata`` envelope (``state['app:sow:metadata']``) from state and
 produces the flat ``sow_data`` dict expected by ``stage_sow`` and
 ``generate_sow_document``.
 
@@ -13,11 +16,6 @@ Field names mirror the top-level keys of ``sow_data`` exactly — the
 assembler does a structural copy, not a translation. Changing a field
 name here means changing it in the section skill, the template, and
 the assembler in lockstep.
-
-Discovery's ``ExtractionManifest`` schema lives elsewhere (sow-discovery
-owns it). The assembler only treats the manifest as the source of
-project-level metadata; it is consumed as ``dict[str, Any]`` until the
-discovery sub-agent migration formalizes that contract.
 """
 
 from __future__ import annotations
@@ -25,6 +23,8 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from .validation.field_vocabulary import MANIFEST_DERIVED_FIELDS_TUPLE
 
 
 _FORBID = ConfigDict(extra='forbid')
@@ -202,19 +202,168 @@ class NarrativeBundle(BaseModel):
     customer_primary_domain: str | None = None
 
 
+class IntakeSummary(BaseModel):
+    """Structured handoff produced by the ``sow-guided-intake`` skill.
+
+    Path A (guided intake) replaces the project documents with this
+    summary as the upstream context the section skills read. Fields
+    carry one of three semantic states:
+
+    - A real value extracted from the user's answers.
+    - The marker ``'(inferred)'`` — downstream skills must fill the
+      value with a safe consulting default following the style guide
+      and SOW conventions. Never re-ask the user. Surface the inference
+      to the user only at the existing review gates.
+    - The marker ``'[TO BE DEFINED]'`` — value is genuinely unknown.
+      Downstream skills MUST keep the placeholder and roll the gap into
+      the SOW's open items / assumptions; they must NOT invent a value.
+
+    For list-typed fields, the marker convention is a single-element
+    list whose only element is the marker string (e.g.
+    ``out_of_scope=['(inferred)']``). An empty list means the field is
+    irrelevant or absent — the marker, when applicable, is the explicit
+    signal.
+
+    ``inferred_items`` and ``open_items`` are the explicit roll-ups the
+    root and section skills use to distinguish the two marker types
+    quickly without scanning every field.
+
+    The four real-value-required fields — ``customer_name``,
+    ``project_title``, ``problem_goal``, ``solution_direction`` —
+    cannot carry markers. They are the minimum scope a SOW needs and
+    the tool rejects markers there.
+    """
+
+    model_config = _FORBID
+
+    # --- Required real values (markers forbidden) ---
+    customer_name: str
+    project_title: str
+    problem_goal: str = Field(
+        description='One or two lines on the business problem or objective.'
+    )
+    solution_direction: str = Field(
+        description='One or two lines on the proposed solution direction.'
+    )
+
+    # --- Identity (marker-tolerant) ---
+    partner_name: str = 'GFT Technologies'
+    funding_type: str = '[TO BE DEFINED]'
+
+    # --- Scalar marker-tolerant fields ---
+    engagement_shape: str = '(inferred)'
+    timeline: str = '[TO BE DEFINED]'
+
+    # --- List fields. Single-element list with a marker string is the
+    #     explicit marker convention; empty list = no information. ---
+    main_scope: list[str] = Field(default_factory=list)
+    out_of_scope: list[str] = Field(default_factory=list)
+    integrations: list[str] = Field(default_factory=list)
+    technology_stack: list[str] = Field(default_factory=list)
+    nfr_quality_targets: list[str] = Field(default_factory=list)
+    operational_constraints: list[str] = Field(default_factory=list)
+    regulatory_constraints: list[str] = Field(default_factory=list)
+    partner_team: list[str] = Field(default_factory=list)
+    customer_team: list[str] = Field(default_factory=list)
+    assumptions: list[str] = Field(default_factory=list)
+
+    # --- Explicit roll-ups for downstream marker dispatch ---
+    inferred_items: list[str] = Field(default_factory=list)
+    open_items: list[str] = Field(default_factory=list)
+
+
+class SowMetadata(BaseModel):
+    """Administrative project metadata for the SOW document header.
+
+    These 13 fields are the deterministic envelope the docx template
+    needs and that does not fit in any section bundle. In the
+    multi-agent variant they are derived from the Extraction Manifest;
+    in the root-skills variant the root extracts them from the loaded
+    documents and persists them directly via ``save_sow_metadata``.
+
+    The field set is pinned to
+    ``validation.field_vocabulary.MANIFEST_DERIVED_FIELDS_TUPLE`` —
+    the same constant the assembler iterates over and the global-patch
+    blocklist guards — so the writer, the assembler, and the linter
+    cannot drift. ``_assert_fields_match_vocabulary`` below fails import
+    if they ever diverge.
+
+    All fields default to ``''`` (not ``None``) so a partial extraction
+    still produces a schema-valid envelope; the assembler's
+    required-field gate (partner_name, customer_name, project_title,
+    funding_type) is what rejects blanks before document assembly.
+    """
+
+    model_config = _FORBID
+    partner_name: str = ''
+    customer_name: str = ''
+    partner_short_name: str = ''
+    customer_short_name: str = ''
+    project_title: str = ''
+    date: str = ''
+    author: str = ''
+    funding_type: str = ''
+    funding_type_short: str = ''
+    project_start_date: str = ''
+    project_end_date: str = ''
+    engagement_type: str = ''
+    organization_term: str = ''
+
+
 # ---------------------------------------------------------------------------
 # State key contract — single source of truth for assembler and tests
 # ---------------------------------------------------------------------------
 
 
+# Standalone key for the administrative metadata envelope. Kept out of
+# ``SOW_BUNDLE_STATE_KEYS`` because metadata is not a section bundle —
+# it is validated against the required-field gate, not the bundle
+# presence checks the stage-key tuples drive.
+SOW_METADATA_STATE_KEY = 'app:sow:metadata'
+
+# Path A guided-intake summary. Produced by ``save_sow_intake_summary``
+# at the end of the ``sow-guided-intake`` interview. Read by the root
+# (for ``save_sow_metadata`` extraction) and by every section skill as
+# upstream project context. Like ``SOW_METADATA_STATE_KEY`` it is not a
+# section bundle and not part of ``SOW_BUNDLE_STATE_KEYS``.
+SOW_INTAKE_SUMMARY_STATE_KEY = 'app:sow:intake_summary'
+
+# Canonical marker tokens. Code that checks a field's marker semantics
+# MUST compare against these literals — typoed comparisons would silently
+# fall through to "treat as real value" and corrupt downstream
+# inference.
+INTAKE_MARKER_INFERRED = '(inferred)'
+INTAKE_MARKER_TO_BE_DEFINED = '[TO BE DEFINED]'
+INTAKE_MARKER_TOKENS: tuple[str, ...] = (
+    INTAKE_MARKER_INFERRED,
+    INTAKE_MARKER_TO_BE_DEFINED,
+)
+
+# Fields the intake tool refuses to accept as markers — a SOW cannot be
+# generated without these.
+INTAKE_REQUIRED_REAL_FIELDS: tuple[str, ...] = (
+    'customer_name',
+    'project_title',
+    'problem_goal',
+    'solution_direction',
+)
+
+
+def _assert_fields_match_vocabulary() -> None:
+    """Fail import if ``SowMetadata`` drifts from the canonical field set."""
+    model_fields = tuple(SowMetadata.model_fields.keys())
+    if model_fields != MANIFEST_DERIVED_FIELDS_TUPLE:
+        raise RuntimeError(
+            'SowMetadata fields drifted from '
+            'MANIFEST_DERIVED_FIELDS_TUPLE. '
+            f'model={model_fields} vocabulary={MANIFEST_DERIVED_FIELDS_TUPLE}'
+        )
+
+
+_assert_fields_match_vocabulary()
+
+
 SOW_BUNDLE_STATE_KEYS: dict[str, str] = {
-    # `manifest` deliberately breaks the `app:sow:*` namespace because the
-    # manifest tools predate the section sub-agents and persist to
-    # ``state['extraction_manifest']`` (see ``manifest_tools.py``). Aligning
-    # here keeps a single source of truth for the manifest key — changing
-    # the manifest tools would touch ``validation/manifest_prefilter.py``
-    # and a wider blast radius for no functional gain.
-    'manifest': 'extraction_manifest',
     'requirements': 'app:sow:requirements',
     'delivery_plan': 'app:sow:delivery_plan',
     'scope_boundaries': 'app:sow:scope_boundaries',
@@ -224,11 +373,12 @@ SOW_BUNDLE_STATE_KEYS: dict[str, str] = {
 
 AssembleStage = Literal['content', 'full']
 
-# Bundles required for each assembly stage. Content-stage assembly runs
-# right after Steps A+B+C (requirements / delivery / scope) before
-# architecture or narrative exist; full-stage assembly runs after D+E.
+# Bundles required for each assembly stage. Project metadata is resolved
+# separately from the ``app:sow:metadata`` envelope (see
+# ``assemble_payload``). Content-stage assembly runs right after Steps
+# A+B+C (requirements / delivery / scope) before architecture or
+# narrative exist; full-stage assembly runs after D+E.
 CONTENT_STAGE_KEYS: tuple[str, ...] = (
-    SOW_BUNDLE_STATE_KEYS['manifest'],
     SOW_BUNDLE_STATE_KEYS['requirements'],
     SOW_BUNDLE_STATE_KEYS['delivery_plan'],
     SOW_BUNDLE_STATE_KEYS['scope_boundaries'],

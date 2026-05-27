@@ -12,8 +12,10 @@ description: >
 metadata:
   pattern: synthesis + web-search-enrichment
   produces: executive_summary, partner_overview, customer_overview, customer_primary_domain
-  inputs: extraction_manifest, sow_data snapshot (all other sections), web search tool
+  inputs: project documents (via load_artifacts), upstream bundles (all other sections), web search tool
   references-skill: sow-shared
+  adk_additional_tools:
+    - google_search_agent
 ---
 
 # SOW Narrative
@@ -41,6 +43,8 @@ When patching: also `sow-shared` / `references/id-stability-rules.md`. The exact
 
 - Manifest `extracted_items` for `[Identity, Briefing]`.
 - Current `sow_data` snapshot with every other section already populated.
+
+If `state['app:sow:intake_summary']` is populated (Path A — guided intake), treat it as upstream project context equivalent to the project documents. Use `customer_name`, `project_title`, `problem_goal`, and `solution_direction` from the persisted summary (all four are guaranteed to be real values — the intake tool rejects markers there) as the factual basis for the Executive Summary and the Customer Overview. The Partner Overview and the `customer_primary_domain` still come from the web search queries — guided intake does not replace the enrichment step. Other intake fields marked `'(inferred)'` or `'[TO BE DEFINED]'` should NOT be folded verbatim into the narrative — by the time this skill runs, the prior section skills will have either filled inferred values or kept `[TO BE DEFINED]` placeholders inside their bundles; read those resolved bundles, not the raw intake markers.
 
 > **Coverage scope.** Per-item manifest coverage (walking `extracted_items` exhaustively) is the validation critic's `coverage` skill responsibility, not this skill's. Do not duplicate that walk here; produce content grounded in the inputs above and let the critic flag uncovered items in a later round.
 

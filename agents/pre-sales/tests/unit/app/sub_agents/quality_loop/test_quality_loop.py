@@ -1276,18 +1276,19 @@ def _critic_emitting(findings: list[dict], *, status: str = 'blocked'):
 
 
 def _seed_assembly_state(state: dict) -> None:
-    """Populate the in-state bundles + manifest with the minimum shape
-    ``apply_sow_assembly_to_state`` accepts so the loop can re-assemble
-    after a section agent runs."""
-    from app.sub_agents.schemas import SOW_BUNDLE_STATE_KEYS
+    """Populate the in-state bundles + metadata envelope with the minimum
+    shape ``apply_sow_assembly_to_state`` accepts so the loop can
+    re-assemble after a section agent runs."""
+    from app.sub_agents.schemas import (
+        SOW_BUNDLE_STATE_KEYS,
+        SOW_METADATA_STATE_KEY,
+    )
 
-    state[SOW_BUNDLE_STATE_KEYS['manifest']] = {
-        'project': {
-            'title': 'P',
-            'customer_name': 'C',
-            'partner_name': 'GFT',
-            'funding_type': 'DAF',
-        },
+    state[SOW_METADATA_STATE_KEY] = {
+        'project_title': 'P',
+        'customer_name': 'C',
+        'partner_name': 'GFT',
+        'funding_type': 'DAF',
     }
     state[SOW_BUNDLE_STATE_KEYS['requirements']] = {
         'functional_requirements': [

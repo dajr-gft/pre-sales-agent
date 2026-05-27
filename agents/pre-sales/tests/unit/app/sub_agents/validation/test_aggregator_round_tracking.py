@@ -61,7 +61,6 @@ def _finding(
         'evidence': evidence,
         'recommendation': 'Align FR-01 and NFR-02.',
         'fields': list(fields),
-        'manifest_item_id': None,
         'persistent': False,
         'requires_human_review': False,
         'model_used': 'test-model',

@@ -53,19 +53,11 @@ def _seeded_state(
 ) -> dict[str, Any]:
     """Build a state dict with the required upstream packet populated.
 
-    The repair agent declares ``extraction_manifest`` + ``prior_requirements``
-    as required inputs. Without them the provider switches to the
-    MISSING-and-stop footer.
+    The repair agent declares ``prior_requirements`` as its required
+    input. Without it the provider switches to the MISSING-and-stop
+    footer.
     """
     state: dict[str, Any] = {
-        SOW_BUNDLE_STATE_KEYS['manifest']: {
-            'project': {
-                'title': 'Test',
-                'customer_name': 'Acme',
-                'partner_name': 'GFT',
-                'funding_type': 'Google DAF',
-            },
-        },
         SOW_BUNDLE_STATE_KEYS['requirements']: {
             'functional_requirements': [
                 {'number': 'FR-01', 'description': 'Ingest data.'},
@@ -267,31 +259,11 @@ class TestInstructionProviderHappyPath:
             },
         ))
         prompt = delivery_plan_repair_agent.instruction(ctx)
-        assert '<extraction_manifest>' in prompt
+        assert '<extraction_manifest>' not in prompt
         assert '<prior_requirements>' in prompt
 
 
 class TestInstructionProviderMissingInputs:
-    def test_missing_manifest_triggers_stop_directive(self):
-        state = _seeded_state(
-            findings=[{'id': 'F-1'}],
-            bundle={
-                'activity_phases': [],
-                'deliverables': [],
-                'timeline': [],
-                'partner_roles': [],
-                'customer_roles': [],
-                'success_criteria': [],
-            },
-        )
-        del state[SOW_BUNDLE_STATE_KEYS['manifest']]
-        ctx = _Ctx(state)
-        prompt = delivery_plan_repair_agent.instruction(ctx)
-        assert 'STOP' in prompt
-        assert 'extraction_manifest' in prompt
-        # Tool footer must NOT appear when inputs are missing.
-        assert '# Repair mode (tool-based' not in prompt
-
     def test_missing_prior_requirements_triggers_stop(self):
         state = _seeded_state(findings=[{'id': 'F-1'}])
         del state[SOW_BUNDLE_STATE_KEYS['requirements']]
@@ -299,6 +271,8 @@ class TestInstructionProviderMissingInputs:
         prompt = delivery_plan_repair_agent.instruction(ctx)
         assert 'STOP' in prompt
         assert 'prior_requirements' in prompt
+        # Tool footer must NOT appear when required inputs are missing.
+        assert '# Repair mode (tool-based' not in prompt
 
 
 class TestInstructionProviderMissingRepairFindings:

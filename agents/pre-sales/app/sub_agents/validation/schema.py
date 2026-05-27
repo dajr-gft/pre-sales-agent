@@ -49,7 +49,6 @@ ResolutionMode = Literal[
 ]
 
 SKILL_NAMES: tuple[str, ...] = (
-    'coverage',
     'contradictions',
     'contractual_exposure',
     'disclosures',
@@ -61,7 +60,6 @@ SKILL_NAMES: tuple[str, ...] = (
 STATE_SOW = 'app:sow:current'
 STATE_STAGE = 'app:sow:stage'
 STATE_DET_RESULT = 'app:det_result'
-STATE_MANIFEST_RESIDUAL = 'app:manifest_residual'
 STATE_REPORT_PARTIAL = 'app:validation_report:partial'
 STATE_SUMMARY_DRAFT = 'app:validation_summary:draft'
 STATE_VALIDATION_RESULT = 'app:validation_result'
@@ -140,10 +138,6 @@ class Finding(BaseModel):
     fields: list[str] = Field(
         default_factory=list,
         description='Top-level sow_data keys the recommendation would touch.',
-    )
-    manifest_item_id: str | None = Field(
-        default=None,
-        description='Manifest item id when skill="coverage".',
     )
     persistent: bool = Field(
         default=False,

@@ -26,7 +26,10 @@ from typing import Any
 
 import pytest
 
-from app.sub_agents.schemas import SOW_BUNDLE_STATE_KEYS
+from app.sub_agents.schemas import (
+    SOW_BUNDLE_STATE_KEYS,
+    SOW_METADATA_STATE_KEY,
+)
 from app.sub_agents.validation.schema import (
     STATE_PRIOR_BLOCKING_FINGERPRINTS,
     STATE_ROUND_COUNT,
@@ -46,14 +49,12 @@ _REVISION_LOG_KEY = 'app:sow:revision_log'
 # ---------------------------------------------------------------------------
 
 
-def _manifest() -> dict[str, Any]:
+def _metadata_envelope() -> dict[str, Any]:
     return {
-        'project': {
-            'title': 'Data Platform',
-            'customer_name': 'Acme',
-            'partner_name': 'GFT',
-            'funding_type': 'Google DAF',
-        },
+        'project_title': 'Data Platform',
+        'customer_name': 'Acme',
+        'partner_name': 'GFT',
+        'funding_type': 'Google DAF',
     }
 
 
@@ -125,7 +126,7 @@ def _narrative() -> dict[str, Any]:
 
 def _populated_state(stage: str = 'content') -> dict[str, Any]:
     state: dict[str, Any] = {
-        SOW_BUNDLE_STATE_KEYS['manifest']: _manifest(),
+        SOW_METADATA_STATE_KEY: _metadata_envelope(),
         SOW_BUNDLE_STATE_KEYS['requirements']: _requirements(),
         SOW_BUNDLE_STATE_KEYS['delivery_plan']: _delivery_plan(),
         SOW_BUNDLE_STATE_KEYS['scope_boundaries']: _scope_boundaries(),

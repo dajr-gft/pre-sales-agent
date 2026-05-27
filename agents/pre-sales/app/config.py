@@ -39,11 +39,43 @@ class AgentConfig(BaseSettings):
         default='',
         description='GCS Bucket name for logs storage',
     )
+    ARCHITECTURE_VARIANT: str = Field(
+        default='multi_agent_manifest',
+        alias='ARCHITECTURE_VARIANT',
+        description=(
+            'Pipeline variant tag for A/B telemetry. '
+            '"multi_agent_manifest" (legacy) or "root_skills_autoscoped" '
+            '(this branch). Read by run_metrics.collect_run_metrics and '
+            'setup_telemetry; set via the ARCHITECTURE_VARIANT env var.'
+        ),
+    )
 
     # Models
     GEMINI_MODEL: str = Field(
         default='gemini-3.1-pro-preview',
         description='Primary Gemini model for the root agent',
+    )
+    SECTION_AGENT_MODEL: str = Field(
+        default='gemini-3.5-flash',
+        description=(
+            'Model used by section worker+formatter agents (requirements, '
+            'delivery_plan, scope_boundaries, architecture, narrative) and '
+            'their repair counterparts. Flash because each section is a '
+            'tightly-scoped, schema-bound generation: the heavy reasoning '
+            'lives in the root orchestrator, the sections only fill slots. '
+            'Pro-grade reasoning per section is over-spend and the primary '
+            'driver of end-to-end latency.'
+        ),
+    )
+    SECTION_AGENT_THINKING_BUDGET: int = Field(
+        default=1024,
+        ge=0,
+        le=24576,
+        description=(
+            'Thinking budget for section worker / repair agents. Lower than '
+            'the root because section work is bounded by an explicit schema '
+            'and a prior bundle — extra deliberation buys little recall.'
+        ),
     )
     VALIDATION_SKILL_MODEL: str = Field(
         default='gemini-flash-latest',

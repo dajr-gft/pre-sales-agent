@@ -1,67 +1,32 @@
-"""Narrative section sub-agent — Phase 2 Step E (last).
+"""Narrative section repair sub-agent.
 
-Receives an ``AgentTool(google_search_agent)`` as an extra worker tool
-so the narrative worker can run the four web-search queries the
-legacy ``sow-narrative`` skill mandates (partner/customer/domain
-context) inside the same isolated invocation. The search agent is
-shared with the root via :mod:`app.sub_agents.web_search` — defined
-in a dedicated module to avoid the import cycle that would arise if
-narrative tried to import it from ``app.agent``.
+In the root-skills variant the first-gen narrative section is generated
+by the root inline (``load_skill('sow-narrative')`` →
+``save_narrative_bundle``), and the four web-search queries run via the
+``google_search_agent`` tool surfaced while that skill is active. This
+module ships only ``narrative_repair_agent``, invoked by the
+QualityLoopAgent in repair mode to patch the bundle via
+``apply_narrative_patch``.
+
+The repair agent does NOT run web search — repair operates on the
+bundle text already present; if a finding calls for new market data the
+orchestrator re-generates the narrative from the root rather than
+burning search quota inside the loop.
 """
 
 from __future__ import annotations
 
-from google.adk.tools.agent_tool import AgentTool
-
 from ...tools.sow.apply_section_patch import apply_narrative_patch
-from ..schemas import NarrativeBundle, SOW_BUNDLE_STATE_KEYS
-from ..web_search import google_search_agent
-from .._section_agent import build_section_agent, build_section_repair_agent
+from ..schemas import SOW_BUNDLE_STATE_KEYS
+from .._section_agent import build_section_repair_agent
 
 NARRATIVE_OUTPUT_KEY: str = SOW_BUNDLE_STATE_KEYS['narrative']
 
-_OUTPUT_EXAMPLE = """\
-{"executive_summary": "Acme Corp is modernizing ... (250-450 words).",
- "partner_overview": "GFT Technologies is a ...",
- "customer_overview": "Acme Corp is a ...",
- "customer_primary_domain": "acme.com"}"""
 
-
-narrative_agent = build_section_agent(
-    name='narrative_agent',
-    description=(
-        'Synthesizes the narrative cluster: executive summary, partner '
-        'overview, customer overview, and customer_primary_domain. Runs '
-        'the four web-search queries via the embedded google_search_agent '
-        'AgentTool. Must run LAST in Phase 2 — depends on every upstream '
-        'section. Writes a NarrativeBundle to '
-        f'`state[{NARRATIVE_OUTPUT_KEY!r}]`.'
-    ),
-    skill_name='sow-narrative',
-    output_schema=NarrativeBundle,
-    output_key=NARRATIVE_OUTPUT_KEY,
-    output_example=_OUTPUT_EXAMPLE,
-    extra_tools=[AgentTool(agent=google_search_agent)],
-    state_inputs=(
-        ('extraction_manifest', SOW_BUNDLE_STATE_KEYS['manifest']),
-        ('prior_requirements', SOW_BUNDLE_STATE_KEYS['requirements']),
-        ('prior_delivery_plan', SOW_BUNDLE_STATE_KEYS['delivery_plan']),
-        ('prior_scope_boundaries', SOW_BUNDLE_STATE_KEYS['scope_boundaries']),
-        ('prior_architecture', SOW_BUNDLE_STATE_KEYS['architecture']),
-    ),
-)
-
-
-# ``google_search_agent`` is deliberately NOT passed to the repair
-# agent. Web search exists only to seed the first-gen overviews with
-# external context; in repair mode the bundle text is already grounded
-# and findings are edits, not research prompts. If a finding calls for
-# new market data, the orchestrator should re-run the first-gen agent
-# from the root rather than burn search quota inside the loop.
 narrative_repair_agent = build_section_repair_agent(
     name='narrative_repair_agent',
     description=(
-        'Repair-mode counterpart of `narrative_agent`. Applies a batch '
+        'Repair specialist for the narrative section. Applies a batch '
         'of patch ops to the in-state NarrativeBundle via '
         '`apply_narrative_patch` instead of regenerating the bundle. '
         'Does NOT run web search — repair mode operates on the bundle '
@@ -72,7 +37,6 @@ narrative_repair_agent = build_section_repair_agent(
     bundle_key=NARRATIVE_OUTPUT_KEY,
     patch_tool=apply_narrative_patch,
     state_inputs=(
-        ('extraction_manifest', SOW_BUNDLE_STATE_KEYS['manifest']),
         ('prior_requirements', SOW_BUNDLE_STATE_KEYS['requirements']),
         ('prior_delivery_plan', SOW_BUNDLE_STATE_KEYS['delivery_plan']),
         ('prior_scope_boundaries', SOW_BUNDLE_STATE_KEYS['scope_boundaries']),

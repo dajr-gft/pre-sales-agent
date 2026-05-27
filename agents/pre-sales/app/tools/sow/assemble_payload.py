@@ -1,10 +1,11 @@
 """Deterministic assembly of the flat ``sow_data`` payload from bundles.
 
-After each section sub-agent runs, it writes a typed ``*Bundle`` (see
-``app.sub_agents.schemas``) into a dedicated session-state key. This
-tool reads those bundles and the Extraction Manifest from state and
-returns the flat ``sow_data`` dict that ``stage_sow`` and
-``generate_sow_document`` expect.
+After the root generates each section (inline, following the section
+skill) it persists a typed ``*Bundle`` (see ``app.sub_agents.schemas``)
+into a dedicated session-state key. This tool reads those bundles plus
+the ``app:sow:metadata`` envelope from state and returns the flat
+``sow_data`` dict that ``stage_sow`` and ``generate_sow_document``
+expect.
 
 Why a Python tool instead of letting the root LLM merge the JSON: an
 LLM merging five structured payloads silently drops fields, renames
@@ -44,6 +45,7 @@ from ...sub_agents.schemas import (
     CONTENT_STAGE_KEYS,
     FULL_STAGE_KEYS,
     SOW_BUNDLE_STATE_KEYS,
+    SOW_METADATA_STATE_KEY,
 )
 from ...sub_agents.validation.field_vocabulary import (
     MANIFEST_DERIVED_FIELDS_TUPLE,
@@ -89,8 +91,8 @@ _PROJECT_METADATA_KEYS: tuple[str, ...] = MANIFEST_DERIVED_FIELDS_TUPLE
 # treat as load-bearing. Empty strings here mean the template renders a
 # header that says "Partner: " with nothing after, which the validation
 # critic does not currently flag as a deterministic error (it focuses
-# on the section content). Reject in the assembler so a discovery bug
-# does not silently propagate into the generated SOW.
+# on the section content). Reject in the assembler so a metadata
+# extraction gap does not silently propagate into the generated SOW.
 _REQUIRED_PROJECT_METADATA_KEYS: tuple[str, ...] = (
     'partner_name',
     'customer_name',
@@ -99,136 +101,32 @@ _REQUIRED_PROJECT_METADATA_KEYS: tuple[str, ...] = (
 )
 
 
-# Mapping ``sow_data`` metadata key -> primitive key inside an
-# ``ExtractedItem`` whose ``category == 'Identity'`` (per
-# ``app/skills/sow-discovery/references/extraction-rules.md`` §1).
-# Discovery writes project metadata into ``primitives`` — NOT into a
-# top-level ``project`` sub-dict — so this is the canonical extraction
-# path. The legacy top-level / nested-``project`` lookups remain as
-# fallbacks so synthetic manifests in tests (and any hypothetical
-# discovery rewrite) keep working without touching the assembler.
-_IDENTITY_PRIMITIVE_ALIASES: dict[str, tuple[str, ...]] = {
-    'partner_name': ('partner',),
-    'customer_name': ('customer',),
-    'project_title': ('project_name',),
-    'funding_type': ('funding_type',),
-    'engagement_type': ('engagement_shape',),
-}
+# Bundle keys required per stage. Project metadata is resolved
+# separately (see ``_resolve_project_metadata``) from the
+# ``app:sow:metadata`` envelope. The stage tuples no longer carry a
+# manifest key, so they ARE the bundle-presence requirement directly.
+_CONTENT_BUNDLE_KEYS: tuple[str, ...] = CONTENT_STAGE_KEYS
+_FULL_BUNDLE_KEYS: tuple[str, ...] = FULL_STAGE_KEYS
 
 
-def _collect_identity_primitives(
-    manifest: dict[str, Any],
-) -> dict[str, str]:
-    """Merge ``primitives`` from every ``Identity`` extracted item.
+def _resolve_project_metadata(
+    state: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Resolve the 13 project-metadata fields from the metadata envelope.
 
-    A real manifest typically has one Identity item that carries all
-    project-level primitives in a single dict, but the schema allows
-    multiple Identity items (e.g. one per uploaded artifact). When that
-    happens we coalesce: later items only fill primitives that earlier
-    ones left as ``not_stated`` or missing. This matches the discovery
-    skill's own reconciliation rules — explicit values always win over
-    placeholders.
+    Reads ``state['app:sow:metadata']`` (written by ``save_sow_metadata``)
+    and coerces it onto the canonical key set. Returns ``None`` when the
+    envelope is absent or carries no non-empty value, so the caller can
+    raise a clear precondition error.
     """
-    items = manifest.get('extracted_items')
-    if not isinstance(items, list):
-        return {}
-
-    coalesced: dict[str, str] = {}
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        if item.get('category') != 'Identity':
-            continue
-        primitives = item.get('primitives')
-        if not isinstance(primitives, dict):
-            continue
-        for key, value in primitives.items():
-            if not isinstance(value, str):
-                continue
-            stripped = value.strip()
-            # ``not_stated`` is the discovery skill's "I looked but
-            # there's nothing here" sentinel — treat as missing so a
-            # later item with a real value can win.
-            if not stripped or stripped.lower() == 'not_stated':
-                continue
-            coalesced.setdefault(key, stripped)
-    return coalesced
-
-
-def _extract_project_metadata(manifest: dict[str, Any]) -> dict[str, Any]:
-    """Pull project-level fields from the manifest in a shape-tolerant way.
-
-    The Extraction Manifest in production stores project metadata under
-    ``extracted_items[*].primitives`` for items with
-    ``category == 'Identity'`` — discovery does NOT create a top-level
-    ``project_title`` or a nested ``project`` sub-dict, and the
-    ``ExtractionManifest`` Pydantic schema forbids extra fields at the
-    root (``extra='forbid'`` in ``_extraction_manifest.py``), so flat
-    top-level keys cannot exist either.
-
-    Lookup order:
-        1. ``extracted_items[*].primitives`` for ``category == 'Identity'``
-           (the canonical path).
-        2. Nested ``manifest['project']`` sub-dict with aliases.
-        3. Flat top-level ``manifest[key]``.
-        4. Empty string if nothing found.
-
-    Missing keys are emitted as empty strings rather than dropped so the
-    docx template never KeyErrors at render time. The required-field
-    gate downstream (``assemble_sow_payload`` itself) catches the
-    blanks for the four critical keys.
-    """
-    project_nested = manifest.get('project') if isinstance(manifest, dict) else None
-    project_nested = project_nested if isinstance(project_nested, dict) else {}
-
-    identity_primitives = _collect_identity_primitives(manifest)
-
-    nested_aliases: dict[str, tuple[str, ...]] = {
-        'project_title': ('title', 'project_title'),
-        'customer_name': ('customer_name',),
-        'partner_name': ('partner_name',),
-        'partner_short_name': ('partner_short_name',),
-        'customer_short_name': ('customer_short_name',),
-        'date': ('date',),
-        'author': ('author',),
-        'funding_type': ('funding_type',),
-        'funding_type_short': ('funding_type_short',),
-        'project_start_date': ('start_date', 'project_start_date'),
-        'project_end_date': ('end_date', 'project_end_date'),
-        'engagement_type': ('engagement_type',),
-        'organization_term': ('organization_term',),
-    }
-
-    out: dict[str, Any] = {}
-    for key in _PROJECT_METADATA_KEYS:
-        # 1) Canonical: Identity primitives from extracted_items.
-        for primitive_key in _IDENTITY_PRIMITIVE_ALIASES.get(key, ()):
-            if primitive_key in identity_primitives:
-                out[key] = identity_primitives[primitive_key]
-                break
-        if key in out:
-            continue
-        # 2) Legacy fallback: nested manifest['project'] sub-dict.
-        matched = False
-        for alias in nested_aliases.get(key, ()):
-            if alias in project_nested:
-                value = project_nested[alias]
-                if isinstance(value, str) and not value.strip():
-                    continue
-                out[key] = value
-                matched = True
-                break
-        if matched:
-            continue
-        # 3) Legacy fallback: flat top-level key on the manifest.
-        if key in manifest:
-            value = manifest[key]
-            if not (isinstance(value, str) and not value.strip()):
-                out[key] = value
-                continue
-        # 4) Nothing found.
-        out[key] = ''
-    return out
+    envelope = state.get(SOW_METADATA_STATE_KEY)
+    if isinstance(envelope, dict) and any(
+        isinstance(v, str) and v.strip() for v in envelope.values()
+    ):
+        return {
+            key: (envelope.get(key) or '') for key in _PROJECT_METADATA_KEYS
+        }
+    return None
 
 
 class AssemblyError(Exception):
@@ -246,14 +144,12 @@ class AssemblyError(Exception):
         missing_keys: list[str] | None = None,
         sentinel_keys: list[str] | None = None,
         missing_metadata: list[str] | None = None,
-        manifest_type: str | None = None,
     ) -> None:
         super().__init__(reason)
         self.reason = reason
         self.missing_keys = missing_keys or []
         self.sentinel_keys = sentinel_keys or []
         self.missing_metadata = missing_metadata or []
-        self.manifest_type = manifest_type
 
 
 def build_sow_data_from_state(
@@ -280,7 +176,9 @@ def build_sow_data_from_state(
         )
 
     required = (
-        CONTENT_STAGE_KEYS if stage_normalized == 'content' else FULL_STAGE_KEYS
+        _CONTENT_BUNDLE_KEYS
+        if stage_normalized == 'content'
+        else _FULL_BUNDLE_KEYS
     )
     missing = [k for k in required if not state.get(k)]
     if missing:
@@ -307,17 +205,16 @@ def build_sow_data_from_state(
             sentinel_keys=sentinel_keys,
         )
 
-    manifest = state[SOW_BUNDLE_STATE_KEYS['manifest']]
-    if not isinstance(manifest, dict):
+    project_metadata = _resolve_project_metadata(state)
+    if project_metadata is None:
         raise AssemblyError(
             (
-                'Manifest in state is not a dict; cannot extract project '
-                f"metadata (got {type(manifest).__name__})."
+                'No project metadata in state: the '
+                f'{SOW_METADATA_STATE_KEY!r} envelope is missing or empty. '
+                'Call save_sow_metadata before SOW assembly.'
             ),
-            manifest_type=type(manifest).__name__,
+            missing_metadata=list(_REQUIRED_PROJECT_METADATA_KEYS),
         )
-
-    project_metadata = _extract_project_metadata(manifest)
 
     missing_metadata = [
         key
@@ -329,8 +226,8 @@ def build_sow_data_from_state(
             (
                 f'Cannot assemble stage={stage_normalized!r}: required '
                 f'project metadata fields are empty: {missing_metadata}. '
-                'The manifest must populate these before SOW assembly so '
-                'the document header is not rendered with blanks.'
+                'save_sow_metadata must populate these before SOW assembly '
+                'so the document header is not rendered with blanks.'
             ),
             missing_metadata=missing_metadata,
         )
@@ -456,19 +353,13 @@ async def assemble_sow_payload(
             )
         elif err.missing_metadata:
             suggestion = (
-                'Re-run sow-discovery (or the manifest tools) so the '
-                f'manifest carries non-empty values for: {err.missing_metadata}. '
-                'Both flat (e.g. `manifest["partner_name"]`) and nested '
-                '(`manifest["project"]["partner_name"]`) shapes are accepted.'
+                'Call `save_sow_metadata` with non-empty values for: '
+                f'{err.missing_metadata}, then assemble again.'
             )
             logger.warning(
                 'assemble_sow_payload_missing_metadata',
                 stage=stage_normalized,
                 missing=err.missing_metadata,
-            )
-        elif err.manifest_type:
-            suggestion = (
-                'Re-run sow-discovery so the manifest is written as a dict.'
             )
         else:
             suggestion = (

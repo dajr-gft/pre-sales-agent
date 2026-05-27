@@ -30,14 +30,6 @@ def _seeded_state(
     bundle: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     state: dict[str, Any] = {
-        SOW_BUNDLE_STATE_KEYS['manifest']: {
-            'project': {
-                'title': 'Test',
-                'customer_name': 'Acme',
-                'partner_name': 'GFT',
-                'funding_type': 'Google DAF',
-            },
-        },
         SOW_BUNDLE_STATE_KEYS['requirements']: {
             'functional_requirements': [],
             'non_functional_requirements': [],

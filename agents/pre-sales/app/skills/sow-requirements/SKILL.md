@@ -14,7 +14,7 @@ description: >
 metadata:
   pattern: paired-generation + cross-validation
   produces: functional_requirements, non_functional_requirements
-  inputs: extraction_manifest
+  inputs: project documents (via load_artifacts)
   references-skill: sow-shared
 ---
 
@@ -44,6 +44,14 @@ When patching an existing list: also `sow-shared` / `references/id-stability-rul
 ## Inputs
 
 - `manifest.extracted_items` for `[Briefing, Integrations, NFRs]` + resolved `manifest.gaps`.
+
+If `state['app:sow:intake_summary']` is populated (Path A — guided intake), treat it as upstream project context equivalent to the project documents. Use it as the factual basis for FRs and NFRs. Honor the marker contract on each field:
+
+- **Real value** → use as factual context exactly like a document fact.
+- **`'(inferred)'`** (scalar) or **`['(inferred)']`** (list) → propose a safe consulting default following `references/fr-patterns.md` / `references/nfr-waf-pillars.md`. Mark the produced FR / NFR with `(inferred)` per `sow-shared` / `references/language-rules.md`. Do NOT skip the requirement.
+- **`'[TO BE DEFINED]'`** (scalar) or **`['[TO BE DEFINED]']`** (list) → for NFR targets specifically, keep `[TO BE DEFINED]` as the target text in the produced NFR; an open commitment is a Content Review item, not a reason to drop the NFR. For inputs to FR formulation, generate the FR with what the summary does carry and leave quantitative thresholds as `[TO BE DEFINED]`. Never invent a value.
+
+`inferred_items` and `open_items` on the persisted summary are the explicit roll-ups; iterate them when deciding which FR / NFR pillars need the default-fill versus placeholder-keep behavior.
 
 > **Coverage scope.** Per-item manifest coverage (walking `extracted_items` exhaustively) is the validation critic's `coverage` skill responsibility, not this skill's. Do not duplicate that walk here; produce content grounded in the inputs above and let the critic flag uncovered items in a later round.
 

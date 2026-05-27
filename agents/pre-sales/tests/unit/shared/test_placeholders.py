@@ -1,9 +1,9 @@
 """Tests for the canonical placeholder recognition module.
 
-The pipeline (deterministic validator, manifest prefilter, semantic
-skill prompts, root prompt) all rely on these helpers staying stable
-across versions. Any change to the recognised forms or the API surface
-must be made here AND propagated to the consumers.
+The pipeline (deterministic validator, semantic skill prompts, root
+prompt) all rely on these helpers staying stable across versions. Any
+change to the recognised forms or the API surface must be made here AND
+propagated to the consumers.
 """
 
 from __future__ import annotations
@@ -11,7 +11,6 @@ from __future__ import annotations
 import pytest
 
 from app.shared.placeholders import (
-    collect_approved_deferrals,
     contains_placeholder,
     is_placeholder,
     strip_placeholders,
@@ -119,105 +118,3 @@ def test_strip_placeholders_preserves_useful_content():
     assert 'Engineer responsible for' in stripped
     assert 'integration work' in stripped
     assert 'A DEFINIR' not in stripped
-
-
-# ---------------------------------------------------------------------------
-# collect_approved_deferrals
-# ---------------------------------------------------------------------------
-
-
-def test_collect_approved_deferrals_includes_to_be_defined_items():
-    manifest = {
-        'gaps': {
-            'to_be_defined': [
-                {'item': 'Sponsor names for the Customer team', 'source_gap_id': 'G-001'},
-                {'item': 'Production go-live date', 'source_gap_id': 'G-002'},
-            ],
-            'hard_gaps': [],
-        },
-    }
-    result = collect_approved_deferrals(manifest)
-    assert result == [
-        'Sponsor names for the Customer team',
-        'Production go-live date',
-    ]
-
-
-def test_collect_approved_deferrals_includes_non_blocking_hard_gaps():
-    manifest = {
-        'gaps': {
-            'to_be_defined': [],
-            'hard_gaps': [
-                {
-                    'id': 'G-001',
-                    'description': 'Specific governance template to adopt',
-                    'blocks_sow_generation': False,
-                    'user_response': '[TO BE DEFINED]',
-                },
-            ],
-        },
-    }
-    result = collect_approved_deferrals(manifest)
-    assert result == ['Specific governance template to adopt']
-
-
-def test_collect_approved_deferrals_skips_blocking_hard_gaps():
-    """Guardrail #3: a hard gap flagged as blocking is NOT an approved
-    deferral — the SOW shouldn't carry a placeholder for it. The collector
-    must not surface such gaps to the validator as legitimate placeholders."""
-    manifest = {
-        'gaps': {
-            'to_be_defined': [],
-            'hard_gaps': [
-                {
-                    'id': 'G-CRIT',
-                    'description': 'Engagement shape (assessment / greenfield / migration)',
-                    'blocks_sow_generation': True,
-                    'user_response': '[TO BE DEFINED]',
-                },
-            ],
-        },
-    }
-    assert collect_approved_deferrals(manifest) == []
-
-
-def test_collect_approved_deferrals_deduplicates():
-    manifest = {
-        'gaps': {
-            'to_be_defined': [
-                {'item': 'Customer team names'},
-                {'item': 'Customer team names'},  # exact duplicate
-                {'item': '  Customer team names  '},  # whitespace duplicate
-            ],
-            'hard_gaps': [
-                {
-                    'description': 'Customer team names',
-                    'blocks_sow_generation': False,
-                },
-            ],
-        },
-    }
-    assert collect_approved_deferrals(manifest) == ['Customer team names']
-
-
-def test_collect_approved_deferrals_handles_malformed_manifest():
-    """Defensive: this helper runs on every validation round, must never
-    raise. Various malformed manifests return an empty list silently."""
-    assert collect_approved_deferrals(None) == []
-    assert collect_approved_deferrals('not a dict') == []
-    assert collect_approved_deferrals({}) == []
-    assert collect_approved_deferrals({'gaps': None}) == []
-    assert collect_approved_deferrals({'gaps': 'wrong type'}) == []
-    assert collect_approved_deferrals({'gaps': {}}) == []
-    assert collect_approved_deferrals(
-        {'gaps': {'to_be_defined': 'not a list', 'hard_gaps': None}}
-    ) == []
-    # Non-dict entries inside the lists are skipped, not raised on
-    assert collect_approved_deferrals(
-        {
-            'gaps': {
-                'to_be_defined': ['not a dict', {'item': 'kept'}],
-                'hard_gaps': [None, {'description': 'kept too', 'blocks_sow_generation': False}],
-            },
-        }
-    ) == ['kept', 'kept too']
