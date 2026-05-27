@@ -50,7 +50,13 @@ When patching: also `sow-shared` / `references/id-stability-rules.md`. OOS / ass
 - `manifest.extracted_items` for `[Constraints, Decisions, Briefing]` + `manifest.gaps.pending_decisions`.
 - Current `sow_data` snapshot with FRs, NFRs, deliverables, and activity_phases already populated. Deliverables supply OOS counter-anchors and assumption phase-deadline references.
 
-If an `<intake_summary>` block is present in the conversation (the guided-intake handoff from `sow-guided-intake`), treat it as upstream project context equivalent to the project documents. Use it as the factual basis for assumptions, OOS, and risks. Items the summary marks `(inferred)` (such as out-of-scope items the user did not state) are safe to expand with consulting-grade defaults per `references/oos-categories.md`. Items marked `[TO BE DEFINED]` remain unresolved — file an assumption that captures the open decision rather than inventing a value.
+If `state['app:sow:intake_summary']` is populated (Path A — guided intake), treat it as upstream project context equivalent to the project documents. Use it as the factual basis for assumptions, OOS, and risks. Honor the marker contract on each field:
+
+- **Real value** → use as factual context.
+- **`'(inferred)'`** (e.g. `out_of_scope`, `regulatory_constraints`) → expand with consulting-grade defaults per `references/oos-categories.md` / `references/assumption-patterns.md`. Mark inferred items with `(inferred)` per `sow-shared` / `references/language-rules.md` so the Content Review surfaces them.
+- **`'[TO BE DEFINED]'`** (e.g. `operational_constraints`, `timeline`) → file an assumption that captures the open decision verbatim with `[TO BE DEFINED]` in the consequence clause; do NOT invent the constraint or guess a value. The Content Review is where the user resolves these.
+
+`inferred_items` and `open_items` are the explicit roll-ups; iterate them when deciding which OOS / assumption / risk entries need the default-fill versus placeholder-keep behavior.
 
 > **Coverage scope.** Per-item manifest coverage (walking `extracted_items` exhaustively) is the validation critic's `coverage` skill responsibility, not this skill's. Do not duplicate that walk here; produce content grounded in the inputs above and let the critic flag uncovered items in a later round.
 
