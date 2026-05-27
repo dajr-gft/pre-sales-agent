@@ -33,6 +33,7 @@ from .tools.sow.generate_architecture_diagram import \
 from .tools.sow.generate_sow_document import generate_sow_document
 from .tools.sow.assemble_payload import assemble_sow_payload
 from .tools.sow.save_section_bundle import SAVE_BUNDLE_TOOLS
+from .tools.sow.save_sow_intake_summary import save_sow_intake_summary
 from .tools.sow.save_sow_metadata import save_sow_metadata
 from .tools.sow.stage_sow import stage_sow
 
@@ -119,6 +120,11 @@ _TOOLS = [
     # the save_<section>_bundle tools validate+persist each section the
     # root generates inline after loading the matching skill.
     save_sow_metadata,
+    # Path A: the guided-intake skill persists its structured summary
+    # through this tool. The root then extracts administrative fields
+    # from state['app:sow:intake_summary'] for save_sow_metadata and the
+    # section skills read the same key as upstream context.
+    save_sow_intake_summary,
     *SAVE_BUNDLE_TOOLS,
     # AutoScopedSkillToolset exposes load_skill / load_skill_resource /
     # list_skills / run_skill_script and prunes inactive-skill content

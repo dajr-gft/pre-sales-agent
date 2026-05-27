@@ -202,6 +202,76 @@ class NarrativeBundle(BaseModel):
     customer_primary_domain: str | None = None
 
 
+class IntakeSummary(BaseModel):
+    """Structured handoff produced by the ``sow-guided-intake`` skill.
+
+    Path A (guided intake) replaces the project documents with this
+    summary as the upstream context the section skills read. Fields
+    carry one of three semantic states:
+
+    - A real value extracted from the user's answers.
+    - The marker ``'(inferred)'`` — downstream skills must fill the
+      value with a safe consulting default following the style guide
+      and SOW conventions. Never re-ask the user. Surface the inference
+      to the user only at the existing review gates.
+    - The marker ``'[TO BE DEFINED]'`` — value is genuinely unknown.
+      Downstream skills MUST keep the placeholder and roll the gap into
+      the SOW's open items / assumptions; they must NOT invent a value.
+
+    For list-typed fields, the marker convention is a single-element
+    list whose only element is the marker string (e.g.
+    ``out_of_scope=['(inferred)']``). An empty list means the field is
+    irrelevant or absent — the marker, when applicable, is the explicit
+    signal.
+
+    ``inferred_items`` and ``open_items`` are the explicit roll-ups the
+    root and section skills use to distinguish the two marker types
+    quickly without scanning every field.
+
+    The four real-value-required fields — ``customer_name``,
+    ``project_title``, ``problem_goal``, ``solution_direction`` —
+    cannot carry markers. They are the minimum scope a SOW needs and
+    the tool rejects markers there.
+    """
+
+    model_config = _FORBID
+
+    # --- Required real values (markers forbidden) ---
+    customer_name: str
+    project_title: str
+    problem_goal: str = Field(
+        description='One or two lines on the business problem or objective.'
+    )
+    solution_direction: str = Field(
+        description='One or two lines on the proposed solution direction.'
+    )
+
+    # --- Identity (marker-tolerant) ---
+    partner_name: str = 'GFT Technologies'
+    funding_type: str = '[TO BE DEFINED]'
+
+    # --- Scalar marker-tolerant fields ---
+    engagement_shape: str = '(inferred)'
+    timeline: str = '[TO BE DEFINED]'
+
+    # --- List fields. Single-element list with a marker string is the
+    #     explicit marker convention; empty list = no information. ---
+    main_scope: list[str] = Field(default_factory=list)
+    out_of_scope: list[str] = Field(default_factory=list)
+    integrations: list[str] = Field(default_factory=list)
+    technology_stack: list[str] = Field(default_factory=list)
+    nfr_quality_targets: list[str] = Field(default_factory=list)
+    operational_constraints: list[str] = Field(default_factory=list)
+    regulatory_constraints: list[str] = Field(default_factory=list)
+    partner_team: list[str] = Field(default_factory=list)
+    customer_team: list[str] = Field(default_factory=list)
+    assumptions: list[str] = Field(default_factory=list)
+
+    # --- Explicit roll-ups for downstream marker dispatch ---
+    inferred_items: list[str] = Field(default_factory=list)
+    open_items: list[str] = Field(default_factory=list)
+
+
 class SowMetadata(BaseModel):
     """Administrative project metadata for the SOW document header.
 
@@ -250,6 +320,33 @@ class SowMetadata(BaseModel):
 # it is validated against the required-field gate, not the bundle
 # presence checks the stage-key tuples drive.
 SOW_METADATA_STATE_KEY = 'app:sow:metadata'
+
+# Path A guided-intake summary. Produced by ``save_sow_intake_summary``
+# at the end of the ``sow-guided-intake`` interview. Read by the root
+# (for ``save_sow_metadata`` extraction) and by every section skill as
+# upstream project context. Like ``SOW_METADATA_STATE_KEY`` it is not a
+# section bundle and not part of ``SOW_BUNDLE_STATE_KEYS``.
+SOW_INTAKE_SUMMARY_STATE_KEY = 'app:sow:intake_summary'
+
+# Canonical marker tokens. Code that checks a field's marker semantics
+# MUST compare against these literals — typoed comparisons would silently
+# fall through to "treat as real value" and corrupt downstream
+# inference.
+INTAKE_MARKER_INFERRED = '(inferred)'
+INTAKE_MARKER_TO_BE_DEFINED = '[TO BE DEFINED]'
+INTAKE_MARKER_TOKENS: tuple[str, ...] = (
+    INTAKE_MARKER_INFERRED,
+    INTAKE_MARKER_TO_BE_DEFINED,
+)
+
+# Fields the intake tool refuses to accept as markers — a SOW cannot be
+# generated without these.
+INTAKE_REQUIRED_REAL_FIELDS: tuple[str, ...] = (
+    'customer_name',
+    'project_title',
+    'problem_goal',
+    'solution_direction',
+)
 
 
 def _assert_fields_match_vocabulary() -> None:
