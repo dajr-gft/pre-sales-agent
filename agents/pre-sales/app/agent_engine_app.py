@@ -54,11 +54,22 @@ class AgentEngineApp(AdkApp):
 
 
 logs_bucket_name = os.environ.get('LOGS_BUCKET_NAME')
+
+
+def _build_artifact_service() -> InMemoryArtifactService | GcsArtifactService:
+    """Pick the artifact backend at set_up time.
+
+    Integration tests set ``INTEGRATION_TEST=TRUE`` to mock external
+    services: in that mode (or when no logs bucket is configured) we use
+    the in-memory backend so a run never reaches GCS. Production uses the
+    GCS-backed service when ``LOGS_BUCKET_NAME`` is set.
+    """
+    if os.environ.get('INTEGRATION_TEST') == 'TRUE' or not logs_bucket_name:
+        return InMemoryArtifactService()
+    return GcsArtifactService(bucket_name=logs_bucket_name)
+
+
 agent_engine = AgentEngineApp(
     app=adk_app,
-    artifact_service_builder=lambda: (
-        GcsArtifactService(bucket_name=logs_bucket_name)
-        if logs_bucket_name
-        else InMemoryArtifactService()
-    ),
+    artifact_service_builder=_build_artifact_service,
 )
