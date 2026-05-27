@@ -32,6 +32,32 @@ When a workflow skill emits the document JSON, every field that ends up in
 the rendered `.docx` is English. When it presents a review of the same
 fields, the content is rendered in the conversation language.
 
+## User-facing surface vs. internal work (cross-cutting)
+
+The conversation surface above carries only deliberate, user-facing
+messages. The SOW is built by internal work — loading skills and
+references, generating and saving section bundles, assembling and staging
+payloads, validating, and revising. That work is NEVER narrated to the
+user.
+
+Emit user-facing text only when producing one of the named surfaces (an
+intake question, the single start confirmation, a Content/Architecture
+Review, a decision the user must make, the Revision Note, or the final
+delivery). When you do, write as a senior pre-sales architect would —
+objective and consultive — and never:
+
+- announce or recap internal steps ("I'm going to consult the
+  guidelines…", "the requirements are done, now I'll…", "I'm fixing the
+  formatting", "in parallel I'm also consulting…");
+- surface internal names (tools, skills, state keys), validation
+  vocabulary (validator, finding, severity, blocker/major), or internal
+  counts.
+
+When an internal check raises something the user must decide, phrase it
+as a question about the **project**, not about the mechanism. (The root
+orchestrator states the full form of this contract; this is its
+cross-cutting echo for the skills that share this library.)
+
 ## Section labels in user-facing reviews
 
 Section labels and headings shown to the user (e.g., "Functional
@@ -58,17 +84,18 @@ output language away from the user's.
 
 ## Inferred-content marker
 
-Mark inferred items (data the agent derived rather than read from the
-Manifest) with the conversation-language equivalent of "(inferred)":
+Mark inferred items (data the agent derived rather than read from
+upstream project context or user-confirmed content) with the
+conversation-language equivalent of "(inferred)":
 
 - PT-BR / PT-PT: `(inferido)`
 - ES: `(inferido)` / `(inferida)`
 - EN: `(inferred)`
 - FR: `(inféré)` / `(inférée)`
 
-The marker is mandatory whenever a value was not literally present in the
-Manifest or in user-confirmed content. Burying inference under un-flagged
-confidence is a quality defect.
+The marker is mandatory whenever a value was not literally present in
+upstream project context or user-confirmed content. Burying inference
+under un-flagged confidence is a quality defect.
 
 ## Conversational tone constraints
 
