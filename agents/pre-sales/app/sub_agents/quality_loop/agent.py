@@ -732,8 +732,8 @@ class QualityLoopAgent(BaseAgent):
                 # item ids in the bundle BEFORE the agent ran against
                 # the AFTER set. Any id present before AND absent after
                 # is a candidate anchor drop (the section agent removed
-                # or renamed an item that may have been covering a
-                # manifest entry). Logged as WARNING when dropped is
+                # or renamed an item that another section may have been
+                # referencing). Logged as WARNING when dropped is
                 # non-empty so the event is easy to grep in a long
                 # production trace.
                 post_anchor_ids = _extract_anchor_ids(post_bundle)
