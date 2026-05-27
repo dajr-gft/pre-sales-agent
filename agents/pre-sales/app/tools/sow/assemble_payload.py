@@ -44,6 +44,7 @@ from ...sub_agents.schemas import (
     CONTENT_STAGE_KEYS,
     FULL_STAGE_KEYS,
     SOW_BUNDLE_STATE_KEYS,
+    SOW_METADATA_STATE_KEY,
 )
 from ...sub_agents.validation.field_vocabulary import (
     MANIFEST_DERIVED_FIELDS_TUPLE,
@@ -231,6 +232,51 @@ def _extract_project_metadata(manifest: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+# Bundle keys required per stage, with the manifest key stripped out.
+# Metadata is resolved separately (see ``_resolve_project_metadata``) so
+# the root-skills variant — which has no Extraction Manifest, only the
+# ``app:sow:metadata`` envelope — still satisfies the bundle-presence
+# check. Derived from the canonical stage tuples so adding a section
+# bundle stays a one-line change in ``schemas.py``.
+_MANIFEST_KEY = SOW_BUNDLE_STATE_KEYS['manifest']
+_CONTENT_BUNDLE_KEYS: tuple[str, ...] = tuple(
+    k for k in CONTENT_STAGE_KEYS if k != _MANIFEST_KEY
+)
+_FULL_BUNDLE_KEYS: tuple[str, ...] = tuple(
+    k for k in FULL_STAGE_KEYS if k != _MANIFEST_KEY
+)
+
+
+def _resolve_project_metadata(
+    state: dict[str, Any],
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Resolve the 13 project-metadata fields from state.
+
+    Prefers the explicit ``app:sow:metadata`` envelope (root-skills
+    variant, written by ``save_sow_metadata``); falls back to extracting
+    them from the Extraction Manifest (multi-agent variant). Returns
+    ``(metadata_dict, source)`` where ``source`` is ``'metadata_envelope'``
+    or ``'manifest'``, or ``(None, None)`` when neither source is present.
+
+    The envelope is coerced onto the canonical key set so the assembler
+    sees the same shape regardless of source.
+    """
+    envelope = state.get(SOW_METADATA_STATE_KEY)
+    if isinstance(envelope, dict) and any(
+        isinstance(v, str) and v.strip() for v in envelope.values()
+    ):
+        coerced = {
+            key: (envelope.get(key) or '') for key in _PROJECT_METADATA_KEYS
+        }
+        return coerced, 'metadata_envelope'
+
+    manifest = state.get(_MANIFEST_KEY)
+    if isinstance(manifest, dict):
+        return _extract_project_metadata(manifest), 'manifest'
+
+    return None, None
+
+
 class AssemblyError(Exception):
     """Raised by :func:`build_sow_data_from_state` when preconditions fail.
 
@@ -280,7 +326,9 @@ def build_sow_data_from_state(
         )
 
     required = (
-        CONTENT_STAGE_KEYS if stage_normalized == 'content' else FULL_STAGE_KEYS
+        _CONTENT_BUNDLE_KEYS
+        if stage_normalized == 'content'
+        else _FULL_BUNDLE_KEYS
     )
     missing = [k for k in required if not state.get(k)]
     if missing:
@@ -307,17 +355,17 @@ def build_sow_data_from_state(
             sentinel_keys=sentinel_keys,
         )
 
-    manifest = state[SOW_BUNDLE_STATE_KEYS['manifest']]
-    if not isinstance(manifest, dict):
+    project_metadata, _metadata_source = _resolve_project_metadata(state)
+    if project_metadata is None:
         raise AssemblyError(
             (
-                'Manifest in state is not a dict; cannot extract project '
-                f"metadata (got {type(manifest).__name__})."
+                'No project metadata in state: neither the '
+                f'{SOW_METADATA_STATE_KEY!r} envelope nor a dict '
+                f'{_MANIFEST_KEY!r} manifest is present. Populate one '
+                'before SOW assembly.'
             ),
-            manifest_type=type(manifest).__name__,
+            missing_metadata=list(_REQUIRED_PROJECT_METADATA_KEYS),
         )
-
-    project_metadata = _extract_project_metadata(manifest)
 
     missing_metadata = [
         key
@@ -456,10 +504,12 @@ async def assemble_sow_payload(
             )
         elif err.missing_metadata:
             suggestion = (
-                'Re-run sow-discovery (or the manifest tools) so the '
-                f'manifest carries non-empty values for: {err.missing_metadata}. '
-                'Both flat (e.g. `manifest["partner_name"]`) and nested '
-                '(`manifest["project"]["partner_name"]`) shapes are accepted.'
+                'Populate the project metadata before assembly. In the '
+                'root-skills flow call `save_sow_metadata` with non-empty '
+                f'values for: {err.missing_metadata}. In the manifest flow '
+                're-run sow-discovery so the manifest carries them (flat '
+                '`manifest["partner_name"]` or nested '
+                '`manifest["project"]["partner_name"]` are both accepted).'
             )
             logger.warning(
                 'assemble_sow_payload_missing_metadata',

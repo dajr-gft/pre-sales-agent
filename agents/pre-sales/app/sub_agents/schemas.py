@@ -26,6 +26,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .validation.field_vocabulary import MANIFEST_DERIVED_FIELDS_TUPLE
+
 
 _FORBID = ConfigDict(extra='forbid')
 
@@ -202,9 +204,68 @@ class NarrativeBundle(BaseModel):
     customer_primary_domain: str | None = None
 
 
+class SowMetadata(BaseModel):
+    """Administrative project metadata for the SOW document header.
+
+    These 13 fields are the deterministic envelope the docx template
+    needs and that does not fit in any section bundle. In the
+    multi-agent variant they are derived from the Extraction Manifest;
+    in the root-skills variant the root extracts them from the loaded
+    documents and persists them directly via ``save_sow_metadata``.
+
+    The field set is pinned to
+    ``validation.field_vocabulary.MANIFEST_DERIVED_FIELDS_TUPLE`` —
+    the same constant the assembler iterates over and the global-patch
+    blocklist guards — so the writer, the assembler, and the linter
+    cannot drift. ``_assert_fields_match_vocabulary`` below fails import
+    if they ever diverge.
+
+    All fields default to ``''`` (not ``None``) so a partial extraction
+    still produces a schema-valid envelope; the assembler's
+    required-field gate (partner_name, customer_name, project_title,
+    funding_type) is what rejects blanks before document assembly.
+    """
+
+    model_config = _FORBID
+    partner_name: str = ''
+    customer_name: str = ''
+    partner_short_name: str = ''
+    customer_short_name: str = ''
+    project_title: str = ''
+    date: str = ''
+    author: str = ''
+    funding_type: str = ''
+    funding_type_short: str = ''
+    project_start_date: str = ''
+    project_end_date: str = ''
+    engagement_type: str = ''
+    organization_term: str = ''
+
+
 # ---------------------------------------------------------------------------
 # State key contract — single source of truth for assembler and tests
 # ---------------------------------------------------------------------------
+
+
+# Standalone key for the administrative metadata envelope. Kept out of
+# ``SOW_BUNDLE_STATE_KEYS`` because metadata is not a section bundle —
+# it is validated against the required-field gate, not the bundle
+# presence checks the stage-key tuples drive.
+SOW_METADATA_STATE_KEY = 'app:sow:metadata'
+
+
+def _assert_fields_match_vocabulary() -> None:
+    """Fail import if ``SowMetadata`` drifts from the canonical field set."""
+    model_fields = tuple(SowMetadata.model_fields.keys())
+    if model_fields != MANIFEST_DERIVED_FIELDS_TUPLE:
+        raise RuntimeError(
+            'SowMetadata fields drifted from '
+            'MANIFEST_DERIVED_FIELDS_TUPLE. '
+            f'model={model_fields} vocabulary={MANIFEST_DERIVED_FIELDS_TUPLE}'
+        )
+
+
+_assert_fields_match_vocabulary()
 
 
 SOW_BUNDLE_STATE_KEYS: dict[str, str] = {

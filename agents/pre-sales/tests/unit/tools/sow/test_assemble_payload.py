@@ -12,7 +12,10 @@ from typing import Any
 
 import pytest
 
-from app.sub_agents.schemas import SOW_BUNDLE_STATE_KEYS
+from app.sub_agents.schemas import (
+    SOW_BUNDLE_STATE_KEYS,
+    SOW_METADATA_STATE_KEY,
+)
 from app.tools.sow.assemble_payload import assemble_sow_payload
 
 
@@ -202,6 +205,79 @@ class TestContentStage:
         # Missing optional fields default to empty string (never KeyError downstream).
         assert sow['date'] == ''
         assert sow['author'] == ''
+
+
+class TestMetadataEnvelopeSource:
+    """Root-skills variant: project metadata comes from the explicit
+    ``app:sow:metadata`` envelope rather than the Extraction Manifest."""
+
+    def _metadata_envelope(self) -> dict[str, Any]:
+        return {
+            'partner_name': 'GFT Technologies',
+            'customer_name': 'Acme Corp',
+            'partner_short_name': 'GFT',
+            'customer_short_name': 'Acme',
+            'project_title': 'Root-Skills SOW',
+            'date': '2026-05-27',
+            'author': 'Root Agent',
+            'funding_type': 'Google DAF',
+            'funding_type_short': 'DAF',
+            'project_start_date': '2026-06-01',
+            'project_end_date': '2026-08-01',
+            'engagement_type': 'project',
+            'organization_term': 'phases',
+        }
+
+    async def test_assembles_from_envelope_without_manifest(
+        self, mock_tool_context
+    ):
+        # No extraction_manifest in state at all — only the envelope.
+        mock_tool_context.state[SOW_METADATA_STATE_KEY] = self._metadata_envelope()
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['requirements']] = _requirements_bundle()
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['delivery_plan']] = _delivery_plan_bundle()
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['scope_boundaries']] = _scope_bundle()
+
+        result = await assemble_sow_payload(
+            stage='content',
+            tool_context=mock_tool_context,
+        )
+
+        assert result['status'] == 'success'
+        sow = result['data']['sow_data']
+        assert sow['project_title'] == 'Root-Skills SOW'
+        assert sow['partner_name'] == 'GFT Technologies'
+        assert sow['project_start_date'] == '2026-06-01'
+
+    async def test_envelope_takes_precedence_over_manifest(
+        self, mock_tool_context
+    ):
+        # Both present: envelope wins.
+        _populate_content_state(mock_tool_context)  # writes a manifest
+        mock_tool_context.state[SOW_METADATA_STATE_KEY] = self._metadata_envelope()
+
+        result = await assemble_sow_payload(
+            stage='content',
+            tool_context=mock_tool_context,
+        )
+
+        assert result['status'] == 'success'
+        sow = result['data']['sow_data']
+        # 'Root-Skills SOW' (envelope), not 'Data Analytics Platform' (manifest).
+        assert sow['project_title'] == 'Root-Skills SOW'
+
+    async def test_no_metadata_source_rejected(self, mock_tool_context):
+        # Bundles present but neither envelope nor manifest.
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['requirements']] = _requirements_bundle()
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['delivery_plan']] = _delivery_plan_bundle()
+        mock_tool_context.state[SOW_BUNDLE_STATE_KEYS['scope_boundaries']] = _scope_bundle()
+
+        result = await assemble_sow_payload(
+            stage='content',
+            tool_context=mock_tool_context,
+        )
+
+        assert result['status'] == 'error'
+        assert 'metadata' in result['error'].lower()
 
 
 class TestFullStage:

@@ -1,10 +1,12 @@
 import os
+from pathlib import Path
 
 import google.auth
 import structlog
 from google.adk.agents import Agent
 from google.adk.apps import App
 from google.adk.models import Gemini
+from google.adk.skills import load_skill_from_dir
 from google.adk.tools import load_artifacts
 from google.adk.tools.agent_tool import AgentTool
 from google.genai import types
@@ -18,11 +20,13 @@ from .callbacks import (
 from .config import config
 from .guardrails import scope_guardrail
 from .prompts import build_instruction
+from .shared.auto_scoped_skill_toolset import AutoScopedSkillToolset
 from .shared.logging_config import setup_logging
 from .sub_agents import (
     architecture_agent,
     delivery_plan_agent,
     discovery_agent,
+    google_search_agent,
     narrative_agent,
     requirements_agent,
     scope_boundaries_agent,
@@ -35,6 +39,8 @@ from .tools.sow.generate_architecture_diagram import \
 from .tools.sow.generate_sow_document import generate_sow_document
 from .tools.sow.manifest_tools import load_extraction_manifest
 from .tools.sow.assemble_payload import assemble_sow_payload
+from .tools.sow.save_section_bundle import SAVE_BUNDLE_TOOLS
+from .tools.sow.save_sow_metadata import save_sow_metadata
 from .tools.sow.stage_sow import stage_sow
 
 # --- Bootstrap ---
@@ -53,12 +59,33 @@ os.environ['GOOGLE_CLOUD_LOCATION'] = 'global'
 os.environ['GOOGLE_GENAI_USE_VERTEXAI'] = 'True'
 
 # --- Skills ---
-# The global SkillToolset has been removed. Skills now live exclusively
-# inside each section sub-agent (via SectionResourcesToolset) and inside
-# discovery_agent. The root never holds a SKILL.md in its own context —
-# that's the whole point of the decomposition. The skill folders on disk
-# under app/skills/ are still consumed, but only by the sub-agents that
-# wrap them.
+# Root-skills variant (feat/sow-kill-manifest-root-skills): the root
+# loads section skills sequentially and generates each section inline,
+# persisting bundles via the save_<section>_bundle tools. An
+# AutoScopedSkillToolset prunes a skill's SKILL.md + resources from the
+# LLM context once the root moves on to the next skill, so the root
+# never carries all five skills at once. The section sub-agents below
+# remain registered (as AgentTools) for rollback to the multi-agent
+# path; the active root_prompt protocol does not call them.
+#
+# Allowlist: the five SOW section skills plus sow-shared (consultative
+# reference pack). sow-discovery is intentionally excluded — discovery
+# is removed in this variant. sow-narrative declares google_search_agent
+# via `adk_additional_tools`; the toolset surfaces that tool only while
+# sow-narrative is the current skill (see AutoScopedSkillToolset).
+_SKILLS_DIR = Path(__file__).parent / 'skills'
+_ROOT_SKILL_NAMES = (
+    'sow-requirements',
+    'sow-delivery-plan',
+    'sow-scope-boundaries',
+    'sow-architecture',
+    'sow-narrative',
+    'sow-shared',
+)
+_skill_toolset = AutoScopedSkillToolset(
+    skills=[load_skill_from_dir(_SKILLS_DIR / name) for name in _ROOT_SKILL_NAMES],
+    additional_tools=[AgentTool(agent=google_search_agent)],
+)
 
 _SAFETY_THRESHOLD = types.HarmBlockThreshold(config.SAFETY_HARM_BLOCK_THRESHOLD)
 _SAFETY_SETTINGS = [
@@ -92,6 +119,17 @@ _TOOLS = [
     stage_sow,
     assemble_sow_payload,
     generate_sow_document,
+    # Root-skills generation tools. `save_sow_metadata` persists the 13
+    # administrative fields (the metadata envelope the assembler reads
+    # before falling back to the manifest); the save_<section>_bundle
+    # tools validate+persist each section the root generates inline after
+    # loading the matching skill.
+    save_sow_metadata,
+    *SAVE_BUNDLE_TOOLS,
+    # AutoScopedSkillToolset exposes load_skill / load_skill_resource /
+    # list_skills / run_skill_script and prunes inactive-skill content
+    # from the LLM context on each skill switch.
+    _skill_toolset,
     # Manifest construction tools (initialize_extraction_buffer,
     # append_extraction_items, finalize_extraction_manifest,
     # validate_extraction_manifest) moved into discovery_agent. The root

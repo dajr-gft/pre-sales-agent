@@ -14,6 +14,8 @@ metadata:
   produces: executive_summary, partner_overview, customer_overview, customer_primary_domain
   inputs: extraction_manifest, sow_data snapshot (all other sections), web search tool
   references-skill: sow-shared
+  adk_additional_tools:
+    - google_search_agent
 ---
 
 # SOW Narrative
