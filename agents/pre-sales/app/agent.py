@@ -68,6 +68,7 @@ os.environ['GOOGLE_GENAI_USE_VERTEXAI'] = 'True'
 # skill (see AutoScopedSkillToolset).
 _SKILLS_DIR = Path(__file__).parent / 'skills'
 _ROOT_SKILL_NAMES = (
+    'sow-guided-intake',
     'sow-requirements',
     'sow-delivery-plan',
     'sow-scope-boundaries',
