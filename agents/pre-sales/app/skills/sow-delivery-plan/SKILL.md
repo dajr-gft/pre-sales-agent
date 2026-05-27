@@ -47,6 +47,8 @@ When patching: also `sow-shared` / `references/id-stability-rules.md`. Workstrea
 - `manifest.extracted_items` for `[Timeline, Briefing, Constraints]` + resolved `manifest.gaps`.
 - Current `sow_data` snapshot with `functional_requirements` + `non_functional_requirements` populated by `sow-requirements`.
 
+If an `<intake_summary>` block is present in the conversation (the guided-intake handoff from `sow-guided-intake`), treat it as upstream project context equivalent to the project documents. Use it as the factual basis for Activities, Deliverables, Timeline, and Roles. When timeline or constraints are marked `[TO BE DEFINED]` in the summary, keep them as `[TO BE DEFINED]` in the plan rather than inventing dates; inference-eligible items marked `(inferred)` may be proposed per `references/effort-heuristics.md`.
+
 > **Coverage scope.** Per-item manifest coverage (walking `extracted_items` exhaustively) is the validation critic's `coverage` skill responsibility, not this skill's. Do not duplicate that walk here; produce content grounded in the inputs above and let the critic flag uncovered items in a later round.
 
 ## Generate (one turn)

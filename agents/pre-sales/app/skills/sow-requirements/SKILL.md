@@ -45,6 +45,8 @@ When patching an existing list: also `sow-shared` / `references/id-stability-rul
 
 - `manifest.extracted_items` for `[Briefing, Integrations, NFRs]` + resolved `manifest.gaps`.
 
+If an `<intake_summary>` block is present in the conversation (the guided-intake handoff from `sow-guided-intake`), treat it as upstream project context equivalent to the project documents. Use it as the factual basis for FRs and NFRs. When information is missing or marked `[TO BE DEFINED]` / `(inferred)` in the summary, follow the inferred-marker rules in `references/fr-patterns.md` and `references/nfr-waf-pillars.md` — do not invent customer facts.
+
 > **Coverage scope.** Per-item manifest coverage (walking `extracted_items` exhaustively) is the validation critic's `coverage` skill responsibility, not this skill's. Do not duplicate that walk here; produce content grounded in the inputs above and let the critic flag uncovered items in a later round.
 
 ## Generate (one turn)

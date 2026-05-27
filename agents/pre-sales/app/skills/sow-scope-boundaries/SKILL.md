@@ -50,6 +50,8 @@ When patching: also `sow-shared` / `references/id-stability-rules.md`. OOS / ass
 - `manifest.extracted_items` for `[Constraints, Decisions, Briefing]` + `manifest.gaps.pending_decisions`.
 - Current `sow_data` snapshot with FRs, NFRs, deliverables, and activity_phases already populated. Deliverables supply OOS counter-anchors and assumption phase-deadline references.
 
+If an `<intake_summary>` block is present in the conversation (the guided-intake handoff from `sow-guided-intake`), treat it as upstream project context equivalent to the project documents. Use it as the factual basis for assumptions, OOS, and risks. Items the summary marks `(inferred)` (such as out-of-scope items the user did not state) are safe to expand with consulting-grade defaults per `references/oos-categories.md`. Items marked `[TO BE DEFINED]` remain unresolved — file an assumption that captures the open decision rather than inventing a value.
+
 > **Coverage scope.** Per-item manifest coverage (walking `extracted_items` exhaustively) is the validation critic's `coverage` skill responsibility, not this skill's. Do not duplicate that walk here; produce content grounded in the inputs above and let the critic flag uncovered items in a later round.
 
 ## Generate (one turn)

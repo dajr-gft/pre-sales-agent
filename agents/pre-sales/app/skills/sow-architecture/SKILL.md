@@ -49,6 +49,8 @@ When patching: also `sow-shared` / `references/id-stability-rules.md`. Untouched
 
 If the Manifest captured a system, data source, or GCP service that does not appear in the FRs, it must still be evaluated for inclusion in the architecture.
 
+If an `<intake_summary>` block is present in the conversation (the guided-intake handoff from `sow-guided-intake`), treat it as upstream project context equivalent to the project documents. Use it as the factual basis for the data-flow narrative, integrations, and technology stack. When the stack is marked `(inferred)` in the summary, propose a concrete stack per `references/reasoning-rules.md` and `references/tech-stack-table-rules.md`; the user reviews it at the Architecture Review gate.
+
 > **Coverage scope.** Per-item manifest coverage (walking `extracted_items` exhaustively) is the validation critic's `coverage` skill responsibility, not this skill's. Do not duplicate that walk here; produce content grounded in the inputs above and let the critic flag uncovered items in a later round.
 
 ## Sub-steps (mandatory order)
