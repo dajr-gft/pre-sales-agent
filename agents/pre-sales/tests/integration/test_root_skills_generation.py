@@ -98,7 +98,11 @@ class _FakeLlmRequest:
 
 
 def _ctx(state: dict[str, Any], agent_name: str = 'pre_sales_assistant') -> SimpleNamespace:
-    return SimpleNamespace(state=state, agent_name=agent_name)
+    # invocation_id is read by ADK 2.x LoadSkillTool before the in-memory
+    # skill lookup short-circuits.
+    return SimpleNamespace(
+        state=state, agent_name=agent_name, invocation_id='test-invocation'
+    )
 
 
 # ---------------------------------------------------------------------------

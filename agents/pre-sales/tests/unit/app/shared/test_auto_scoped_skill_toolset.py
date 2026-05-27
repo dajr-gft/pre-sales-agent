@@ -139,14 +139,17 @@ def _make_tool_context(
 ) -> SimpleNamespace:
     """A minimal ``ToolContext`` stand-in.
 
-    The parent ``LoadSkillTool.run_async`` only reads ``.state`` and
-    ``.agent_name``, so a dict-backed namespace is sufficient and lets
-    us assert on what was written without going through ADK's session
-    plumbing.
+    The parent ``LoadSkillTool.run_async`` reads ``.state``,
+    ``.agent_name`` and (since ADK 2.x) ``.invocation_id`` — the latter
+    is passed to ``_get_or_fetch_skill`` before the in-memory skill
+    lookup short-circuits. A dict-backed namespace is sufficient and
+    lets us assert on what was written without going through ADK's
+    session plumbing.
     """
     return SimpleNamespace(
         state=dict(initial_state or {}),
         agent_name=agent_name,
+        invocation_id='test-invocation',
     )
 
 
