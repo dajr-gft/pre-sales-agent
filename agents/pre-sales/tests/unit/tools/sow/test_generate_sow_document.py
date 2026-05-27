@@ -193,37 +193,89 @@ class TestProjectTypeFromTestFixture:
         assert sow_data['project_type'] == 'genai'
 
 
-class TestGenerateSowDocumentErrorPaths:
-    """Contract tests that don't require rendering the .docx template."""
+def _stage(ctx, payload, stage='full'):
+    """Helper: stage a SOW payload in mock_tool_context as the tool expects."""
+    ctx.state['app:sow:current'] = payload
+    ctx.state['app:sow:stage'] = stage
 
-    async def test_invalid_json_returns_tool_error(self, mock_tool_context):
-        result = await generate_sow_document(
-            sow_data='{not valid',
-            tool_context=mock_tool_context,
-        )
+
+class _FakeDoc:
+    """Drop-in for ``DocxTemplate`` that captures ``render`` data and writes
+    an empty file on ``save`` so the artifact-bytes read step succeeds."""
+
+    last_render_data: dict | None = None
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def render(self, data, autoescape=True):  # noqa: ARG002 — match real signature
+        type(self).last_render_data = data
+
+    def save(self, path):
+        with open(path, 'wb') as f:
+            f.write(b'')
+
+
+def _stub_renderer(monkeypatch):
+    """Replace DocxTemplate + logo helpers so render-path tests don't need
+    the real .docx template, network, or logo bytes."""
+    _FakeDoc.last_render_data = None
+    monkeypatch.setattr(
+        'app.tools.sow.generate_sow_document.DocxTemplate', _FakeDoc
+    )
+    monkeypatch.setattr(
+        'app.tools.sow.generate_sow_document.load_logo',
+        lambda *a, **kw: '[Logo]',
+    )
+    monkeypatch.setattr(
+        'app.tools.sow.generate_sow_document._fetch_customer_logo_to_tempfile',
+        lambda *a, **kw: None,
+    )
+
+
+class TestGenerateSowDocumentErrorPaths:
+    """Contract tests that don't require rendering the .docx template.
+
+    The tool no longer takes ``sow_data``; it reads the validated payload
+    from ``state['app:sow:current']``. Each test stages a payload in the
+    mock context's state and calls the tool with no SOW argument.
+    """
+
+    async def test_missing_staged_sow_returns_tool_error(
+        self, mock_tool_context
+    ):
+        # state has neither app:sow:current nor app:sow:stage
+        result = await generate_sow_document(tool_context=mock_tool_context)
         assert result['status'] == 'error'
-        assert 'JSON' in result['error']
+        assert 'no staged sow' in result['error'].lower()
+        assert result['retryable'] is False
+
+    async def test_stage_must_be_full_to_generate(
+        self, sow_data, mock_tool_context
+    ):
+        # A content-stage payload must be rejected — the document is
+        # only rendered from a fully validated `full`-stage SOW.
+        _stage(mock_tool_context, sow_data, stage='content')
+        result = await generate_sow_document(tool_context=mock_tool_context)
+        assert result['status'] == 'error'
+        assert "'content'" in result['error']
         assert result['retryable'] is False
 
     async def test_missing_required_fields_returns_tool_error(
         self, mock_tool_context
     ):
-        minimal = {'partner_name': 'GFT'}
-        result = await generate_sow_document(
-            sow_data=json.dumps(minimal),
-            tool_context=mock_tool_context,
-        )
+        _stage(mock_tool_context, {'partner_name': 'GFT'})
+        result = await generate_sow_document(tool_context=mock_tool_context)
         assert result['status'] == 'error'
-        assert 'obrigatórios' in result['error'].lower() or 'missing' in result['error'].lower()
+        assert 'missing required fields' in result['error'].lower()
+        assert result['retryable'] is False
 
     async def test_quality_gate_failure_is_retryable(
         self, sow_data, mock_tool_context
     ):
         sow_data['out_of_scope'] = ['only one']
-        result = await generate_sow_document(
-            sow_data=json.dumps(sow_data),
-            tool_context=mock_tool_context,
-        )
+        _stage(mock_tool_context, sow_data)
+        result = await generate_sow_document(tool_context=mock_tool_context)
         assert result['status'] == 'error'
         assert result['retryable'] is True
 
@@ -231,33 +283,42 @@ class TestGenerateSowDocumentErrorPaths:
         self, sow_data, mock_tool_context
     ):
         sow_data['functional_requirements'][0]['number'] = 'BAD'
-        result = await generate_sow_document(
-            sow_data=json.dumps(sow_data),
-            tool_context=mock_tool_context,
-        )
+        _stage(mock_tool_context, sow_data)
+        result = await generate_sow_document(tool_context=mock_tool_context)
         assert result['status'] == 'error'
         assert result['retryable'] is True
 
-    async def test_repeated_identical_payload_triggers_anti_loop_message(
+    async def test_error_messages_do_not_ask_model_to_edit_payload(
         self, sow_data, mock_tool_context
     ):
+        """Regression: as the model no longer sends JSON, no error message
+        may instruct it to "fix the JSON" or "edit the payload" — the only
+        recovery is to regenerate the section and re-stage."""
         sow_data['functional_requirements'][0]['number'] = 'BAD'
-        payload = json.dumps(sow_data)
-
-        first = await generate_sow_document(
-            sow_data=payload, tool_context=mock_tool_context
-        )
-        second = await generate_sow_document(
-            sow_data=payload, tool_context=mock_tool_context
-        )
-
-        assert first['status'] == 'error'
-        assert second['status'] == 'error'
-        assert 'PAYLOAD IDÊNTICO' in second['error']
+        _stage(mock_tool_context, sow_data)
+        result = await generate_sow_document(tool_context=mock_tool_context)
+        combined = (
+            (result.get('error') or '') + ' ' + (result.get('suggestion') or '')
+        ).lower()
+        for forbidden in (
+            'edite o payload',
+            'edit the payload',
+            'reenvi',
+            'corrija o json',
+            'json inválido',
+            'invalid json',
+            'payload idêntico',
+            'sow_data',
+        ):
+            assert forbidden not in combined, (
+                f'error/suggestion still uses forbidden phrasing {forbidden!r}: '
+                f'{combined!r}'
+            )
 
     async def test_missing_template_returns_tool_error(
         self, sow_data, mock_tool_context
     ):
+        _stage(mock_tool_context, sow_data)
         # Force the template existence check to fail
         with patch(
             'app.tools.sow.generate_sow_document.Path'
@@ -266,11 +327,78 @@ class TestGenerateSowDocumentErrorPaths:
             instance.__truediv__.return_value = instance
             instance.exists.return_value = False
             result = await generate_sow_document(
-                sow_data=json.dumps(sow_data),
-                tool_context=mock_tool_context,
+                tool_context=mock_tool_context
             )
-        # When template is missing → ToolError, not success
         assert result['status'] == 'error'
+
+
+class TestGenerateSowDocumentFromState:
+    """The two load-bearing tests for the state-sourced design:
+
+    - non-mutation: the staged dict in state must NOT be touched even
+      though the internal pipeline mutates ``data`` in place.
+    - staleness: the renderer receives the dict as it is in state at call
+      time, not a version the agent might be holding in its context.
+    """
+
+    async def test_state_is_not_mutated_during_generation(
+        self, sow_data, mock_tool_context, monkeypatch
+    ):
+        # Use a payload that would exercise every mutation point:
+        # - a multiline string (would become a Listing without deepcopy)
+        # - a missing default (would gain organization_term without deepcopy)
+        sow_data['executive_summary'] = (
+            'Acme Corp is modernizing.\n\nThe project leverages BigQuery and '
+            'Vertex AI for ML and scalable analytics.'
+        )
+        sow_data.pop('organization_term', None)
+        sow_data.pop('architecture_diagram', None)
+
+        _stage(mock_tool_context, sow_data)
+        before = deepcopy(mock_tool_context.state['app:sow:current'])
+
+        _stub_renderer(monkeypatch)
+        result = await generate_sow_document(tool_context=mock_tool_context)
+        assert result['status'] == 'success', result
+
+        staged_after = mock_tool_context.state['app:sow:current']
+        assert staged_after == before, (
+            "state['app:sow:current'] was mutated during generation."
+        )
+        # Targeted asserts so a future regression has a clear signal:
+        assert isinstance(staged_after['executive_summary'], str), (
+            'multiline string in state was converted to a Listing — '
+            'deepcopy regression.'
+        )
+        assert 'organization_term' not in staged_after, (
+            '_apply_defaults leaked into state.'
+        )
+        # No docxtpl objects ever land in state.
+        assert 'partner_logo' not in staged_after
+        assert 'customer_logo' not in staged_after
+        assert 'architecture_diagram' not in staged_after
+
+    async def test_renderer_uses_the_value_in_state_at_call_time(
+        self, sow_data, mock_tool_context, monkeypatch
+    ):
+        """Staleness proof: the renderer sees the dict as it is in state at
+        call time. The model can hold no other version because it has no
+        SOW argument; this test pins that behavior so future signature
+        changes cannot re-introduce a stale-payload path."""
+        # Stage a payload with a unique marker so the assertion is sharp.
+        sow_data['customer_name'] = 'NEW VERSION CUSTOMER'
+        _stage(mock_tool_context, sow_data)
+
+        _stub_renderer(monkeypatch)
+        result = await generate_sow_document(tool_context=mock_tool_context)
+        assert result['status'] == 'success', result
+
+        rendered = _FakeDoc.last_render_data
+        assert rendered is not None, 'DocxTemplate.render was not called.'
+        assert rendered['customer_name'] == 'NEW VERSION CUSTOMER', (
+            'render did not receive the value present in state — the doc '
+            'would not reflect the validated payload.'
+        )
 
 
 class TestNormalizeMultilineString:

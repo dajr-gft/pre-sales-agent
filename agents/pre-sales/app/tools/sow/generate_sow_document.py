@@ -1,3 +1,4 @@
+import copy
 import json
 import os
 import re
@@ -15,6 +16,7 @@ from google.genai import types as genai_types
 from ...shared.errors import safe_tool
 from ...shared.types import ToolError, ToolSuccess
 from ...shared.validators import ContentValidator
+from ...sub_agents.validation.schema import STATE_SOW, STATE_STAGE
 from ._logo_fetcher import fetch_customer_logo
 from ._sow_helpers import (
     load_logo,
@@ -38,93 +40,85 @@ _content_validator = ContentValidator()
 
 @safe_tool
 async def generate_sow_document(
-    sow_data: str,
     tool_context: ToolContext = None,
 ) -> dict[str, Any]:
-    """
-    Generates a Statement of Work (SOW) document in .docx format from
-    the collected project data.
+    """Render the validated, staged SOW to ``.docx``.
 
-    Call this tool after all content has been generated and approved by
-    the user. The tool assembles the final .docx document with all
-    sections, tables, and formatting.
+    Reads the SOW payload from ``state['app:sow:current']`` (written by
+    ``stage_sow`` and validated by ``sow_quality_loop``) — it does NOT
+    take the SOW as an argument. Call only after the architecture review
+    is approved AND the final ``sow_quality_loop`` returned ``passed``.
 
-    Args:
-        sow_data: A JSON string containing all SOW sections. Expected keys:
-
-            Simple fields:
-            - partner_name, customer_name, project_title, date, author (strings)
-            - partner_short_name, customer_short_name (strings)
-            - funding_type, funding_type_short (strings)
-            - executive_summary (string — complete, self-contained paragraph)
-            - partner_overview, customer_overview (strings)
-            - architecture_description (string)
-            - project_start_date, project_end_date (strings)
-            - engagement_type: "project", "pilot", "POC", or "assessment"
-            - organization_term: "phases", "workstreams", or "activities"
-            - customer_primary_domain: optional string. The customer's
-              main institutional domain, without protocol or www (e.g.
-              "itau.com.br", "bv.com.br", "btgpactual.com.br"). Used
-              to automatically fetch the customer logo. Omit if the
-              customer's domain is not publicly known — the document
-              will render a placeholder.
-
-            Simple lists:
-            - activities (list of strings — high-level activity descriptions)
-            - objectives (list of strings)
-            - out_of_scope (list of strings)
-            - assumptions (list of strings)
-            - success_criteria (list of strings)
-
-            Structured arrays — MUST NOT be empty:
-            - functional_requirements: list of {"number": "FR-01", "description": "The system shall..."}
-            - non_functional_requirements: list of {"number": "NFR-01", "description": "The platform shall..."}
-            - architecture_components: list of {"name": "BigQuery", "role": "Centralized data warehouse"}
-            - architecture_integrations: list of {"name": "SAP ERP", "description": "Source system for..."}
-            - activity_phases: list of {"name": "Phase 1: Discovery", "description": "Define architecture...", "tasks": ["Conduct kickoff workshop", "Review current systems"]}
-            - deliverables: list of {"activity": "Phase 1", "name": "Architecture Design Document", "description": "Detailed technical design...", "format": "Document"}
-            - timeline: list of {"activity": "Phase 1: Discovery", "timeframe": "Weeks 1-2", "outcomes": "Approved architecture design"}
-            - partner_roles: list of {"role": "Data Architect", "responsibilities": "Design and oversee..."}
-            - customer_roles: list of {"role": "Product Owner", "responsibilities": "Define priorities..."}
-
-            Optional structured arrays:
-            - milestones: list of {"name": "Milestone 1: Kickoff", "deliverables": "Project Plan", "estimated_completion": "Week 2", "payment": "30%"}
-              (omit if single payment at project completion)
-            - risks: list of {"description": "Data quality issues...", "mitigation": "Implement validation..."}
-              (optional — if provided, content will be added to Assumptions section)
-
-            Optional simple fields:
-            - taxes_included (boolean — default true. Controls which cost table and
-              tax paragraph variant is rendered.)
-            - non_commit_psf (boolean — default false. If true, includes the Non-Commit
-              PSF 30% reduction paragraph.)
-
-            Multi-line text:
-                Any string field — top-level or nested inside a structured
-                array — may include `\n` to request a line break in the
-                rendered .docx. Use `\n\n` to visually separate paragraphs.
-                The tool normalizes common variants (literal `\\n`, `\r\n`,
-                runs of 3+ blank lines) and converts each `\n` into a Word
-                line break. There is no allowlist: this works on every
-                string field, present or future. Keep short labels and
-                names single-line.
+    The expected ``state['app:sow:stage']`` is ``'full'``; calls against
+    a ``'content'``-stage payload are rejected. The staged dict is the
+    source of truth — never patch the payload in your own turn. On
+    failure, the suggestion points back to the regenerate → assemble →
+    stage → quality_loop → generate chain.
 
     Returns:
-        A dictionary with status and the file path of the generated document.
+        A dictionary with status and the file path of the generated
+        document on success, or a ``ToolError`` on failure.
     """
-    raw_hash = sow_data_hash(sow_data)
-    logger.info('generate_sow_document_invoked', sow_data_hash=raw_hash)
-
-    try:
-        data = json.loads(sow_data)
-    except json.JSONDecodeError as e:
+    if tool_context is None:
         return ToolError(
             status='error',
-            error=f'Dados inválidos (JSON inválido): {e}',
+            error='tool_context is required.',
             retryable=False,
             tool='generate_sow_document',
-            suggestion='Verifique a formatação JSON e tente novamente.',
+            suggestion=(
+                'Call this tool from within an ADK runtime; tool_context '
+                'is injected automatically.'
+            ),
         )
+
+    staged = tool_context.state.get(STATE_SOW)
+    if not isinstance(staged, dict) or not staged:
+        return ToolError(
+            status='error',
+            error=(
+                "No staged SOW found in state['app:sow:current']. "
+                'The validated payload is missing.'
+            ),
+            retryable=False,
+            tool='generate_sow_document',
+            suggestion=(
+                'Run assemble_sow_payload(stage="full") → stage_sow('
+                'stage="full") → sow_quality_loop before generate_sow_document.'
+            ),
+        )
+
+    current_stage = tool_context.state.get(STATE_STAGE)
+    if current_stage != 'full':
+        return ToolError(
+            status='error',
+            error=(
+                'Cannot generate the final document from stage='
+                f'{current_stage!r}; the document is only rendered from a '
+                "stage='full' SOW that the quality loop validated."
+            ),
+            retryable=False,
+            tool='generate_sow_document',
+            suggestion=(
+                'Re-run assemble_sow_payload(stage="full") → stage_sow('
+                'stage="full") → sow_quality_loop, then call '
+                'generate_sow_document again.'
+            ),
+        )
+
+    # CRITICAL: never mutate the staged dict. The preprocessing pipeline
+    # below (defaults, derivations, normalization) mutates in place, and
+    # the renderer injects non-serializable docxtpl objects (Listing,
+    # InlineImage). Mutating state['app:sow:current'] would corrupt the
+    # validated payload for any subsequent re-stage / serialization.
+    data = copy.deepcopy(staged)
+
+    # Hash BEFORE any mutation (and before docxtpl objects are injected
+    # downstream) so the log line records the serializable shape of the
+    # staged payload.
+    raw_hash = sow_data_hash(
+        json.dumps(data, sort_keys=True, ensure_ascii=False)
+    )
+    logger.info('generate_sow_document_invoked', sow_data_hash=raw_hash)
 
     _apply_defaults(data)
     _auto_derive_fields(data)
@@ -153,10 +147,18 @@ async def generate_sow_document(
         )
         return ToolError(
             status='error',
-            error=f"Campos obrigatórios ausentes no JSON: {', '.join(missing)}",
+            error=(
+                'The staged SOW is missing required fields: '
+                f'{", ".join(missing)}.'
+            ),
             retryable=False,
             tool='generate_sow_document',
-            suggestion='Preencha todos os campos obrigatórios antes de gerar o documento.',
+            suggestion=(
+                'Regenerate the section bundle(s) that own the missing '
+                'fields, then re-run assemble_sow_payload → stage_sow → '
+                'sow_quality_loop before calling generate_sow_document '
+                'again.'
+            ),
         )
 
     quality_errors = validate_quality_gates(data)
@@ -170,25 +172,27 @@ async def generate_sow_document(
         return ToolError(
             status='error',
             error=(
-                'O conteúdo não atinge os mínimos de qualidade. '
-                'Corrija e chame a tool novamente:\n'
+                'The staged SOW does not meet the quality gates:\n'
                 + '\n'.join(f'- {e}' for e in quality_errors)
             ),
             retryable=True,
             tool='generate_sow_document',
-            suggestion='Gere mais conteúdo para atingir os mínimos de qualidade.',
+            suggestion=(
+                'Regenerate the affected section bundle to satisfy the '
+                'gate, then re-run assemble_sow_payload → stage_sow → '
+                'sow_quality_loop before calling generate_sow_document '
+                'again.'
+            ),
         )
 
-    # Structural validation (hard gate — blocks on errors, warns on warnings)
+    # Structural validation — defense-in-depth against drift between
+    # what the quality loop blessed and what reaches the renderer. The
+    # SOW is sourced from state, so any failure here is an inconsistency
+    # to resolve by regenerating the cited section and re-staging — not
+    # by patching the payload in the agent's turn (the agent no longer
+    # holds one).
     validation = _content_validator.validate(data)
     if not validation.passed:
-        last_failed_hash = (
-            tool_context.state.get('generate_sow_last_failed_hash')
-            if tool_context
-            else None
-        )
-        is_repeat = last_failed_hash == raw_hash
-
         logger.error(
             'structural_validation_failed',
             sow_data_hash=raw_hash,
@@ -196,50 +200,22 @@ async def generate_sow_document(
             warnings=len(validation.warnings),
             error_details=[str(e) for e in validation.errors],
             warning_details=[str(w) for w in validation.warnings],
-            is_repeat=is_repeat,
             sow_data_preview=sow_data_preview(data),
         )
-
-        if tool_context:
-            tool_context.state['generate_sow_last_failed_hash'] = raw_hash
-
-        if is_repeat:
-            return ToolError(
-                status='error',
-                error=(
-                    'PAYLOAD IDÊNTICO DETECTADO: você enviou exatamente o '
-                    'mesmo sow_data duas vezes seguidas sem corrigir o erro '
-                    'anterior. Isso significa que você está regerando o '
-                    'payload a partir do contexto da conversa em vez de '
-                    'editar o payload anterior de forma incremental.\n\n'
-                    'AÇÃO REQUERIDA:\n'
-                    '1. Pegue o payload EXATO que acabou de enviar.\n'
-                    '2. Modifique APENAS o(s) campo(s) citado(s) no erro '
-                    'abaixo.\n'
-                    '3. NÃO reconstrua outras seções — mantenha o resto '
-                    'byte-a-byte idêntico.\n'
-                    '4. Chame a tool novamente com o payload editado.\n\n'
-                    'Erro que permanece não resolvido:\n'
-                    + '\n'.join(f'- {e}' for e in validation.errors)
-                ),
-                retryable=True,
-                tool='generate_sow_document',
-                suggestion=(
-                    'Edite o payload anterior no lugar. Não regenere do zero.'
-                ),
-            )
-
         return ToolError(
             status='error',
             error=(
-                'Validação estrutural falhou. Corrija os erros abaixo:\n'
+                'The staged SOW failed the final structural validation:\n'
                 + '\n'.join(f'- {e}' for e in validation.errors)
             ),
             retryable=True,
             tool='generate_sow_document',
             suggestion=(
-                'Use validate_sow_content para verificar o conteúdo antes '
-                'de gerar o documento.'
+                'Regenerate the section bundle(s) cited in the errors, '
+                'then re-run assemble_sow_payload → stage_sow → '
+                'sow_quality_loop before calling generate_sow_document '
+                'again. Do NOT attempt to patch the payload in your own '
+                'turn — the SOW is built from state, not from the model.'
             ),
         )
     if validation.warnings:
