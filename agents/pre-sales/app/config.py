@@ -39,6 +39,16 @@ class AgentConfig(BaseSettings):
         default='',
         description='GCS Bucket name for logs storage',
     )
+    ARCHITECTURE_VARIANT: str = Field(
+        default='multi_agent_manifest',
+        alias='ARCHITECTURE_VARIANT',
+        description=(
+            'Pipeline variant tag for A/B telemetry. '
+            '"multi_agent_manifest" (legacy) or "root_skills_autoscoped" '
+            '(this branch). Read by run_metrics.collect_run_metrics and '
+            'setup_telemetry; set via the ARCHITECTURE_VARIANT env var.'
+        ),
+    )
 
     # Models
     GEMINI_MODEL: str = Field(
