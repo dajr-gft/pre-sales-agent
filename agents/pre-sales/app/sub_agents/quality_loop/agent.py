@@ -80,18 +80,12 @@ from ...tools.sow.assemble_payload import AssemblyError
 # ``app/sub_agents/__init__.py`` importing both ``quality_loop`` and
 # the sections is avoided — direct imports bypass the parent package's
 # mid-init attribute lookup.
-from ..architecture.agent import architecture_agent, architecture_repair_agent
-from ..delivery_plan.agent import (
-    delivery_plan_agent,
-    delivery_plan_repair_agent,
-)
-from ..narrative.agent import narrative_agent, narrative_repair_agent
-from ..requirements.agent import requirements_agent, requirements_repair_agent
+from ..architecture.agent import architecture_repair_agent
+from ..delivery_plan.agent import delivery_plan_repair_agent
+from ..narrative.agent import narrative_repair_agent
+from ..requirements.agent import requirements_repair_agent
 from ..revision import revision_agent
-from ..scope_boundaries.agent import (
-    scope_boundaries_agent,
-    scope_boundaries_repair_agent,
-)
+from ..scope_boundaries.agent import scope_boundaries_repair_agent
 from .._section_agent import STATE_REPAIR_FINDINGS
 from ..validation import validation_critic
 from ..validation.field_vocabulary import BUNDLE_OWNED_FIELDS_BY_SECTION
@@ -426,27 +420,6 @@ class QualityLoopAgent(BaseAgent):
         # new``) — we want consecutive non-progress, not lifetime counts.
         # Compared against ``NO_PROGRESS_WINDOW`` after each blocked round.
         consecutive_no_progress_rounds = 0
-
-        # ----- Manifest snapshot (one-shot per loop invocation) ----------
-        # Verbose-only — the full Extraction Manifest is ~20-50 KB and
-        # only useful when we are diagnosing a specific finding's
-        # ``manifest_item_id`` against the actual manifest entry. Gated
-        # by ``SOW_VERBOSE_LOGGING=1`` so default sessions stay lean.
-        # See ``app.shared.logging_config.is_verbose_sow_logging`` for
-        # the contract.
-        if is_verbose_sow_logging():
-            manifest = ctx.session.state.get('extraction_manifest')
-            if isinstance(manifest, dict):
-                logger.info(
-                    'quality_loop_manifest_snapshot',
-                    manifest_version=manifest.get('manifest_version'),
-                    inventory_count=len(manifest.get('inventory', []) or []),
-                    extracted_items_count=len(
-                        manifest.get('extracted_items', []) or []
-                    ),
-                    manifest=manifest,
-                )
-        # ------------------------------------------------------------------
 
         for round_idx in range(self.max_rounds):
             round_number = round_idx + 1

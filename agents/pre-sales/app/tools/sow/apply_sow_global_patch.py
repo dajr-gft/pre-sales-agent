@@ -173,15 +173,16 @@ async def apply_sow_global_patch(
         return ToolError(
             status='error',
             error=(
-                f"Field '{field}' is derived from the extraction manifest "
-                'and cannot be patched by the reviser. Re-discovery owns '
-                'these values.'
+                f"Field '{field}' is administrative project metadata "
+                'and cannot be patched by the reviser. The metadata '
+                'envelope owns these values.'
             ),
             retryable=False,
             tool='apply_sow_global_patch',
             suggestion=(
-                'Project-metadata changes require re-running sow-discovery '
-                'with corrected inputs. Surface a diagnostic and stop.'
+                'Project-metadata changes require re-running '
+                '`save_sow_metadata` with corrected values. Surface a '
+                'diagnostic and stop.'
             ),
         )
 

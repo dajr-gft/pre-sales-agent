@@ -14,7 +14,7 @@ description: >
 metadata:
   pattern: paired-generation + cross-validation
   produces: functional_requirements, non_functional_requirements
-  inputs: extraction_manifest
+  inputs: project documents (via load_artifacts)
   references-skill: sow-shared
 ---
 

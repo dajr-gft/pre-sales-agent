@@ -13,7 +13,7 @@ description: >
 metadata:
   pattern: contractual-cluster + counter-anchor validation
   produces: assumptions, out_of_scope, change_request_policy_text, handover_disclaimers, risks
-  inputs: extraction_manifest, sow_data snapshot (FR/NFR + delivery plan)
+  inputs: project documents (via load_artifacts), upstream bundles (requirements + delivery plan)
   references-skill: sow-shared
 ---
 

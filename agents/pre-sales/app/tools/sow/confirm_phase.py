@@ -1,7 +1,7 @@
 """ADK tool that records workflow phase confirmations.
 
-The model presents each review (Inference Summary, Content Review,
-Architecture Review) as free-form text in the conversation language,
+The model presents each review (Content Review, Architecture Review)
+as free-form text in the conversation language,
 then — after explicit user approval — calls
 ``confirm_phase_completion`` once per phase to stamp the runtime
 state. Phases must be confirmed in workflow order; the
@@ -20,14 +20,12 @@ from ...shared.types import ToolError, ToolSuccess
 logger = structlog.get_logger()
 
 PHASE_KEYS: tuple[str, ...] = (
-    'inference_summary_confirmed',
     'content_review_approved',
     'architecture_review_approved',
 )
 
 PHASE_PREREQUISITES: dict[str, tuple[str, ...]] = {
-    'inference_summary_confirmed': (),
-    'content_review_approved': ('inference_summary_confirmed',),
+    'content_review_approved': (),
     'architecture_review_approved': ('content_review_approved',),
 }
 
@@ -50,12 +48,10 @@ async def confirm_phase_completion(
 
     Valid phase_key values, in workflow order:
 
-    - 'inference_summary_confirmed': after the user confirms the
-      Inference Summary in Phase 1.
     - 'content_review_approved': after the user approves the Content
-      Review in Phase 2 Step 2.
+      Review (the content stage).
     - 'architecture_review_approved': after the user approves the
-      Architecture Review in Phase 2 Step 4. Setting this key unlocks
+      Architecture Review (the full stage). Setting this key unlocks
       the Phase 3 tools (validate_sow_content stage='full' and
       generate_sow_document).
 

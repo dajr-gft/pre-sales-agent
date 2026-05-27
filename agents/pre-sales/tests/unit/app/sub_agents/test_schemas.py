@@ -238,24 +238,9 @@ class TestStateKeyContract:
     """The assembler relies on these key constants — pin them explicitly."""
 
     def test_section_keys_use_app_sow_namespace(self):
-        """Section bundles live under the ``app:sow:*`` namespace. The
-        ``manifest`` entry is an explicit exception — it must align with
-        the pre-existing manifest tools (state['extraction_manifest']).
-        Asserted separately in ``test_manifest_key_aligned_with_tools``.
-        """
+        """Every section bundle lives under the ``app:sow:*`` namespace."""
         for key, value in SOW_BUNDLE_STATE_KEYS.items():
-            if key == 'manifest':
-                continue
             assert value.startswith('app:sow:'), (key, value)
-
-    def test_manifest_key_aligned_with_manifest_tools(self):
-        """Discovery's ``finalize_extraction_manifest`` writes to this key;
-        ``assemble_sow_payload`` and ``load_extraction_manifest`` read from
-        the same key. Drift here would silently break the SOW pipeline.
-        """
-        from app.tools.sow.manifest_tools import _MANIFEST_STATE_KEY
-
-        assert SOW_BUNDLE_STATE_KEYS['manifest'] == _MANIFEST_STATE_KEY
 
     def test_content_stage_is_subset_of_full(self):
         assert set(CONTENT_STAGE_KEYS).issubset(set(FULL_STAGE_KEYS))

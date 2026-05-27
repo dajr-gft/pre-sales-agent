@@ -1,11 +1,14 @@
-"""Pydantic schemas for section sub-agent outputs.
+"""Pydantic schemas for SOW section bundles + administrative metadata.
 
-Each section sub-agent (``requirements_agent``, ``delivery_plan_agent``,
-``scope_boundaries_agent``, ``architecture_agent``, ``narrative_agent``)
-returns one of the ``*Bundle`` models below via ``output_schema=`` and
-writes it to ``session.state[<output_key>]``.
+Each ``*Bundle`` model is the schema for one SOW section. In the
+root-skills variant the root generates each section inline (following
+the section skill) and persists it via ``save_<section>_bundle``, which
+validates against the matching model and writes it to
+``session.state['app:sow:<section>']``. The section *repair* agents
+read the same bundles when patching.
 
-The ``assemble_sow_payload`` tool reads these bundles from state and
+The ``assemble_sow_payload`` tool reads these bundles plus the
+``SowMetadata`` envelope (``state['app:sow:metadata']``) from state and
 produces the flat ``sow_data`` dict expected by ``stage_sow`` and
 ``generate_sow_document``.
 
@@ -13,11 +16,6 @@ Field names mirror the top-level keys of ``sow_data`` exactly — the
 assembler does a structural copy, not a translation. Changing a field
 name here means changing it in the section skill, the template, and
 the assembler in lockstep.
-
-Discovery's ``ExtractionManifest`` schema lives elsewhere (sow-discovery
-owns it). The assembler only treats the manifest as the source of
-project-level metadata; it is consumed as ``dict[str, Any]`` until the
-discovery sub-agent migration formalizes that contract.
 """
 
 from __future__ import annotations
@@ -269,13 +267,6 @@ _assert_fields_match_vocabulary()
 
 
 SOW_BUNDLE_STATE_KEYS: dict[str, str] = {
-    # `manifest` deliberately breaks the `app:sow:*` namespace because the
-    # manifest tools predate the section sub-agents and persist to
-    # ``state['extraction_manifest']`` (see ``manifest_tools.py``). Aligning
-    # here keeps a single source of truth for the manifest key — changing
-    # the manifest tools would touch ``validation/manifest_prefilter.py``
-    # and a wider blast radius for no functional gain.
-    'manifest': 'extraction_manifest',
     'requirements': 'app:sow:requirements',
     'delivery_plan': 'app:sow:delivery_plan',
     'scope_boundaries': 'app:sow:scope_boundaries',
@@ -285,11 +276,12 @@ SOW_BUNDLE_STATE_KEYS: dict[str, str] = {
 
 AssembleStage = Literal['content', 'full']
 
-# Bundles required for each assembly stage. Content-stage assembly runs
-# right after Steps A+B+C (requirements / delivery / scope) before
-# architecture or narrative exist; full-stage assembly runs after D+E.
+# Bundles required for each assembly stage. Project metadata is resolved
+# separately from the ``app:sow:metadata`` envelope (see
+# ``assemble_payload``). Content-stage assembly runs right after Steps
+# A+B+C (requirements / delivery / scope) before architecture or
+# narrative exist; full-stage assembly runs after D+E.
 CONTENT_STAGE_KEYS: tuple[str, ...] = (
-    SOW_BUNDLE_STATE_KEYS['manifest'],
     SOW_BUNDLE_STATE_KEYS['requirements'],
     SOW_BUNDLE_STATE_KEYS['delivery_plan'],
     SOW_BUNDLE_STATE_KEYS['scope_boundaries'],

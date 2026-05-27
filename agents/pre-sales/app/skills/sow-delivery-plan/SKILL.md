@@ -12,7 +12,7 @@ description: >
 metadata:
   pattern: tight-cluster + cross-validation
   produces: activity_phases, deliverables, success_criteria, timeline, partner_roles, customer_roles, objectives, project_start_date, project_end_date
-  inputs: extraction_manifest, sow_data snapshot (functional_requirements, non_functional_requirements)
+  inputs: project documents (via load_artifacts), upstream bundles (requirements)
   references-skill: sow-shared
 ---
 

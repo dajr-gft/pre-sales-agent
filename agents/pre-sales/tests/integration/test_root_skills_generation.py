@@ -271,8 +271,9 @@ class TestRootSkillsGenerationProtocol:
         await save_architecture_bundle(bundle=_architecture(), tool_context=ctx)
         await save_narrative_bundle(bundle=_narrative(), tool_context=ctx)
 
-        # No extraction_manifest key in state at all.
-        assert SOW_BUNDLE_STATE_KEYS['manifest'] not in state
+        # No extraction_manifest key in state at all — assembly is
+        # envelope-only.
+        assert 'extraction_manifest' not in state
 
         result = await assemble_sow_payload(stage='full', tool_context=ctx)
         assert result['status'] == 'success', result

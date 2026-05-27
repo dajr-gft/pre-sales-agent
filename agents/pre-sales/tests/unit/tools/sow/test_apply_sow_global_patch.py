@@ -202,7 +202,7 @@ class TestManifestFieldBlocklist:
             field=field, value='hijacked', tool_context=ctx,
         )
         assert result['status'] == 'error'
-        assert 'manifest' in result['error'].lower() or 're-discovery' in (
+        assert 'metadata' in result['error'].lower() or 'save_sow_metadata' in (
             result.get('suggestion', '').lower()
         )
 

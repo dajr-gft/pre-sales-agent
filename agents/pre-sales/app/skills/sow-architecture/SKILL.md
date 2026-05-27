@@ -15,7 +15,7 @@ description: >
 metadata:
   pattern: reasoning-chain + tool-call
   produces: architecture_description, technology_stack, architecture_components, architecture_integrations, diagram_png
-  inputs: extraction_manifest, sow_data snapshot (requirements + delivery + scope)
+  inputs: project documents (via load_artifacts), upstream bundles (requirements + delivery + scope)
   references-skill: sow-shared
 ---
 
