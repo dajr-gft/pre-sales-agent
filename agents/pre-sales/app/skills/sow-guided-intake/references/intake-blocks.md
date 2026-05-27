@@ -2,8 +2,10 @@
 
 The five blocks below are the spine of the guided interview. Walk them
 in order, one compact question per block. The user's typed answers are
-captured in your internal notes and rolled up into the final
-`<intake_summary>` per `intake-summary-format.md`.
+captured in your internal notes and rolled up into the persisted
+``IntakeSummary`` dict per `intake-summary-format.md`. The dict is
+committed at the end via ``save_sow_intake_summary`` — never as text
+in the chat.
 
 The interview should feel like a guided pre-sales conversation, not a
 questionnaire. Translate questions and optionality signals into the
@@ -154,13 +156,19 @@ explicitly accepted a skip / inference per `inference-policy.md`.
 The interview is complete when:
 
 1. Every block has been walked exactly once (or the user has
-   acknowledged skipping with the inference path explained).
+   acknowledged skipping with the inference path explained when
+   applicable).
 2. The follow-up budget is exhausted OR you judge further questioning
    will not improve the summary.
-3. Funding type is captured as DAF, PSF, or `[TO BE DEFINED]`.
-4. Either a Timeline value OR a `[TO BE DEFINED]` for timeline exists.
-5. Either an explicit engagement shape OR an `(inferred)` engagement
-   shape is in your notes.
+3. ``customer_name``, ``project_title``, ``problem_goal``, and
+   ``solution_direction`` carry real values (no markers, no blanks).
+4. ``funding_type`` is one of ``'DAF'``, ``'PSF'``, or
+   ``'[TO BE DEFINED]'``.
+5. ``timeline`` is either a real value or ``'[TO BE DEFINED]'``.
+6. ``engagement_shape`` is either one of the five labels or
+   ``'(inferred)'``.
 
-When all five hold, emit the `<intake_summary>` per
-`intake-summary-format.md` and hand off to the root.
+When all six hold, build the ``IntakeSummary`` dict per
+``intake-summary-format.md`` and call
+``save_sow_intake_summary(intake_summary=<dict>)``. Do NOT print the
+dict to the user.

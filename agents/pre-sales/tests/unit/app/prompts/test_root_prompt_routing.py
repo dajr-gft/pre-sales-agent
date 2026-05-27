@@ -59,13 +59,56 @@ def test_prompt_loads_guided_intake_via_load_skill(prompt_text: str) -> None:
     )
 
 
-def test_prompt_treats_intake_summary_as_handoff(prompt_text: str) -> None:
-    """The contract with sow-guided-intake is the ``<intake_summary>``
-    block. The root must mention it explicitly so the LLM knows what to
-    parse after the interview returns."""
-    assert '<intake_summary>' in prompt_text, (
-        'root_prompt.md must mention the <intake_summary> handoff so the '
-        'LLM knows what artifact to consume after Path A.'
+def test_prompt_treats_intake_state_key_as_handoff(prompt_text: str) -> None:
+    """The contract with sow-guided-intake is the persisted state key.
+
+    The root must reference ``state['app:sow:intake_summary']`` so the
+    LLM consumes the persisted summary instead of parsing chat text."""
+    assert "app:sow:intake_summary" in prompt_text, (
+        "root_prompt.md must reference state['app:sow:intake_summary'] so "
+        'the LLM consumes the persisted summary after Path A.'
+    )
+
+
+def test_prompt_references_save_intake_tool(prompt_text: str) -> None:
+    """The skill persists via ``save_sow_intake_summary``; the root must
+    know that is the signal the interview finished."""
+    assert 'save_sow_intake_summary' in prompt_text, (
+        'root_prompt.md must reference save_sow_intake_summary as the '
+        'Path A persistence step.'
+    )
+
+
+def test_prompt_has_marker_contract_block(prompt_text: str) -> None:
+    """The two markers carry distinct downstream behavior; the prompt
+    must publish that contract so the LLM dispatches correctly."""
+    assert '<intake_summary_contract>' in prompt_text
+    assert '[TO BE DEFINED]' in prompt_text
+    assert '(inferred)' in prompt_text
+
+
+def test_prompt_forbids_treating_tbd_as_infer(prompt_text: str) -> None:
+    """Core failure mode: do NOT treat [TO BE DEFINED] as 'please infer'.
+    The prompt must say so explicitly."""
+    assert re.search(
+        r"do\s+NOT\s+treat\s+[`'\"]*\[TO BE DEFINED\][`'\"]*\s+as\s+an\s+instruction\s+to\s+infer",
+        prompt_text,
+        re.IGNORECASE,
+    ), (
+        'root_prompt.md must explicitly forbid treating [TO BE DEFINED] '
+        'as an inference instruction.'
+    )
+
+
+def test_prompt_forbids_printing_summary(prompt_text: str) -> None:
+    """UX rule: the persisted summary is not echoed to the user."""
+    assert re.search(
+        r'do\s+NOT\s+print\s+the\s+(persisted\s+)?summary',
+        prompt_text,
+        re.IGNORECASE,
+    ), (
+        'root_prompt.md must forbid printing the persisted intake summary '
+        'to the user (UX rule).'
     )
 
 
@@ -121,14 +164,14 @@ def test_prompt_does_not_force_documents_only(prompt_text: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_intake_summary_precedes_save_metadata_in_prompt(prompt_text: str) -> None:
-    """The summary must be produced BEFORE save_sow_metadata is called —
-    otherwise the root would call the metadata tool with no upstream
-    facts."""
-    intake_pos = prompt_text.find('<intake_summary>')
+def test_intake_persist_precedes_save_metadata_in_prompt(prompt_text: str) -> None:
+    """The intake summary must be persisted BEFORE save_sow_metadata is
+    called — otherwise the root would call the metadata tool with no
+    upstream facts."""
+    intake_pos = prompt_text.find('save_sow_intake_summary')
     metadata_pos = prompt_text.find('save_sow_metadata')
     assert 0 <= intake_pos < metadata_pos, (
-        'root_prompt.md must place the <intake_summary> hand-off before '
-        'save_sow_metadata so the metadata call has upstream facts to '
-        'extract.'
+        'root_prompt.md must place the save_sow_intake_summary hand-off '
+        'before save_sow_metadata so the metadata call has upstream facts '
+        'to extract.'
     )

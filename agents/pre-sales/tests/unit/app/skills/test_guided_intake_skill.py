@@ -203,40 +203,56 @@ def test_references_have_no_manifest_tokens(
 # ---------------------------------------------------------------------------
 
 
-def test_skill_md_declares_intake_summary_handoff(skill_md_text: str) -> None:
-    """The root prompt parses ``<intake_summary>``; the skill must say so.
-
-    Without this declaration, the LLM may end the interview with free
-    prose and the root cannot tell that the handoff happened.
+def test_skill_md_declares_tool_handoff(skill_md_text: str) -> None:
+    """The handoff is now a ``save_sow_intake_summary`` call, not a text
+    block. The skill must name the tool so the LLM persists state rather
+    than dumping prose.
     """
-    assert '<intake_summary>' in skill_md_text, (
-        'sow-guided-intake/SKILL.md must reference the <intake_summary> '
-        'tag — it is the documented handoff contract to the root.'
+    assert 'save_sow_intake_summary' in skill_md_text, (
+        'sow-guided-intake/SKILL.md must reference the '
+        'save_sow_intake_summary tool — it is the documented handoff '
+        'contract to the root.'
     )
 
 
-def test_summary_format_reference_declares_block_shape(loaded_skill) -> None:
-    """The summary-format reference is the field-level contract.
+def test_skill_md_forbids_dumping_summary_to_chat(skill_md_text: str) -> None:
+    """UX rule: the structured summary must never be printed to the user.
 
-    It must spell out the canonical labels the root expects (Customer,
-    Project, Funding, Problem / Goal, ...) so the LLM does not silently
-    rename or drop them.
+    The plan is explicit that the full intake summary, marker tokens,
+    and per-field sub-fields are internal. Pin a phrasing-tolerant guard
+    that the skill carries the do-not-show rule.
+    """
+    lowered = skill_md_text.lower()
+    assert 'do not show the full structured summary' in lowered or (
+        'do not print the structured summary' in lowered
+    ), (
+        'sow-guided-intake/SKILL.md must forbid showing the full '
+        'structured summary in chat (UX rule).'
+    )
+
+
+def test_summary_format_reference_declares_json_contract(loaded_skill) -> None:
+    """The summary-format reference is the field-level JSON contract.
+
+    It must spell out the canonical IntakeSummary keys the tool expects
+    so the LLM does not silently rename or drop them.
     """
     content = loaded_skill.resources.get_reference('intake-summary-format.md') or ''
-    for required_label in (
-        '<intake_summary>',
-        'Customer:',
-        'Project:',
-        'Funding:',
-        'Problem / Goal:',
-        'Solution Direction:',
-        'Integrations / Systems:',
-        'Timeline:',
-        'Open Items:',
+    for required_key in (
+        'customer_name',
+        'project_title',
+        'problem_goal',
+        'solution_direction',
+        'funding_type',
+        'integrations',
+        'timeline',
+        'nfr_quality_targets',
+        'inferred_items',
+        'open_items',
     ):
-        assert required_label in content, (
-            f'intake-summary-format.md must declare label {required_label!r} '
-            'so the root prompt parses a consistent handoff.'
+        assert required_key in content, (
+            f'intake-summary-format.md must declare field {required_key!r} '
+            'so the persisted IntakeSummary matches the schema.'
         )
 
 
@@ -244,14 +260,27 @@ def test_inference_policy_distinguishes_required_and_inference_eligible(
     loaded_skill,
 ) -> None:
     """The policy must publish both the ``[TO BE DEFINED]`` rule and the
-    ``(inferred)`` marker, otherwise the root cannot tell hard gaps from
-    deferred decisions when it parses the summary.
+    ``(inferred)`` marker, otherwise downstream cannot tell hard gaps
+    from deferred decisions.
     """
     content = loaded_skill.resources.get_reference('inference-policy.md') or ''
     assert '[TO BE DEFINED]' in content
     assert '(inferred)' in content
     assert 'inference-eligible' in content.lower()
     assert 'required' in content.lower()
+
+
+def test_inference_policy_separates_the_two_markers(loaded_skill) -> None:
+    """The policy must explicitly warn against treating [TO BE DEFINED]
+    as an instruction to infer — that is the core failure mode the marker
+    split exists to prevent.
+    """
+    content = (
+        loaded_skill.resources.get_reference('inference-policy.md') or ''
+    ).lower()
+    assert 'never write' in content or 'do not' in content
+    # Both markers named in the same file as distinct behaviors.
+    assert 'fill' in content and 'placeholder' in content
 
 
 def test_intake_blocks_reference_lists_five_blocks(loaded_skill) -> None:

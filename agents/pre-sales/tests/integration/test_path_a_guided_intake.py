@@ -38,10 +38,14 @@ from app.shared.auto_scoped_skill_toolset import (
     ScopedLoadSkillTool,
 )
 from app.sub_agents.schemas import (
+    INTAKE_MARKER_INFERRED,
+    INTAKE_MARKER_TO_BE_DEFINED,
     SOW_BUNDLE_STATE_KEYS,
+    SOW_INTAKE_SUMMARY_STATE_KEY,
     SOW_METADATA_STATE_KEY,
 )
 from app.tools.sow.assemble_payload import assemble_sow_payload
+from app.tools.sow.save_sow_intake_summary import save_sow_intake_summary
 from app.tools.sow.save_section_bundle import (
     save_architecture_bundle,
     save_delivery_plan_bundle,
@@ -109,61 +113,47 @@ def _ctx(state: dict[str, Any]) -> SimpleNamespace:
 # ---------------------------------------------------------------------------
 
 
-SAMPLE_INTAKE_SUMMARY = """<intake_summary>
-Customer:
-- Acme Corp
+def _intake_summary_dict() -> dict:
+    """A realistic guided-intake summary exercising both markers.
 
-Partner:
-- GFT Technologies
-
-Project:
-- Data Analytics Platform
-
-Funding:
-- DAF
-
-Problem / Goal:
-- Acme needs a centralized analytics platform on GCP to consolidate sales reporting.
-
-Solution Direction:
-- A BigQuery-centered data warehouse fed by Cloud Run ingestion services.
-
-Engagement Shape:
-- greenfield
-
-Main Scope:
-- Ingest data from SAP and Salesforce
-- Build a BigQuery warehouse with curated marts
-- Expose dashboards via Looker Studio
-
-Out of Scope:
-- (inferred)
-
-Integrations / Systems:
-- SAP — source, REST, read
-- Salesforce — source, batch, read
-
-Team:
-- Partner side: (inferred)
-- Customer side: Project sponsor, two SMEs
-
-Timeline:
-- 10 weeks starting 2026-06-01
-
-NFR / Quality Targets:
-- Latency: dashboards refresh under 5 minutes
-- Security: TLS 1.3 in transit, AES-256 at rest
-
-Assumptions / Constraints:
-- Customer provides VPN access on day 1
-- (inferred) Industry-standard LGPD compliance applies
-
-Open Items:
-- Out-of-scope items: (inferred)
-- Partner team composition: (inferred)
-- Industry compliance frameworks: (inferred)
-</intake_summary>
-"""
+    Mirrors the IntakeSummary schema the ``save_sow_intake_summary``
+    tool validates. Required real-value fields are populated; some
+    fields are left as ``(inferred)`` and one as ``[TO BE DEFINED]`` to
+    cover the marker dispatch.
+    """
+    return {
+        'customer_name': 'Acme Corp',
+        'project_title': 'Data Analytics Platform',
+        'problem_goal': 'Consolidate fragmented sales reporting on GCP.',
+        'solution_direction': 'BigQuery warehouse fed by Cloud Run ingestion.',
+        'funding_type': 'DAF',
+        'main_scope': [
+            'Ingest data from SAP and Salesforce',
+            'Build a BigQuery warehouse with curated marts',
+        ],
+        'integrations': [
+            'SAP — source, REST, read',
+            'Salesforce — source, batch, read',
+        ],
+        'timeline': '10 weeks starting 2026-06-01',
+        'nfr_quality_targets': ['Dashboards refresh under 5 minutes'],
+        # Inference-eligible fields the user skipped.
+        'engagement_shape': INTAKE_MARKER_INFERRED,
+        'technology_stack': [INTAKE_MARKER_INFERRED],
+        'out_of_scope': [INTAKE_MARKER_INFERRED],
+        'partner_team': [INTAKE_MARKER_INFERRED],
+        'regulatory_constraints': [INTAKE_MARKER_INFERRED],
+        # Required field the user could not answer.
+        'operational_constraints': [INTAKE_MARKER_TO_BE_DEFINED],
+        'inferred_items': [
+            'engagement_shape',
+            'technology_stack',
+            'out_of_scope',
+            'partner_team',
+            'regulatory_constraints',
+        ],
+        'open_items': ['operational_constraints'],
+    }
 
 
 def _metadata_from_summary() -> dict[str, str]:
@@ -300,13 +290,22 @@ class TestPathAGuidedIntake:
         )
         assert state[STATE_SKILL_CURRENT] == 'sow-guided-intake'
 
+        # The skill persists its summary via save_sow_intake_summary.
+        intake_result = await save_sow_intake_summary(
+            intake_summary=_intake_summary_dict(), tool_context=ctx
+        )
+        assert intake_result['status'] == 'success', intake_result
+        assert SOW_INTAKE_SUMMARY_STATE_KEY in state
+        # Marker roll-ups are reflected back to the caller.
+        assert 'operational_constraints' in intake_result['data']['open_fields']
+        assert 'engagement_shape' in intake_result['data']['inferred_fields']
+
         # Inject a fake llm_request that exercises the toolset's prune
         # path on the very next skill switch (mimics what the root does
-        # after the guided interview returns the <intake_summary>).
+        # after the guided interview persists the summary).
         previous_skill = 'sow-guided-intake'
 
-        # Step 2 — metadata derived from the intake summary.
-        assert SAMPLE_INTAKE_SUMMARY.startswith('<intake_summary>')
+        # Step 2 — metadata derived from the persisted intake summary.
         meta_result = await save_sow_metadata(
             tool_context=ctx, **_metadata_from_summary()
         )
