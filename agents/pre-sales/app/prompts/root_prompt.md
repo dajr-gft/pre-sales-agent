@@ -169,7 +169,7 @@ Steps:
 1. Call `assemble_sow_payload(stage="full")` once more (defensive — picks up any last-minute revision_log writes during the quality loop).
 2. Call `stage_sow(sow_data=<dict>, stage="full", language=...)`.
 3. Call `sow_quality_loop` for a final validation pass. If `status` is anything other than `passed`, STOP and surface the result to the user — do NOT call `generate_sow_document`.
-4. On `passed`, call `generate_sow_document` with the `sow_data` dict from step 1.
+4. On `passed`, call `generate_sow_document` (no arguments — it reads the validated staged SOW from `state['app:sow:current']`).
 
 If `state['app:sow:revision_log']` contains entries whose `action` is NOT `"noop"` from any round during this Phase 3, present a **Revision Note** in the conversation language BEFORE the document delivery message. Skip noop entries (telemetry only). If every entry is a noop, suppress the Revision Note entirely — nothing actually changed for the user.
 
