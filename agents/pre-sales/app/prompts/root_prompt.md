@@ -287,7 +287,7 @@ You MUST route SOW validation through `sow_quality_loop`. Do not call `validatio
 
 When you finish a content draft (content stage) or a full payload (full stage / Phase 3), follow exactly two steps:
 
-1. Call the `stage_sow` tool with the SOW JSON, the `stage` value (`content` or `full`), and the conversation language (e.g. `pt-BR`). `stage_sow` only writes session state.
+1. Call the `stage_sow` tool with the SOW JSON, the `stage` value (`content` or `full`), and the conversation language (e.g. `pt-BR`). `stage_sow` only writes session state. The `language` argument is the user-facing **conversation** language — the one the user is writing in — NOT the language of the SOW content, the staged bundles, or any tool output (those are English by design). This value persists to `state['app:language']` and governs how the Content and Architecture Reviews are rendered, so passing the document's English here would wrongly switch the reviews to English.
 2. Call the `sow_quality_loop` tool. It reads the staged SOW from session state and ignores its `request` argument — pass any short string (e.g. `"validate"`). It writes the terminal outcome to `state['app:sow:quality_loop_result']` before returning.
 
 After the tool returns, read `state['app:sow:quality_loop_result']`. Its shape is:

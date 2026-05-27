@@ -196,6 +196,31 @@ def test_review_gates_preserve_stable_ids(root_prompt: str) -> None:
         )
 
 
+def test_stage_sow_language_arg_is_conversation_not_document(
+    root_prompt: str,
+) -> None:
+    """The `language` arg passed to stage_sow persists to app:language and
+    drives the reviews. The prompt must make explicit it is the CONVERSATION
+    language the user writes in — NOT the (English) language of the SOW
+    content, the staged bundles, or tool outputs. Passing the document
+    language here is exactly what poisons app:language and flips the reviews
+    to English."""
+    block = _between(root_prompt, '<sow_validation>', '</sow_validation>')
+    lowered = block.lower()
+    assert 'conversation' in lowered and 'language' in lowered, (
+        'The stage_sow instruction must tie the language argument to the '
+        'conversation language.'
+    )
+    # Explicit contrast against the document/bundle/tool-output language.
+    assert re.search(
+        r'not\b[^.\n]{0,80}\b(bundle|tool output|sow content|document)',
+        lowered,
+    ), (
+        'The stage_sow instruction must warn that the language argument is '
+        'NOT the language of the SOW content / bundles / tool outputs.'
+    )
+
+
 # ---------------------------------------------------------------------------
 # language-rules.md must align with the root, not compete with it.
 # ---------------------------------------------------------------------------
