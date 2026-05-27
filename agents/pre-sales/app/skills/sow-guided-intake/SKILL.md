@@ -54,8 +54,12 @@ via ``load_skill_resource``:
   per skipped field.
 - ``references/intake-summary-format.md`` — the exact JSON shape and
   per-field marker rules expected by ``save_sow_intake_summary``.
+- ``sow-shared`` / ``references/language-rules.md`` — conversation
+  language and the user-facing surface contract (what to say vs. keep
+  internal). The interview turns and the post-handoff confirmation are
+  user-facing surfaces; everything else is internal.
 
-If any of the three references has not been loaded, stop and load it
+If any of the references above has not been loaded, stop and load it
 before continuing.
 
 ## Interview budget
@@ -139,10 +143,13 @@ each block:
   branching belongs to the root, not to this skill. If the user
   spontaneously offers documents during the interview, acknowledge
   briefly and let the root re-route on the next turn.
-- After ``save_sow_intake_summary`` succeeds, respond with a single
-  short sentence in the user's language (e.g. "Resumo registrado, vou
-  começar a gerar a SOW agora.") and stop. The root resumes the
-  protocol from the next turn.
+- After ``save_sow_intake_summary`` succeeds, reply with ONE short,
+  consultive sentence in the user's language: confirm you have what you
+  need and will come back with the proposal for review. Do NOT narrate
+  the pipeline — no "generating now", "loading", "consulting
+  references", and no tool/skill names (see ``sow-shared`` /
+  ``references/language-rules.md`` → "User-facing surface vs. internal
+  work"). Then stop; the root resumes the protocol from the next turn.
 
 ## Before persisting (workflow gate)
 
