@@ -543,11 +543,15 @@ def build_section_agent(
             only if a section legitimately should always regenerate
             from upstream (no current section does — the default is
             what you want).
-        model: Override the Gemini model id (defaults to
-            ``config.GEMINI_MODEL``).
+        model: Override the Gemini model id for both worker and
+            formatter (defaults to ``config.SECTION_AGENT_MODEL`` —
+            Flash, because sections are schema-bound slot-filling, not
+            free-form reasoning; the root orchestrator stays on the
+            Pro-grade ``config.GEMINI_MODEL``).
         temperature: Override generation temperature for the worker.
-        thinking_budget: Override worker thinking token budget. The
-            formatter uses a fixed low budget regardless.
+        thinking_budget: Override worker thinking token budget
+            (defaults to ``config.SECTION_AGENT_THINKING_BUDGET``).
+            The formatter uses a fixed low budget regardless.
 
     Returns:
         ``SequentialAgent`` with two sub-agents: worker then formatter.
@@ -574,7 +578,7 @@ def build_section_agent(
     if extra_tools:
         worker_tools.extend(extra_tools)
 
-    effective_model = model or config.GEMINI_MODEL
+    effective_model = model or config.SECTION_AGENT_MODEL
 
     # Auto-inject the previous-bundle optional input when patch mode is
     # enabled, plus the repair-findings slot the QualityLoopAgent uses
@@ -644,7 +648,7 @@ def build_section_agent(
                 thinking_budget=(
                     thinking_budget
                     if thinking_budget is not None
-                    else config.THINKING_BUDGET
+                    else config.SECTION_AGENT_THINKING_BUDGET
                 ),
             ),
         ),
@@ -978,7 +982,7 @@ def build_section_repair_agent(
             if key not in seen_keys
         )
 
-    effective_model = model or config.GEMINI_MODEL
+    effective_model = model or config.SECTION_AGENT_MODEL
 
     repair_tool_footer = _build_repair_tool_footer(
         section_name=section_name,
@@ -1013,7 +1017,7 @@ def build_section_repair_agent(
                 thinking_budget=(
                     thinking_budget
                     if thinking_budget is not None
-                    else config.THINKING_BUDGET
+                    else config.SECTION_AGENT_THINKING_BUDGET
                 ),
             ),
         ),
