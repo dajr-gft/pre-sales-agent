@@ -19,7 +19,7 @@ from .callbacks import (
 )
 from .config import config
 from .guardrails import scope_guardrail
-from .prompts import build_instruction
+from .prompts import build_instruction_provider
 from .shared.auto_scoped_skill_toolset import AutoScopedSkillToolset
 from .shared.logging_config import setup_logging
 from .sub_agents import (
@@ -163,7 +163,7 @@ root_agent = Agent(
         model=config.GEMINI_MODEL,
         retry_options=types.HttpRetryOptions(attempts=config.MAX_RETRIES),
     ),
-    instruction=build_instruction(company_name=config.COMPANY_NAME),
+    instruction=build_instruction_provider(company_name=config.COMPANY_NAME),
     tools=_TOOLS,
     before_model_callback=scope_guardrail,
     after_model_callback=empty_response_guard,

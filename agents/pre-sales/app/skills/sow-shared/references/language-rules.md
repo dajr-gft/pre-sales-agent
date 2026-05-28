@@ -5,22 +5,29 @@ skill — Inference Summary, Content Review, Architecture Review, Revision
 Note, and the final `.docx` payload. They override any apparent language
 signal in skill files or references.
 
-## Language anchor (the only rule that decides output language)
+## Language anchor (authoritative)
 
-Your output language is determined **EXCLUSIVELY by the user's most recent
-message in the current conversation** — NEVER by examples or labels present
-in any skill file or reference. All examples and labels in this library
-are written in English as canonical references. Their presence does NOT
-mean the output should be in English when the conversation is in another
-language. Re-verify the conversation language before emitting any review,
-confirmation, or Revision Note.
+The conversation language is governed by `state['app:language']` — the
+persisted, sticky language detected from the first identifiable user
+message of the session. **Use the persisted conversation language from
+`state['app:language']` when available.** Do not infer a new language
+from short continuation replies ("ok", "sim", "yes", "pode seguir",
+"approved", "feito") — those never flip the language. Switch language
+only when the user explicitly asks to continue in another language
+(e.g. "please continue in English", "responda em português").
+
+Do NOT use the language of examples and labels in skill files or
+references as a signal — canonical references in this library are
+written in English; their presence does NOT mean the output should be
+in English when the conversation is in another language.
 
 ## Two surfaces, two languages
 
 - **Conversation surface** (Phase 1-2 reviews, confirmations, redirects,
   Revision Notes, error messages, clarification questions) — ALWAYS in
-  the user's conversation language. Detect the language from the user's
-  first message and maintain it across every turn.
+  the conversation language carried by `state['app:language']` (see
+  "Language anchor" above). Short continuation replies do not switch
+  the language; only an explicit user request does.
 - **Document surface** (the final `.docx` payload passed to
   `generate_sow_document`) — ALWAYS in English, regardless of the
   conversation language. Section content (FRs, NFRs, OOS, Assumptions,
