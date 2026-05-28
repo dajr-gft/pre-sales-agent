@@ -43,30 +43,29 @@ When patching an existing list: also `sow-shared` / `references/id-stability-rul
 
 ## Inputs
 
-- `manifest.extracted_items` for `[Briefing, Integrations, NFRs]` + resolved `manifest.gaps`.
+Upstream project context — the substantive content the FRs/NFRs derive from:
 
-If `state['app:sow:intake_summary']` is populated (Path A — guided intake), treat it as upstream project context equivalent to the project documents. Use it as the factual basis for FRs and NFRs. Honor the marker contract on each field:
+- **Path A (guided intake):** the persisted intake_summary at `state['app:sow:intake_summary']`. Honor the marker contract on each field:
+  - **Real value** → use as factual context exactly like a document fact.
+  - **`'(inferred)'`** (scalar) or **`['(inferred)']`** (list) → propose a safe consulting default following `references/fr-patterns.md` / `references/nfr-waf-pillars.md`. Mark the produced FR / NFR with `(inferred)` per `sow-shared` / `references/language-rules.md`. Do NOT skip the requirement.
+  - **`'[TO BE DEFINED]'`** (scalar) or **`['[TO BE DEFINED]']`** (list) → for NFR targets specifically, keep `[TO BE DEFINED]` as the target text in the produced NFR; an open commitment is a Content Review item, not a reason to drop the NFR. For inputs to FR formulation, generate the FR with what the summary does carry and leave quantitative thresholds as `[TO BE DEFINED]`. Never invent a value.
+  - `inferred_items` and `open_items` on the persisted summary are the explicit roll-ups; iterate them when deciding which FR / NFR pillars need the default-fill versus placeholder-keep behavior.
+- **Path B (documental):** source documents loaded through artifacts for the current generation step. Read them directly as the factual basis for FRs and NFRs; gaps are whatever the documents fail to state.
 
-- **Real value** → use as factual context exactly like a document fact.
-- **`'(inferred)'`** (scalar) or **`['(inferred)']`** (list) → propose a safe consulting default following `references/fr-patterns.md` / `references/nfr-waf-pillars.md`. Mark the produced FR / NFR with `(inferred)` per `sow-shared` / `references/language-rules.md`. Do NOT skip the requirement.
-- **`'[TO BE DEFINED]'`** (scalar) or **`['[TO BE DEFINED]']`** (list) → for NFR targets specifically, keep `[TO BE DEFINED]` as the target text in the produced NFR; an open commitment is a Content Review item, not a reason to drop the NFR. For inputs to FR formulation, generate the FR with what the summary does carry and leave quantitative thresholds as `[TO BE DEFINED]`. Never invent a value.
-
-`inferred_items` and `open_items` on the persisted summary are the explicit roll-ups; iterate them when deciding which FR / NFR pillars need the default-fill versus placeholder-keep behavior.
-
-> **Coverage scope.** Per-item manifest coverage (walking `extracted_items` exhaustively) is the validation critic's `coverage` skill responsibility, not this skill's. Do not duplicate that walk here; produce content grounded in the inputs above and let the critic flag uncovered items in a later round.
+> **Coverage scope.** Section completeness against the upstream project context (walking it exhaustively) is the validation critic's `coverage` skill responsibility, not this skill's. Do not duplicate that walk here; produce content grounded in the inputs above and let the critic flag uncovered items in a later round.
 
 ## Generate (one turn)
 
-1. **Map Manifest → FRs.** Apply Self-sufficiency Rule 2 (`style-guide.md`): group operations differing only by target/channel; keep functionally distinct capabilities separate. Apply `fr-patterns.md` → "Required FR shape".
+1. **Map upstream context → FRs.** Apply Self-sufficiency Rule 2 (`style-guide.md`): group operations differing only by target/channel; keep functionally distinct capabilities separate. Apply `fr-patterns.md` → "Required FR shape".
 2. **Infer implicit FRs.** Add the items in `fr-patterns.md` → "Inferred-implicit FRs" unless already covered. Mark each with `(inferred)` in conversation language.
-3. **Generate NFRs across the five WAF pillars.** Apply `nfr-waf-pillars.md`. For Reliability, use the REQUIRED phrasing verbatim; FORBIDDEN uptime/SLA phrasings are rejected in any language. If the Manifest carries an availability percentage, translate the architectural pattern into the NFR and leave the percentage for an Assumption (handled in Step C).
+3. **Generate NFRs across the five WAF pillars.** Apply `nfr-waf-pillars.md`. For Reliability, use the REQUIRED phrasing verbatim; FORBIDDEN uptime/SLA phrasings are rejected in any language. If the upstream context carries an availability percentage, translate the architectural pattern into the NFR and leave the percentage for an Assumption (handled in Step C).
 4. **Cross-validate FR ↔ NFR.** Walk pair-wise. Fix `fr_vs_nfr` contradictions and `fr_restated_as_nfr` duplicates in place — never return contradictions to the orchestrator.
 
 ## Before returning (workflow gate)
 
 - Run the self-test in `anti-patterns.md` → "Self-test (apply before emitting the requirements section)". All items mandatory.
-- Verify the Self-sufficiency invariant: every Manifest item in `[Briefing, Integrations, NFRs]` is findable by name in at least one FR or NFR.
-- Counts: FR ≥ 10 (exceed target when Manifest warrants — Self-sufficiency Rule 3); NFR ≥ 5 with all applicable pillars covered.
+- Verify the Self-sufficiency invariant: every business requirement, integration need, or non-functional target identified in the upstream context is findable by name in at least one FR or NFR.
+- Counts: FR ≥ 10 (exceed target when the upstream context warrants — Self-sufficiency Rule 3); NFR ≥ 5 with all applicable pillars covered.
 - When patching: existing IDs preserved per `id-stability-rules.md` (removals leave gaps, additions append).
 
 ## Out of scope

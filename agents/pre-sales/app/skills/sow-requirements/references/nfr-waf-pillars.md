@@ -116,11 +116,13 @@ for the engagement.`
 The Self-sufficiency contract from `sow-shared/references/style-guide.md`
 applies in full to NFRs:
 
-- Every Manifest-captured NFR (category `NFRs` in the Manifest) MUST appear
-  literally named in at least one generated NFR.
+- Every non-functional target captured in the upstream project context (the
+  persisted intake_summary for Path A; source documents loaded through
+  artifacts for the current generation step in Path B) MUST appear literally
+  named in at least one generated NFR.
 - No NFR may delegate to "as detailed in the security policy" or any
   external document.
-- Grouping is allowed when multiple Manifest NFR items are instances of the
-  same pillar attribute (e.g., multiple encryption requirements → one
+- Grouping is allowed when multiple upstream-context NFR items are instances
+  of the same pillar attribute (e.g., multiple encryption requirements → one
   Security NFR listing all algorithms) — but each item must still be
   findable by name in the NFR text.

@@ -3,8 +3,10 @@
 The Functional Requirements section is a numbered table of `shall` statements,
 each scoped to a specific behavior the solution implements during the
 engagement. The Self-sufficiency contract from
-`sow-shared/references/style-guide.md` applies in full: every Manifest-captured
-capability MUST be named literally in at least one FR.
+`sow-shared/references/style-guide.md` applies in full: every capability
+captured in the upstream project context (the persisted intake_summary for
+Path A; source documents loaded through artifacts for the current generation
+step in Path B) MUST be named literally in at least one FR.
 
 ## Format
 
@@ -20,8 +22,8 @@ capability MUST be named literally in at least one FR.
 ## Target
 
 **Target: 10-20 FRs** for a typical 10-14 week engagement. This is a FLOOR
-and a SOFT design target — never a hard cap. When the Manifest covers more
-capabilities than the soft target accommodates, exceed it (per
+and a SOFT design target — never a hard cap. When the upstream context covers
+more capabilities than the soft target accommodates, exceed it (per
 Self-sufficiency Rule 3 in `sow-shared/references/style-guide.md`).
 
 ## Required FR shape
@@ -41,9 +43,9 @@ defect — they do not name what API, doing what, for whom.
 
 ## Inferred-implicit FRs
 
-Beyond the explicit Manifest items, infer the following implicit FRs unless
-the Manifest already covers them. Each MUST be marked with the conversation-
-language equivalent of `(inferred)` per
+Beyond the explicit items in the upstream context, infer the following
+implicit FRs unless the upstream context already covers them. Each MUST be
+marked with the conversation-language equivalent of `(inferred)` per
 `sow-shared/references/language-rules.md`:
 
 - Authentication / authorization (which IdP, which protocol, which scopes).
@@ -51,7 +53,7 @@ language equivalent of `(inferred)` per
 - Audit logging for material business actions.
 - Data validation at every external-system ingress.
 - Admin or operator monitoring view, if no observability FR is present.
-- Edge cases the Manifest implies but does not state (rate limits, idempotency).
+- Edge cases the upstream context implies but does not state (rate limits, idempotency).
 
 If you add an inferred FR, also surface it in the user-facing review with the
 inference marker so the user can confirm or remove it.
