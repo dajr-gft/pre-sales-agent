@@ -15,33 +15,9 @@
 import logging
 import os
 
-# Default value preserves backwards-compatible tagging in telemetry /
-# BQ log analytics. The ``ARCHITECTURE_VARIANT`` env var overrides this
-# so A/B comparison runs are tagged at boot. No behavior change beyond
-# a single log line.
-_DEFAULT_ARCHITECTURE_VARIANT = 'multi_agent_manifest'
 
-
-def setup_telemetry(
-    architecture_variant: str | None = None,
-) -> str | None:
-    """Configure OpenTelemetry and GenAI telemetry with GCS upload.
-
-    Args:
-        architecture_variant: Tag for the pipeline variant being run, used
-            by downstream telemetry/analytics to bucket runs in A/B
-            comparisons. When ``None``, falls back to the
-            ``ARCHITECTURE_VARIANT`` env var, then to
-            ``multi_agent_manifest`` (kept as default for backwards-
-            compatible telemetry tagging).
-    """
-    variant = (
-        architecture_variant
-        or os.environ.get('ARCHITECTURE_VARIANT')
-        or _DEFAULT_ARCHITECTURE_VARIANT
-    )
-    logging.info('run_boot architecture_variant=%s', variant)
-
+def setup_telemetry() -> str | None:
+    """Configure OpenTelemetry and GenAI telemetry with GCS upload."""
     os.environ.setdefault('GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY', 'true')
 
     bucket = os.environ.get('LOGS_BUCKET_NAME')
