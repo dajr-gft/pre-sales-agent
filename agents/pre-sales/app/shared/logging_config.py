@@ -9,10 +9,8 @@ import structlog
 
 # Verbose telemetry envelope for the SOW quality-loop debug trail.
 #
-# When enabled, three additional layers of logging fire:
+# When enabled, two additional layers of logging fire:
 #
-# - ``quality_loop_manifest_snapshot`` — full Extraction Manifest at
-#   loop start (one event per session).
 # - ``quality_loop_sow_snapshot_pre_round`` / ``..._post_round`` — full
 #   staged SOW before and after every round (two events per round).
 # - ``section_patch_ops_executed.ops[].payload`` — actual content the

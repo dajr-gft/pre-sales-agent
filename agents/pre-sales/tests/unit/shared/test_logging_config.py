@@ -1,9 +1,9 @@
 """Contract tests for the verbose SOW-logging toggle.
 
-The env var ``SOW_VERBOSE_LOGGING`` flips three layers of telemetry
-on/off (manifest snapshot, SOW snapshots per round, op payload content).
-The default — verbose OFF — keeps production logs lean; debug sessions
-flip it on for the full forensic trail.
+The env var ``SOW_VERBOSE_LOGGING`` flips two layers of telemetry
+on/off (SOW snapshots per round, op payload content). The default —
+verbose OFF — keeps production logs lean; debug sessions flip it on
+for the full forensic trail.
 
 The helper reads the env var on every call so a developer toggling the
 var between test invocations does not need a process restart.
