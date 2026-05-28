@@ -31,7 +31,6 @@ from .tools.sow.confirm_phase import confirm_phase_completion
 from .tools.sow.generate_architecture_diagram import \
     generate_architecture_diagram
 from .tools.sow.generate_sow_document import generate_sow_document
-from .tools.sow.assemble_payload import assemble_sow_payload
 from .tools.sow.save_section_bundle import SAVE_BUNDLE_TOOLS
 from .tools.sow.save_sow_intake_summary import save_sow_intake_summary
 from .tools.sow.save_sow_metadata import save_sow_metadata
@@ -113,7 +112,6 @@ _TOOLS = [
     generate_architecture_diagram,
     confirm_phase_completion,
     stage_sow,
-    assemble_sow_payload,
     generate_sow_document,
     # Root-skills generation tools. `save_sow_metadata` persists the 13
     # administrative fields (the metadata envelope the assembler reads);
