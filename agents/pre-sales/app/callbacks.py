@@ -24,7 +24,6 @@ from google.adk.tools import ToolContext
 from google.genai import Client, types
 
 from ._genai_patches import THOUGHT_SIGNATURE_BYPASS_BYTES
-from .app_utils.run_metrics import record_tool_call
 from .config import config
 from .tools.sow.confirm_phase import is_architecture_review_approved
 
@@ -178,17 +177,6 @@ def after_tool_callback(
         }
     )
     tool_context.state['tool_call_history'] = tool_history
-
-    # A/B comparison telemetry: per-run counters (tool calls, skills /
-    # resources / artifacts loaded, bundle payload bytes, per-section
-    # generation timing, patch-engine ops). Never raises — see
-    # app.app_utils.run_metrics.
-    record_tool_call(
-        tool_name=tool_name,
-        args=args,
-        tool_response=tool_response,
-        state=tool_context.state,
-    )
 
     # Track validation state for pipeline awareness
     if tool_name == 'validate_sow_content' and isinstance(tool_response, dict):
