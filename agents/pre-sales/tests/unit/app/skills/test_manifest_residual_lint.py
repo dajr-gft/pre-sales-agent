@@ -80,20 +80,22 @@ _BANNED_MANIFEST_TOKENS = (
 def _files_in_lint_scope(scope: str) -> list[Path]:
     """Files the guard inspects for the given scope.
 
-    For ``sow-shared`` we only scan ``references/*.md`` — the cross-cutting
-    rules. For section skills we scan ``SKILL.md`` plus every markdown
-    file under ``references/``.
+    For ``sow-shared`` we only scan its ``references/`` tree — the
+    cross-cutting rules. For section skills we scan ``SKILL.md`` plus
+    every markdown file under ``references/`` (recursively, so future
+    nested reference subdirs are covered without needing a guard
+    update).
     """
     scope_dir = _SKILLS_ROOT / scope
     if scope == 'sow-shared':
-        return sorted((scope_dir / 'references').glob('*.md'))
+        return sorted((scope_dir / 'references').rglob('*.md'))
     files: list[Path] = []
     skill_md = scope_dir / 'SKILL.md'
     if skill_md.exists():
         files.append(skill_md)
     refs_dir = scope_dir / 'references'
     if refs_dir.exists():
-        files.extend(sorted(refs_dir.glob('*.md')))
+        files.extend(sorted(refs_dir.rglob('*.md')))
     return files
 
 

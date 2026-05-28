@@ -57,7 +57,7 @@ Two required inputs:
 
 If the upstream context names a system, data source, or GCP service that does not appear in the FRs, it must still be evaluated for inclusion in the architecture.
 
-> **Coverage scope.** Section completeness against the upstream project context (walking it exhaustively) is the validation critic's `coverage` skill responsibility, not this skill's. Do not duplicate that walk here; produce content grounded in the inputs above and let the critic flag uncovered items in a later round.
+> **Completeness scope.** Exhaustive source-by-source completeness validation belongs to the validation critic, not this skill. Generate a complete section bundle from the upstream project context; the quality loop validates completeness later.
 
 ## Sub-steps (mandatory order)
 

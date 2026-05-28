@@ -19,9 +19,10 @@ project-specific content:
 > value and high-level technical outcomes]."
 
 The final `.docx` Executive Summary MUST end with this exact English
-sentence, selecting the correct funding type from the upstream project
-context — the persisted intake_summary's `funding_type` for Path A; the
-equivalent field stated in source documents for Path B:
+sentence, selecting the correct funding type from the metadata envelope /
+upstream project context — prefer `app:sow:metadata.funding_type` when
+available; otherwise use the persisted intake_summary's `funding_type`
+for Path A or the equivalent field stated in source documents for Path B:
 
 > "This scope of work will be funded with Google [Deal Acceleration Funds
 > (DAF) | Google Partner Services Funds (PSF)]."

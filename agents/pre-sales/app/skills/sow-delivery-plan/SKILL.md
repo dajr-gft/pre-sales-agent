@@ -55,7 +55,7 @@ Two required inputs:
    - **Path B (documental):** source documents loaded through artifacts for the current generation step. Read them directly as the factual basis for Activities, Deliverables, Timeline, and Roles; gaps are whatever the documents fail to state.
 2. **Upstream bundle** — current `sow_data` snapshot with `functional_requirements` + `non_functional_requirements` populated by `sow-requirements`. The delivery plan must cover these.
 
-> **Coverage scope.** Section completeness against the upstream project context (walking it exhaustively) is the validation critic's `coverage` skill responsibility, not this skill's. Do not duplicate that walk here; produce content grounded in the inputs above and let the critic flag uncovered items in a later round.
+> **Completeness scope.** Exhaustive source-by-source completeness validation belongs to the validation critic, not this skill. Generate a complete section bundle from the upstream project context; the quality loop validates completeness later.
 
 ## Generate (one turn)
 

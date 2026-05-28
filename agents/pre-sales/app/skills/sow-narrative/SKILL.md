@@ -49,7 +49,7 @@ Two required inputs:
    - The Partner Overview and `customer_primary_domain` come from the web search queries either way — neither Path replaces the enrichment step.
 2. **Upstream bundles** — current `sow_data` snapshot with every other section already populated by the prior section skills. The Executive Summary synthesizes from these.
 
-> **Coverage scope.** Section completeness against the upstream project context (walking it exhaustively) is the validation critic's `coverage` skill responsibility, not this skill's. Do not duplicate that walk here; produce content grounded in the inputs above and let the critic flag uncovered items in a later round.
+> **Completeness scope.** Exhaustive source-by-source completeness validation belongs to the validation critic, not this skill. Generate a complete section bundle from the upstream project context; the quality loop validates completeness later.
 
 ## Generate (one turn)
 
