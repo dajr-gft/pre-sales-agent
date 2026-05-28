@@ -37,6 +37,11 @@ from pathlib import Path
 
 import pytest
 
+# build_instruction_provider is now mandatory (the root agent wires it as
+# its instruction). Import at module top so a missing symbol surfaces as a
+# hard failure, not a silent skip.
+from app.prompts import build_instruction_provider
+
 _APP = Path(__file__).resolve().parents[4] / 'app'
 _ROOT_PROMPT = _APP / 'prompts' / 'root_prompt.md'
 _LANGUAGE_RULES = (
@@ -282,17 +287,6 @@ def test_language_rules_keep_review_translation_rule(
 # ---------------------------------------------------------------------------
 
 
-try:
-    from app.prompts import build_instruction_provider  # type: ignore[attr-defined]
-    _PROVIDER_IMPORTED = True
-except ImportError:
-    _PROVIDER_IMPORTED = False
-
-
-@pytest.mark.skipif(
-    not _PROVIDER_IMPORTED,
-    reason='app.prompts.build_instruction_provider not implemented yet',
-)
 class TestInstructionProvider:
     def _ctx(self, state: dict | None = None):
         from unittest.mock import MagicMock
