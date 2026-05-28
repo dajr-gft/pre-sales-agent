@@ -25,8 +25,11 @@ render the customer logo.
 
 ### Without reliable web search data
 
-- 3-4 lines drawn from Phase 1 context (the Manifest's Identity category).
-  Stick to facts present in the Manifest; do not invent metrics.
+- 3-4 lines drawn from the upstream project context (the persisted
+  intake_summary for Path A; source documents loaded through artifacts for
+  the current generation step in Path B) — specifically the partner
+  identity facts captured upstream. Stick to facts present in the upstream
+  context; do not invent metrics.
 
 ### Anti-patterns
 
@@ -50,8 +53,9 @@ render the customer logo.
 
 ### Without reliable web search data
 
-- 3-4 lines from the Manifest's Identity + Briefing categories. Stick to
-  facts present in the Manifest.
+- 3-4 lines from the upstream context — specifically the customer identity
+  facts and the business briefing captured upstream. Stick to facts present
+  in the upstream context.
 
 ### Anti-patterns
 
@@ -65,14 +69,14 @@ render the customer logo.
 
 When generating the narrative section, run the following 4 queries in
 order. Use the results as the sole source of any numeric or factual
-claim that is not in the Manifest:
+claim that is not in the upstream context:
 
 1. `"<Partner Name>" Google Cloud partner specialization` → results feed
    `partner_overview`.
-2. `"<Customer Name>" <sector from Manifest> company overview` → results
-   feed `customer_overview`.
-3. `"<Customer Name>" <sector from Manifest> market share competitors` →
-   results enrich `customer_overview` with competitive positioning.
+2. `"<Customer Name>" <sector from upstream context> company overview` →
+   results feed `customer_overview`.
+3. `"<Customer Name>" <sector from upstream context> market share competitors`
+   → results enrich `customer_overview` with competitive positioning.
 4. `"<Customer Name>" official homepage` → results feed EXCLUSIVELY
    `customer_primary_domain`. Do NOT use this query's results to enrich
    the prose overview.
@@ -107,10 +111,11 @@ Pattern: input `https://www.AcmeCorp.com/about-us` → stored as `acmecorp.com`.
 
 If the web search tool is unavailable or returns no usable results:
 
-- Generate `partner_overview` and `customer_overview` from Manifest
-  context only (Identity + Briefing categories).
+- Generate `partner_overview` and `customer_overview` from the upstream
+  context only — partner/customer identity facts and the business briefing
+  captured upstream.
 - Use the shorter line range (3-4 lines).
 - Leave `customer_primary_domain` unset.
 - Add an inferred-content marker to any factual claim that is not
-  literally in the Manifest, per
+  literally in the upstream context, per
   `sow-shared/references/language-rules.md` → "Inferred-content marker".

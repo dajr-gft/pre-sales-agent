@@ -41,12 +41,15 @@ When patching: also `sow-shared` / `references/id-stability-rules.md`. The exact
 
 ## Inputs
 
-- Manifest `extracted_items` for `[Identity, Briefing]`.
-- Current `sow_data` snapshot with every other section already populated.
+Two required inputs:
 
-If `state['app:sow:intake_summary']` is populated (Path A — guided intake), treat it as upstream project context equivalent to the project documents. Use `customer_name`, `project_title`, `problem_goal`, and `solution_direction` from the persisted summary (all four are guaranteed to be real values — the intake tool rejects markers there) as the factual basis for the Executive Summary and the Customer Overview. The Partner Overview and the `customer_primary_domain` still come from the web search queries — guided intake does not replace the enrichment step. Other intake fields marked `'(inferred)'` or `'[TO BE DEFINED]'` should NOT be folded verbatim into the narrative — by the time this skill runs, the prior section skills will have either filled inferred values or kept `[TO BE DEFINED]` placeholders inside their bundles; read those resolved bundles, not the raw intake markers.
+1. **Upstream project context** — substantive content the narrative synthesizes:
+   - **Path A (guided intake):** the persisted intake_summary at `state['app:sow:intake_summary']`. Use `customer_name`, `project_title`, `problem_goal`, and `solution_direction` from the persisted summary (all four are guaranteed to be real values — the intake tool rejects markers there) as the factual basis for the Executive Summary and the Customer Overview. Other intake fields marked `'(inferred)'` or `'[TO BE DEFINED]'` should NOT be folded verbatim into the narrative — by the time this skill runs, the prior section skills will have either filled inferred values or kept `[TO BE DEFINED]` placeholders inside their bundles; read those resolved bundles, not the raw intake markers.
+   - **Path B (documental):** source documents loaded through artifacts for the current generation step. Use them as the factual basis for the Executive Summary and the Customer Overview.
+   - The Partner Overview and `customer_primary_domain` come from the web search queries either way — neither Path replaces the enrichment step.
+2. **Upstream bundles** — current `sow_data` snapshot with every other section already populated by the prior section skills. The Executive Summary synthesizes from these.
 
-> **Coverage scope.** Per-item manifest coverage (walking `extracted_items` exhaustively) is the validation critic's `coverage` skill responsibility, not this skill's. Do not duplicate that walk here; produce content grounded in the inputs above and let the critic flag uncovered items in a later round.
+> **Completeness scope.** Exhaustive source-by-source completeness validation belongs to the validation critic, not this skill. Generate a complete section bundle from the upstream project context; the quality loop validates completeness later.
 
 ## Generate (one turn)
 
@@ -63,7 +66,7 @@ If `state['app:sow:intake_summary']` is populated (Path A — guided intake), tr
 - Length within the band for the engagement type.
 - Paragraph structure ~5 paragraphs (not one block).
 - Overview line counts match search-available state (4-6 / 3-4).
-- Every numeric or factual claim in overviews is anchored to a query result observed in this turn (or to the Manifest).
+- Every numeric or factual claim in overviews is anchored to a query result observed in this turn (or to the upstream context).
 - `customer_primary_domain`, when set, was extracted from query 4's URL field (not constructed).
 - When patching: exact English opening + funding sentence preserved byte-for-byte per `id-stability-rules.md`.
 

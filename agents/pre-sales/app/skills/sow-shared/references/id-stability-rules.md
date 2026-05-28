@@ -34,9 +34,11 @@ exception.
 
 ## Patch contract (binding for `sow-revision` and any post-validation editing)
 
-After the first `stage_sow` call, every subsequent payload submitted to
-`validate_sow_content`, `stage_sow`, or `generate_sow_document` is a
-**patch** of the previous payload — not a fresh generation.
+After the first `stage_sow` call, every subsequent bundle change in
+`state['app:sow:<section>']` (which `stage_sow` re-assembles into the
+flat payload that `validate_sow_content` and `generate_sow_document`
+consume) is a **patch** of the previous bundle — not a fresh
+generation.
 
 - Apply the minimum change required to address the validator error or
   finding. Leave every other field byte-for-byte identical: same items,

@@ -82,8 +82,8 @@ async def generate_sow_document(
             retryable=False,
             tool='generate_sow_document',
             suggestion=(
-                'Run assemble_sow_payload(stage="full") → stage_sow('
-                'stage="full") → sow_quality_loop before generate_sow_document.'
+                'Run stage_sow(stage="full") → sow_quality_loop before '
+                'generate_sow_document.'
             ),
         )
 
@@ -99,9 +99,8 @@ async def generate_sow_document(
             retryable=False,
             tool='generate_sow_document',
             suggestion=(
-                'Re-run assemble_sow_payload(stage="full") → stage_sow('
-                'stage="full") → sow_quality_loop, then call '
-                'generate_sow_document again.'
+                'Re-run stage_sow(stage="full") → sow_quality_loop, then '
+                'call generate_sow_document again.'
             ),
         )
 
@@ -155,9 +154,8 @@ async def generate_sow_document(
             tool='generate_sow_document',
             suggestion=(
                 'Regenerate the section bundle(s) that own the missing '
-                'fields, then re-run assemble_sow_payload → stage_sow → '
-                'sow_quality_loop before calling generate_sow_document '
-                'again.'
+                'fields, then re-run stage_sow → sow_quality_loop before '
+                'calling generate_sow_document again.'
             ),
         )
 
@@ -179,9 +177,8 @@ async def generate_sow_document(
             tool='generate_sow_document',
             suggestion=(
                 'Regenerate the affected section bundle to satisfy the '
-                'gate, then re-run assemble_sow_payload → stage_sow → '
-                'sow_quality_loop before calling generate_sow_document '
-                'again.'
+                'gate, then re-run stage_sow → sow_quality_loop before '
+                'calling generate_sow_document again.'
             ),
         )
 
@@ -212,10 +209,10 @@ async def generate_sow_document(
             tool='generate_sow_document',
             suggestion=(
                 'Regenerate the section bundle(s) cited in the errors, '
-                'then re-run assemble_sow_payload → stage_sow → '
-                'sow_quality_loop before calling generate_sow_document '
-                'again. Do NOT attempt to patch the payload in your own '
-                'turn — the SOW is built from state, not from the model.'
+                'then re-run stage_sow → sow_quality_loop before calling '
+                'generate_sow_document again. Do NOT attempt to patch the '
+                'payload in your own turn — the SOW is built from state, '
+                'not from the model.'
             ),
         )
     if validation.warnings:

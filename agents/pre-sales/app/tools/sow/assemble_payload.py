@@ -2,15 +2,24 @@
 
 After the root generates each section (inline, following the section
 skill) it persists a typed ``*Bundle`` (see ``app.sub_agents.schemas``)
-into a dedicated session-state key. This tool reads those bundles plus
-the ``app:sow:metadata`` envelope from state and returns the flat
-``sow_data`` dict that ``stage_sow`` and ``generate_sow_document``
-expect.
+into a dedicated session-state key. The pure
+:func:`build_sow_data_from_state` helper reads those bundles plus the
+``app:sow:metadata`` envelope from state and returns the flat
+``sow_data`` dict that ``stage_sow`` writes and
+``generate_sow_document`` renders.
 
-Why a Python tool instead of letting the root LLM merge the JSON: an
+Why a Python helper instead of letting the root LLM merge the JSON: an
 LLM merging five structured payloads silently drops fields, renames
 keys, or reorders lists. Python doesn't. The mapping is small enough to
 audit at a glance — keep it that way.
+
+The ADK-facing :func:`assemble_sow_payload` tool wraps the pure helper
+and is **not registered with the root agent**. The canonical write
+path is ``stage_sow``, which calls :func:`build_sow_data_from_state`
+internally so the assembled dict never has to round-trip through the
+model. The wrapper survives as a dry-run / debug entry point — useful
+in tests that want to inspect the assembled shape without mutating
+state, and for non-agent callers that need the same error semantics.
 
 The ``stage`` parameter mirrors the one accepted by ``stage_sow``:
 

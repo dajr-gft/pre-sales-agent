@@ -180,8 +180,8 @@ You receive ``Stage`` as either ``content`` or ``full``. The staged
 SOW differs between the two:
 
 - ``content`` — only requirements, delivery_plan, and scope_boundaries
-  sections are populated, alongside project metadata. The
-  ``assemble_sow_payload`` tool intentionally omits architecture and
+  sections are populated, alongside project metadata. The assembler
+  invoked by ``stage_sow`` intentionally omits architecture and
   narrative keys at this stage.
 - ``full`` — every field is populated, including architecture and
   narrative.

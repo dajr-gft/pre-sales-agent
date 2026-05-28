@@ -32,10 +32,12 @@ produce a coherent delivery plan. They do NOT appear in the SOW text.
 | Platform / foundation | 12-20 weeks | 3-4 | 4-6 | 14-22 |
 | Migration | 10-16 weeks | 4 | 4-5 | 12-18 |
 
-Calibrate the project's engagement type from the Manifest (Briefing +
-Timeline + Integrations + NFRs categories). Pick the closest row and use
-the upper end of each range when the Manifest is rich or the NFR list
-covers all five WAF pillars.
+Calibrate the project's engagement type from the upstream project context
+(the persisted intake_summary for Path A; source documents loaded through
+artifacts for the current generation step in Path B) — the business
+briefing, timeline, integrations, and non-functional targets captured
+upstream. Pick the closest row and use the upper end of each range when
+the upstream context is rich or the NFR list covers all five WAF pillars.
 
 ## Coherence heuristics — keep the four sections aligned
 
@@ -68,14 +70,14 @@ internal consistency:
 
 A 14-week implementation with only PM + Architect on the partner side is a
 defect — the math does not work. Add the engineering specializations the
-Manifest implies (Data, ML, Cloud Infrastructure, Integration, depending
-on the FR coverage).
+upstream context implies (Data, ML, Cloud Infrastructure, Integration,
+depending on the FR coverage).
 
 ### Self-test (apply before emitting the delivery plan)
 
 1. Does the engagement duration match the engagement-type heuristic above
    (within ±2 weeks)? If much longer, are the additional weeks justified by
-   complexity in the Manifest?
+   complexity in the upstream context?
 2. Does the deliverable count match the engagement-type range? If lower,
    intermediate artifacts are missing.
 3. Do the partner roles cover every specialization implied by the FR/NFR

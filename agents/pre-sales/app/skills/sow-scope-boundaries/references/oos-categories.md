@@ -30,13 +30,15 @@ write the OOS normally.
 
 **FR/OOS pre-generation cross-check:**
 
-- The Manifest explicitly contains the capability → keep the FR,
-  disambiguate the OOS item.
-- The capability was inferred (not present in Manifest, not in user
-  answers) → remove the FR, keep the OOS as-is.
+- The upstream project context (the persisted intake_summary for Path A;
+  source documents loaded through artifacts for the current generation step
+  in Path B) explicitly names the capability → keep the FR, disambiguate
+  the OOS item.
+- The capability was inferred (not named in the upstream context, not in
+  user answers) → remove the FR, keep the OOS as-is.
 - Concrete pattern: if OOS mentions model maintenance / retraining / model
   ops post go-live → do NOT infer an FR for automated retraining unless
-  the Manifest explicitly captures it.
+  the upstream context explicitly names it.
 
 ## The 17 categories (cover what applies; adapt to project)
 

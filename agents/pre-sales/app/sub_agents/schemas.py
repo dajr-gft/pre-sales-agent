@@ -7,10 +7,11 @@ validates against the matching model and writes it to
 ``session.state['app:sow:<section>']``. The section *repair* agents
 read the same bundles when patching.
 
-The ``assemble_sow_payload`` tool reads these bundles plus the
-``SowMetadata`` envelope (``state['app:sow:metadata']``) from state and
-produces the flat ``sow_data`` dict expected by ``stage_sow`` and
-``generate_sow_document``.
+The pure ``build_sow_data_from_state`` helper (and the
+``stage_sow`` tool, which calls it internally) reads these bundles
+plus the ``SowMetadata`` envelope (``state['app:sow:metadata']``) from
+state and produces the flat ``sow_data`` dict that ``stage_sow``
+persists and ``generate_sow_document`` renders.
 
 Field names mirror the top-level keys of ``sow_data`` exactly — the
 assembler does a structural copy, not a translation. Changing a field

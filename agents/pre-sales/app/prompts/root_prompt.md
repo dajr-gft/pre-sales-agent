@@ -99,9 +99,8 @@ The content stage covers three sections, in this order:
 
 **Step 3 — Assemble + validate the content stage.**
 
-1. Call `assemble_sow_payload(stage="content")` → returns the `sow_data` dict.
-2. Call `stage_sow(sow_data=<dict>, stage="content", language=...)`.
-3. Call `sow_quality_loop` → see `<sow_validation>`. After it returns `passed`, present the **Content Review** gate (see `<content_review_gate>`) and STOP.
+1. Call `stage_sow(stage="content", language=...)`. The tool assembles the flat SOW deterministically from the bundles you just saved (Step 2) plus the metadata envelope, and persists it under `state['app:sow:current']` — you do NOT pass a `sow_data` payload, and the model is not expected to re-emit one.
+2. Call `sow_quality_loop` → see `<sow_validation>`. After it returns `passed`, present the **Content Review** gate (see `<content_review_gate>`) and STOP.
 
 **Step 4 — Generate the architecture + narrative sections** (only AFTER the Content Review is approved). Same per-section loop as Step 2:
 
@@ -115,9 +114,8 @@ The content stage covers three sections, in this order:
 
 **Step 5 — Assemble + validate the full stage.**
 
-1. Call `assemble_sow_payload(stage="full")` → returns the full `sow_data`.
-2. Call `stage_sow(sow_data=<dict>, stage="full", language=...)`.
-3. Call `sow_quality_loop`. After it returns `passed`, present the **Architecture Review** gate (see `<architecture_review_gate>`) and STOP.
+1. Call `stage_sow(stage="full", language=...)`. The tool re-assembles the SOW from every section bundle (now including architecture and narrative) plus the metadata envelope, and re-stages it under `state['app:sow:current']` — no `sow_data` payload to pass.
+2. Call `sow_quality_loop`. After it returns `passed`, present the **Architecture Review** gate (see `<architecture_review_gate>`) and STOP.
 
 **Step 6 — Final document** (only AFTER the Architecture Review is approved). See `<phase_3_document>`.
 </sow_generation_protocol>
@@ -165,7 +163,7 @@ After `sow_quality_loop` returns `passed` for the content stage, present the **C
 - Do NOT write things like "X items will be included in the final document". If the items are not in this review, they will not exist.
 - Before sending, verify the count of items in your review matches the count of items in `state['app:sow:<section>']` for each bundle (`app:sow:requirements`, `app:sow:delivery_plan`, `app:sow:scope_boundaries`). If any section shows fewer items than the bundle holds, the review is incomplete — expand before sending.
 
-**Re-presentation after a targeted change.** When the user requests a change to a specific section, regenerate only that section: `load_skill('sow-<section>')` again, regenerate the content with the requested change, and call `save_<section>_bundle` again (it overwrites the bundle in state). Then re-run `assemble_sow_payload(stage="content")` → `stage_sow(stage="content")` → `sow_quality_loop`. Then present only the **delta of the affected section** — added ids, removed ids, rewritten ids — with the affected items' full text, plus a single-line confirmation per unaffected section showing its count is unchanged. Other sections were already audited; do not re-paste them in full.
+**Re-presentation after a targeted change.** When the user requests a change to a specific section, regenerate only that section: `load_skill('sow-<section>')` again, regenerate the content with the requested change, and call `save_<section>_bundle` again (it overwrites the bundle in state). Then re-run `stage_sow(stage="content")` → `sow_quality_loop`. Then present only the **delta of the affected section** — added ids, removed ids, rewritten ids — with the affected items' full text, plus a single-line confirmation per unaffected section showing its count is unchanged. Other sections were already audited; do not re-paste them in full.
 
 When the user asks to inspect a specific section without requesting changes (e.g. "show me the assumptions again"), expand only that section by reading `state['app:sow:<section>']` and present it inline. Then ask again whether to proceed.
 
@@ -194,7 +192,7 @@ After `sow_quality_loop` returns `passed` for the full stage, present the **Arch
 - Do NOT bundle this gate with the final document delivery in the same sentence. The `.docx` generation is a distinct subsequent step.
 - Do NOT mention validation, audit retries, or revision results to the user — the loop already handled them.
 
-**Re-presentation after a targeted change.** When the user requests a change, regenerate only the affected section: `load_skill('sow-architecture')` or `load_skill('sow-narrative')` again, regenerate with the requested change, call the matching `save_<section>_bundle` again. Re-run `assemble_sow_payload(stage="full")` → `stage_sow(stage="full")` → `sow_quality_loop`. Then present only the **delta of the affected piece** — the rewritten description / overview / exec summary in full — plus a single-line confirmation that the other pieces are unchanged. Other pieces were already audited; do not re-paste them in full.
+**Re-presentation after a targeted change.** When the user requests a change, regenerate only the affected section: `load_skill('sow-architecture')` or `load_skill('sow-narrative')` again, regenerate with the requested change, call the matching `save_<section>_bundle` again. Re-run `stage_sow(stage="full")` → `sow_quality_loop`. Then present only the **delta of the affected piece** — the rewritten description / overview / exec summary in full — plus a single-line confirmation that the other pieces are unchanged. Other pieces were already audited; do not re-paste them in full.
 
 When the user asks to inspect a specific piece without requesting changes, expand only that piece by reading the corresponding bundle and present it inline. Then ask again whether to proceed.
 
@@ -208,10 +206,9 @@ Precondition: `confirm_phase_completion('architecture_review_approved')` returne
 
 Steps:
 
-1. Call `assemble_sow_payload(stage="full")` once more (defensive — picks up any last-minute revision_log writes during the quality loop).
-2. Call `stage_sow(sow_data=<dict>, stage="full", language=...)`.
-3. Call `sow_quality_loop` for a final validation pass. If `status` is anything other than `passed`, STOP and surface the result to the user — do NOT call `generate_sow_document`.
-4. On `passed`, call `generate_sow_document` (no arguments — it reads the validated staged SOW from `state['app:sow:current']`).
+1. Call `stage_sow(stage="full", language=...)` once more (defensive — re-assembles from state to pick up any last-minute bundle changes the quality loop applied).
+2. Call `sow_quality_loop` for a final validation pass. If `status` is anything other than `passed`, STOP and surface the result to the user — do NOT call `generate_sow_document`.
+3. On `passed`, call `generate_sow_document` (no arguments — it reads the validated staged SOW from `state['app:sow:current']`).
 
 If `state['app:sow:revision_log']` contains entries whose `action` is NOT `"noop"` from any round during this Phase 3, present a **Revision Note** in the conversation language BEFORE the document delivery message. Skip noop entries (telemetry only). If every entry is a noop, suppress the Revision Note entirely — nothing actually changed for the user.
 
@@ -287,7 +284,7 @@ You MUST route SOW validation through `sow_quality_loop`. Do not call `validatio
 
 When you finish a content draft (content stage) or a full payload (full stage / Phase 3), follow exactly two steps:
 
-1. Call the `stage_sow` tool with the SOW JSON, the `stage` value (`content` or `full`), and the conversation language (e.g. `pt-BR`). `stage_sow` only writes session state. The `language` argument is the user-facing **conversation** language — the one the user is writing in — NOT the language of the SOW content, the staged bundles, or any tool output (those are English by design). This value persists to `state['app:language']` and governs how the Content and Architecture Reviews are rendered, so passing the document's English here would wrongly switch the reviews to English.
+1. Call the `stage_sow` tool with the `stage` value (`content` or `full`) and the conversation language (e.g. `pt-BR`). `stage_sow` assembles the flat SOW deterministically from the bundles already saved in session state and writes it under `state['app:sow:current']` — you do NOT pass a SOW JSON, and the model is not expected to re-emit one. The `language` argument is the user-facing **conversation** language — the one the user is writing in — NOT the language of the SOW content, the staged bundles, or any tool output (those are English by design). This value persists to `state['app:language']` and governs how the Content and Architecture Reviews are rendered, so passing the document's English here would wrongly switch the reviews to English.
 2. Call the `sow_quality_loop` tool. It reads the staged SOW from session state and ignores its `request` argument — pass any short string (e.g. `"validate"`). It writes the terminal outcome to `state['app:sow:quality_loop_result']` before returning.
 
 After the tool returns, read `state['app:sow:quality_loop_result']`. Its shape is:

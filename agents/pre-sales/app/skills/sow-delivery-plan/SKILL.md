@@ -44,18 +44,18 @@ When patching: also `sow-shared` / `references/id-stability-rules.md`. Workstrea
 
 ## Inputs
 
-- `manifest.extracted_items` for `[Timeline, Briefing, Constraints]` + resolved `manifest.gaps`.
-- Current `sow_data` snapshot with `functional_requirements` + `non_functional_requirements` populated by `sow-requirements`.
+Two required inputs:
 
-If `state['app:sow:intake_summary']` is populated (Path A — guided intake), treat it as upstream project context equivalent to the project documents. Use it as the factual basis for Activities, Deliverables, Timeline, and Roles. Honor the marker contract on each field:
+1. **Upstream project context** — substantive content the delivery plan derives from:
+   - **Path A (guided intake):** the persisted intake_summary at `state['app:sow:intake_summary']`. Honor the marker contract on each field:
+     - **Real value** → use as factual context.
+     - **`'(inferred)'`** → propose a safe consulting default per `references/effort-heuristics.md` and the relevant section reference (typical engagement-shape roles for `partner_team` / `customer_team`, typical engagement-shape phases for inferred scope). Mark the produced rows / roles with `(inferred)` per `sow-shared` / `references/language-rules.md`.
+     - **`'[TO BE DEFINED]'`** → for `timeline` specifically, keep `[TO BE DEFINED]` in the timeframe cells rather than inventing dates; the deliverables and activities can still be planned, only the calendar is open. For `operational_constraints` marked open, file the gap into the corresponding assumption / role responsibility rather than dropping the workstream. Never invent a date or a constraint value.
+     - `inferred_items` and `open_items` are the explicit roll-ups; iterate them when deciding which deliverables / roles need the default-fill versus placeholder-keep behavior.
+   - **Path B (documental):** source documents loaded through artifacts for the current generation step. Read them directly as the factual basis for Activities, Deliverables, Timeline, and Roles; gaps are whatever the documents fail to state.
+2. **Upstream bundle** — current `sow_data` snapshot with `functional_requirements` + `non_functional_requirements` populated by `sow-requirements`. The delivery plan must cover these.
 
-- **Real value** → use as factual context.
-- **`'(inferred)'`** → propose a safe consulting default per `references/effort-heuristics.md` and the relevant section reference (typical engagement-shape roles for `partner_team` / `customer_team`, typical engagement-shape phases for inferred scope). Mark the produced rows / roles with `(inferred)` per `sow-shared` / `references/language-rules.md`.
-- **`'[TO BE DEFINED]'`** → for `timeline` specifically, keep `[TO BE DEFINED]` in the timeframe cells rather than inventing dates; the deliverables and activities can still be planned, only the calendar is open. For `operational_constraints` marked open, file the gap into the corresponding assumption / role responsibility rather than dropping the workstream. Never invent a date or a constraint value.
-
-`inferred_items` and `open_items` are the explicit roll-ups; iterate them when deciding which deliverables / roles need the default-fill versus placeholder-keep behavior.
-
-> **Coverage scope.** Per-item manifest coverage (walking `extracted_items` exhaustively) is the validation critic's `coverage` skill responsibility, not this skill's. Do not duplicate that walk here; produce content grounded in the inputs above and let the critic flag uncovered items in a later round.
+> **Completeness scope.** Exhaustive source-by-source completeness validation belongs to the validation critic, not this skill. Generate a complete section bundle from the upstream project context; the quality loop validates completeness later.
 
 ## Generate (one turn)
 
@@ -63,9 +63,9 @@ If `state['app:sow:intake_summary']` is populated (Path A — guided intake), tr
 2. **Activities** (`activity_phases`). Apply `workstream-structure.md` → "Activities". One entry per phase; tasks pass the "could this appear unchanged in a different project?" self-test.
 3. **Deliverables** (`deliverables`) as workstreams. Apply `workstream-structure.md` → "Section layout". Target ≥ 10 for 10-14 week projects. Include intermediate artifacts (test plan, data quality report, runbook, KT docs).
 4. **Success Criteria** (`success_criteria`). Apply `workstream-structure.md` → "Success Criteria". Target ≥ 5, each referencing specific deliverables or FR ranges. Stop the bar at handover — no sustained-production promises.
-5. **Timeline** (`timeline`). Apply `timeline-rules.md`. Phase rows MUST equal `activity_phases.name` (count, names, order). Pick one notation (weeks OR dates) across all rows. `outcomes` reference specific workstreams/deliverables by name. If Manifest captured dates, populate `project_start_date` / `project_end_date`.
+5. **Timeline** (`timeline`). Apply `timeline-rules.md`. Phase rows MUST equal `activity_phases.name` (count, names, order). Pick one notation (weeks OR dates) across all rows. `outcomes` reference specific workstreams/deliverables by name. If the upstream context captured dates, populate `project_start_date` / `project_end_date`.
 6. **Roles** (`partner_roles`, `customer_roles`). Apply `roles-rules.md` + `effort-heuristics.md` → "Roles → Engagement-size coherence". 2-3 sentences of concrete responsibilities per role.
-7. **Objectives** (`objectives`). 3-5 single-sentence project-specific goals pulled from Manifest `Briefing`.
+7. **Objectives** (`objectives`). 3-5 single-sentence project-specific goals derived from the business briefing in the upstream context.
 8. **Cross-validate.** Apply `workstream-structure.md` → "Cross-section coherence" + `timeline-rules.md` → "Cross-section invariant" + `effort-heuristics.md` → "Coherence heuristics". Fix mismatches in place.
 
 ## Before returning (workflow gate)
