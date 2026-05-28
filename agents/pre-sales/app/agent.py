@@ -52,10 +52,10 @@ os.environ['GOOGLE_CLOUD_LOCATION'] = 'global'
 os.environ['GOOGLE_GENAI_USE_VERTEXAI'] = 'True'
 
 # --- Skills ---
-# Root-skills variant (feat/sow-kill-manifest-root-skills): the root
-# loads section skills sequentially and generates each section inline,
-# persisting bundles via the save_<section>_bundle tools. An
-# AutoScopedSkillToolset prunes a skill's SKILL.md + resources from the
+# Root-skills architecture: the root loads section skills sequentially
+# and generates each section inline, persisting bundles via the
+# save_<section>_bundle tools. An AutoScopedSkillToolset prunes a
+# skill's SKILL.md + resources from the
 # LLM context once the root moves on to the next skill, so the root
 # never carries all five skills at once. The section first-gen agents
 # are gone — only the section *repair* agents survive, wired into the

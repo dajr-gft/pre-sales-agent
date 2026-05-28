@@ -112,8 +112,8 @@ _REQUIRED_PROJECT_METADATA_KEYS: tuple[str, ...] = (
 
 # Bundle keys required per stage. Project metadata is resolved
 # separately (see ``_resolve_project_metadata``) from the
-# ``app:sow:metadata`` envelope. The stage tuples no longer carry a
-# manifest key, so they ARE the bundle-presence requirement directly.
+# ``app:sow:metadata`` envelope, so the stage tuples carry only
+# bundle keys and ARE the bundle-presence requirement directly.
 _CONTENT_BUNDLE_KEYS: tuple[str, ...] = CONTENT_STAGE_KEYS
 _FULL_BUNDLE_KEYS: tuple[str, ...] = FULL_STAGE_KEYS
 
@@ -174,9 +174,9 @@ def build_sow_data_from_state(
 
     Raises :class:`AssemblyError` when preconditions are not met —
     missing bundle keys, MISSING_INPUT sentinel from a aborted section,
-    non-dict manifest, or blank required project metadata. Each error
-    carries the offending detail in a structured attribute so callers
-    render their own messages.
+    non-dict metadata envelope, or blank required project metadata.
+    Each error carries the offending detail in a structured attribute
+    so callers render their own messages.
     """
     stage_normalized = (stage or 'content').strip().lower()
     if stage_normalized not in ('content', 'full'):
@@ -305,9 +305,10 @@ async def assemble_sow_payload(
 
     Args:
         stage: ``"content"`` for the content review checkpoint (requires
-            manifest + requirements + delivery_plan + scope_boundaries);
-            ``"full"`` for the architecture review and final assembly
-            (additionally requires architecture + narrative).
+            requirements + delivery_plan + scope_boundaries bundles plus
+            the metadata envelope); ``"full"`` for the architecture
+            review and final assembly (additionally requires
+            architecture + narrative).
 
     Returns:
         ``ToolSuccess`` with ``data={'stage': ..., 'sow_data': {...}}`` on

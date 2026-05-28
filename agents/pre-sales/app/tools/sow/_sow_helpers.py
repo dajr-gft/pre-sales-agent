@@ -247,8 +247,8 @@ def apply_sow_assembly_to_state(
     Returns the assembled ``sow_data`` (also written to state) so the
     caller can hash it, log it, or pass it to downstream logic without
     a second state read. Raises :class:`AssemblyError` on precondition
-    failure (missing bundles, MISSING_INPUT sentinel, non-dict manifest,
-    blank required metadata) — exactly the same errors
+    failure (missing bundles, MISSING_INPUT sentinel, non-dict metadata
+    envelope, blank required metadata) — exactly the same errors
     :func:`assemble_sow_payload` would have wrapped in ToolError.
     """
     # Local import avoids a module-load cycle with the validation

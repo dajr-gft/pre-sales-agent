@@ -277,10 +277,10 @@ class SowMetadata(BaseModel):
     """Administrative project metadata for the SOW document header.
 
     These 13 fields are the deterministic envelope the docx template
-    needs and that does not fit in any section bundle. In the
-    multi-agent variant they are derived from the Extraction Manifest;
-    in the root-skills variant the root extracts them from the loaded
-    documents and persists them directly via ``save_sow_metadata``.
+    needs and that does not fit in any section bundle. The root
+    extracts them from the upstream project context (the persisted
+    intake_summary for Path A; source documents loaded through
+    artifacts for Path B) and persists them via ``save_sow_metadata``.
 
     The field set is pinned to
     ``validation.field_vocabulary.MANIFEST_DERIVED_FIELDS_TUPLE`` —
