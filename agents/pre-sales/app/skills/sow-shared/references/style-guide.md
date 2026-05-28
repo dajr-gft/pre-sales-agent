@@ -42,21 +42,22 @@ what is or isn't in scope are FORBIDDEN, including:
 - "the scope is bounded by [external doc]"
 - Any equivalent phrasing in any language that makes scope dependent on opening a separate file.
 
-When the discovery Manifest references a source document by name (capability matrix, RACI, technical annex, kickoff deck, etc.), that source name is metadata for the agent during generation — it MUST NOT appear in any FR/NFR/OOS/Assumption text in the SOW. Translate the items themselves into the SOW; never translate a pointer to the items.
+When the upstream project context (the persisted intake_summary for Path A; source documents loaded through artifacts for the current generation step in Path B) references a source document by name (capability matrix, RACI, technical annex, kickoff deck, etc.), that source name is metadata for the agent during generation — it MUST NOT appear in any FR/NFR/OOS/Assumption text in the SOW. Translate the items themselves into the SOW; never translate a pointer to the items.
 
-**Rule 2 — Map Manifest items into requirements with flexible grouping.**
-Each Manifest item whose category is in `[Briefing, Integrations, NFRs]`
-MUST appear named literally (by name, feature, or direct description) in at
-least one FR or NFR. Grouping is allowed when natural, required when not:
+**Rule 2 — Map upstream context items into requirements with flexible grouping.**
+Every business requirement, integration need, or non-functional target
+identified in the upstream context MUST appear named literally (by name,
+feature, or direct description) in at least one FR or NFR. Grouping is
+allowed when natural, required when not:
 
 - **Group into ONE requirement** when items are instances of the same operation differing only by target/channel/system/parameter (e.g., items "X for A", "X for B", "X for C" → one FR: "The platform shall provide X for A, B, and C") — or when items are synonyms of the same concept (e.g., "STT" and "Speech-to-Text support" → one FR).
 - **Keep SEPARATE requirements** when items describe functionally distinct capabilities, even if related by domain. Examples: short-term session-scoped memory vs long-term cross-session memory are different mechanisms — two FRs; model training vs model serving are different lifecycle stages — two FRs.
 
-**Self-sufficiency invariant (non-negotiable):** grouping consolidates operations but NEVER erases names. If you group 4 channels into 1 FR, all 4 channel names appear in that FR's text. Every Manifest item must be findable in the SOW by name.
+**Self-sufficiency invariant (non-negotiable):** grouping consolidates operations but NEVER erases names. If you group 4 channels into 1 FR, all 4 channel names appear in that FR's text. Every requirement-like item in the upstream context must be findable in the SOW by name.
 
 **Decision test:** would the grouped requirement read naturally as "operation X parameterized by [list]"? If yes, group. If you have to invent a fake parent concept to glue items together (e.g., "STT", "DLP", and "RAG" under "AI capabilities"), separate. When in doubt, separate — one extra FR costs less than an artificial umbrella.
 
-**Rule 3 — Counter ranges are floors when the Manifest is rich.** The targets defined per section in the section skills (10-20 FRs, 5+ NFRs, 20-30 OOS, 15-25 Assumptions) are MINIMUM floors and SOFT design targets. They are NEVER hard caps. When the Manifest covers more capabilities than the soft target accommodates, exceed the target. A Manifest with 60 distinct capabilities in `[Briefing, Integrations, NFRs]` produces 50+ FRs/NFRs — that is the correct outcome, not an error to be compressed. Compression that creates an "umbrella requirement" pointing at a Manifest category or external document is a SEVERE failure of this contract.
+**Rule 3 — Counter ranges are floors when the upstream context is rich.** The targets defined per section in the section skills (10-20 FRs, 5+ NFRs, 20-30 OOS, 15-25 Assumptions) are MINIMUM floors and SOFT design targets. They are NEVER hard caps. When the upstream context covers more capabilities than the soft target accommodates, exceed the target. An upstream context carrying 60 distinct business/integration/NFR capabilities produces 50+ FRs/NFRs — that is the correct outcome, not an error to be compressed. Compression that creates an "umbrella requirement" pointing at a category label or external document is a SEVERE failure of this contract.
 
 **Anti-patterns (all rejected, in any language):**
 
@@ -102,4 +103,4 @@ Partner Overview, Customer Overview, Architecture Description.
 - Tables: clear headers, consistent column counts, no empty cells.
 - Bullet points for lists. Bold for key terms only — not as a substitute for paragraph structure.
 - Never include hours, hourly rates, rate cards, or fee schedules anywhere.
-- No raw Manifest phrasing or user casual phrasing in any rendered output; professionalize before emitting.
+- No raw phrasing copied from the upstream context (intake answers, document quotes) or user casual phrasing in any rendered output; professionalize before emitting.
