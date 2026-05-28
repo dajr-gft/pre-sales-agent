@@ -15,10 +15,10 @@
 import logging
 import os
 
-# Default value preserves current behavior. The "root-skills + AutoScoped
-# SkillToolset" experiment (branch ``feat/sow-kill-manifest-root-skills``)
-# overrides this via the ``ARCHITECTURE_VARIANT`` env var so A/B comparison
-# runs can be tagged at boot. No behavior change beyond a single log line.
+# Default value preserves backwards-compatible tagging in telemetry /
+# BQ log analytics. The ``ARCHITECTURE_VARIANT`` env var overrides this
+# so A/B comparison runs are tagged at boot. No behavior change beyond
+# a single log line.
 _DEFAULT_ARCHITECTURE_VARIANT = 'multi_agent_manifest'
 
 
@@ -32,7 +32,8 @@ def setup_telemetry(
             by downstream telemetry/analytics to bucket runs in A/B
             comparisons. When ``None``, falls back to the
             ``ARCHITECTURE_VARIANT`` env var, then to
-            ``multi_agent_manifest`` (current behavior).
+            ``multi_agent_manifest`` (kept as default for backwards-
+            compatible telemetry tagging).
     """
     variant = (
         architecture_variant

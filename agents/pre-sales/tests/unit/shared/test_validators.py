@@ -429,7 +429,7 @@ class TestPlaceholderHandling:
     """Deterministic validator must NOT flag fields whose content is —
     or contains — a user-approved placeholder marker. The semantic
     skills decide whether the placeholder is approved against the
-    manifest; the deterministic layer's job is to stop emitting
+    upstream context; the deterministic layer's job is to stop emitting
     nuisance length warnings on ``[A DEFINIR]`` (11 chars), which
     confused both the user and the LLM in production.
     """

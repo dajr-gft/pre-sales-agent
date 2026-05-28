@@ -348,7 +348,7 @@ class TestArgValidation:
 # MISSING_INPUT sentinel detection (stage-aware)
 #
 # When a section worker is invoked without its required upstream state
-# (manifest / prior bundles), its instruction provider switches to a
+# (prior bundles), its instruction provider switches to a
 # "STOP and emit empty bundle" footer that writes the literal string
 # ``"MISSING_INPUT"`` in scalar required fields. The assembler must
 # short-circuit on this sentinel for the bundles relevant to the
@@ -475,11 +475,12 @@ class TestMissingInputSentinel:
 # ---------------------------------------------------------------------------
 # F-07 — project-metadata validation
 #
-# ``_extract_project_metadata`` emits the empty string for keys absent
-# from the manifest so the docx template never KeyErrors at render time.
-# That makes the renderer resilient but lets a discovery-side bug leak
-# a SOW header that reads "Partner: " with nothing after. F-07 makes the
-# assembler reject such payloads before they reach ``stage_sow``.
+# ``_resolve_project_metadata`` emits the empty string for keys absent
+# from the metadata envelope so the docx template never KeyErrors at
+# render time. That makes the renderer resilient but lets a metadata-
+# extraction bug leak a SOW header that reads "Partner: " with nothing
+# after. F-07 makes the assembler reject such payloads before they
+# reach ``stage_sow``.
 # ---------------------------------------------------------------------------
 
 

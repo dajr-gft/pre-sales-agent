@@ -7,9 +7,8 @@ tool to persist them under ``state['app:sow:metadata']``. No LLM runs
 inside the tool — it only validates the shape with the shared
 ``SowMetadata`` Pydantic model and writes state.
 
-The assembler reads this key first (falling back to the legacy
-Extraction Manifest) when building ``sow_data``, so the field names
-here are pinned to the same canonical vocabulary the assembler
+The assembler reads this key when building ``sow_data``, so the field
+names here are pinned to the same canonical vocabulary the assembler
 iterates over — see ``app.sub_agents.schemas.SowMetadata``.
 """
 
