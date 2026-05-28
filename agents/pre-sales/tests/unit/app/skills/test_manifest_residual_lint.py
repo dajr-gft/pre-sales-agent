@@ -47,7 +47,6 @@ _IN_SCOPE_SCOPES = (
 # is NOT in this set because PR-0 migrates its style-guide.md and the
 # guard must enforce that result immediately.
 _PENDING_MIGRATION_ALLOWLIST = frozenset({
-    'sow-scope-boundaries',
     'sow-narrative',
 })
 

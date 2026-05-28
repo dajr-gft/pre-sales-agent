@@ -47,18 +47,18 @@ When patching: also `sow-shared` / `references/id-stability-rules.md`. OOS / ass
 
 ## Inputs
 
-- `manifest.extracted_items` for `[Constraints, Decisions, Briefing]` + `manifest.gaps.pending_decisions`.
-- Current `sow_data` snapshot with FRs, NFRs, deliverables, and activity_phases already populated. Deliverables supply OOS counter-anchors and assumption phase-deadline references.
+Two required inputs:
 
-If `state['app:sow:intake_summary']` is populated (Path A — guided intake), treat it as upstream project context equivalent to the project documents. Use it as the factual basis for assumptions, OOS, and risks. Honor the marker contract on each field:
+1. **Upstream project context** — substantive content the scope-boundary lists derive from:
+   - **Path A (guided intake):** the persisted intake_summary at `state['app:sow:intake_summary']`. Honor the marker contract on each field:
+     - **Real value** → use as factual context.
+     - **`'(inferred)'`** (e.g. `out_of_scope`, `regulatory_constraints`) → expand with consulting-grade defaults per `references/oos-categories.md` / `references/assumption-patterns.md`. Mark inferred items with `(inferred)` per `sow-shared` / `references/language-rules.md` so the Content Review surfaces them.
+     - **`'[TO BE DEFINED]'`** (e.g. `operational_constraints`, `timeline`) → file an assumption that captures the open decision verbatim with `[TO BE DEFINED]` in the consequence clause; do NOT invent the constraint or guess a value. The Content Review is where the user resolves these.
+     - `inferred_items` and `open_items` are the explicit roll-ups; iterate them when deciding which OOS / assumption / risk entries need the default-fill versus placeholder-keep behavior.
+   - **Path B (documental):** source documents loaded through artifacts for the current generation step. Read them directly as the factual basis for assumptions, OOS, and risks; gaps are whatever the documents fail to state.
+2. **Upstream bundle** — current `sow_data` snapshot with FRs, NFRs, deliverables, and activity_phases already populated by the prior section skills. Deliverables supply OOS counter-anchors and assumption phase-deadline references.
 
-- **Real value** → use as factual context.
-- **`'(inferred)'`** (e.g. `out_of_scope`, `regulatory_constraints`) → expand with consulting-grade defaults per `references/oos-categories.md` / `references/assumption-patterns.md`. Mark inferred items with `(inferred)` per `sow-shared` / `references/language-rules.md` so the Content Review surfaces them.
-- **`'[TO BE DEFINED]'`** (e.g. `operational_constraints`, `timeline`) → file an assumption that captures the open decision verbatim with `[TO BE DEFINED]` in the consequence clause; do NOT invent the constraint or guess a value. The Content Review is where the user resolves these.
-
-`inferred_items` and `open_items` are the explicit roll-ups; iterate them when deciding which OOS / assumption / risk entries need the default-fill versus placeholder-keep behavior.
-
-> **Coverage scope.** Per-item manifest coverage (walking `extracted_items` exhaustively) is the validation critic's `coverage` skill responsibility, not this skill's. Do not duplicate that walk here; produce content grounded in the inputs above and let the critic flag uncovered items in a later round.
+> **Coverage scope.** Section completeness against the upstream project context (walking it exhaustively) is the validation critic's `coverage` skill responsibility, not this skill's. Do not duplicate that walk here; produce content grounded in the inputs above and let the critic flag uncovered items in a later round.
 
 ## Generate (one turn)
 
