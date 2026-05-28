@@ -9,11 +9,11 @@ generation step in Path B). Any leftover mention of "Manifest" /
 instruction that no longer maps to anything in state, and risks the LLM
 hallucinating an input that does not exist.
 
-This guard is staged: ``_PENDING_MIGRATION_ALLOWLIST`` skips skills that
-have not been migrated yet by the cleanup plan. The allowlist shrinks by
-one entry per PR (PR-A through PR-E in the plan). PR-E leaves the
-allowlist empty and the guard becomes absolute over all six in-scope
-scopes.
+The Phase 1 staged migration (PR-0 through PR-E) is complete:
+``_PENDING_MIGRATION_ALLOWLIST`` is empty and the guard is absolute over
+all six in-scope scopes. The allowlist mechanism is kept in place for
+future staged migrations that may need to re-allowlist a scope
+temporarily; an empty allowlist is the steady-state.
 
 Out of scope (NOT scanned by this guard): ``sow-revision``,
 ``app/sub_agents/validation/**``, ``app/sub_agents/revision/**``,
@@ -42,13 +42,12 @@ _IN_SCOPE_SCOPES = (
     'sow-narrative',
 )
 
-# Skills still allowed to mention Manifest while staged migration is in
-# flight. Initial state (after PR-0): the 5 section skills. ``sow-shared``
-# is NOT in this set because PR-0 migrates its style-guide.md and the
-# guard must enforce that result immediately.
-_PENDING_MIGRATION_ALLOWLIST = frozenset({
-    'sow-narrative',
-})
+# Skills still allowed to mention Manifest. Empty in steady-state — the
+# Phase 1 staged migration (PR-0..PR-E) is complete and the guard is
+# absolute over every scope in ``_IN_SCOPE_SCOPES``. Re-populate this
+# set only if a future staged migration needs to temporarily allowlist
+# a scope while it is being rewritten.
+_PENDING_MIGRATION_ALLOWLIST: frozenset[str] = frozenset()
 
 # Tokens that must NOT appear in any in-scope, non-allowlisted file.
 # Substring match, case-insensitive. The bare word ``manifest`` is on

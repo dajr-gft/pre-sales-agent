@@ -19,7 +19,9 @@ project-specific content:
 > value and high-level technical outcomes]."
 
 The final `.docx` Executive Summary MUST end with this exact English
-sentence, selecting the correct funding type from the Manifest:
+sentence, selecting the correct funding type from the upstream project
+context — the persisted intake_summary's `funding_type` for Path A; the
+equivalent field stated in source documents for Path B:
 
 > "This scope of work will be funded with Google [Deal Acceleration Funds
 > (DAF) | Google Partner Services Funds (PSF)]."
@@ -98,8 +100,8 @@ funding sentence are NEVER collapsed into surrounding prose.
   "innovative solution", or "leveraging AI" unless immediately grounded
   in the customer's actual business context.
 - Do NOT include unsupported metrics, market claims, or benefits not
-  present in the Manifest, approved inference, web-verified research, or
-  user-approved content.
+  present in the upstream context, approved inference, web-verified
+  research, or user-approved content.
 - The Executive Summary must be readable by an executive sponsor AND
   still be technically credible to a reviewer.
 - Bullet points are allowed only when they improve readability; they are
