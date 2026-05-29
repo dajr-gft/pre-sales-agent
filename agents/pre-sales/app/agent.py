@@ -62,13 +62,18 @@ os.environ['GOOGLE_GENAI_USE_VERTEXAI'] = 'True'
 # QualityLoopAgent (not the root).
 #
 # Allowlist: the five SOW section skills plus sow-shared (consultative
-# reference pack). The discovery skill no longer exists in this variant.
+# reference pack), sow-guided-intake (Path A interview), and
+# sow-document-readiness (Path B readiness/gap check, run right after
+# load_artifacts). The old monolithic discovery skill no longer exists
+# in this variant — sow-document-readiness is a small, conversational
+# gap-check that writes no state and recreates none of that machinery.
 # sow-narrative declares google_search_agent via `adk_additional_tools`;
 # the toolset surfaces that tool only while sow-narrative is the current
 # skill (see AutoScopedSkillToolset).
 _SKILLS_DIR = Path(__file__).parent / 'skills'
 _ROOT_SKILL_NAMES = (
     'sow-guided-intake',
+    'sow-document-readiness',
     'sow-requirements',
     'sow-delivery-plan',
     'sow-scope-boundaries',

@@ -87,3 +87,39 @@ class TestSaveSowMetadata:
         )
         assert result['status'] == 'error'
         assert 'tool_context' in result['error']
+
+    async def test_accepts_to_be_defined_marker_on_required_fields(
+        self, mock_tool_context
+    ):
+        """Soft-gate regression: the Path B readiness flow leaves
+        unresolved required facts as ``[TO BE DEFINED]`` and the root
+        passes that placeholder through. The required-field gate only
+        checks for *blank* values, so the marker — being non-blank —
+        must be accepted and persisted verbatim.
+
+        This pins the contract that the document-readiness soft gate
+        depends on. If anyone adds marker rejection here (as
+        save_sow_intake_summary does for its four real-value fields),
+        the soft gate would silently turn into a hard block — this test
+        is the tripwire for that regression.
+        """
+        marker = '[TO BE DEFINED]'
+        result = await save_sow_metadata(
+            partner_name=marker,
+            customer_name='Acme Corp',
+            project_title='Data Platform',
+            funding_type=marker,
+            tool_context=mock_tool_context,
+        )
+
+        assert result['status'] == 'success', (
+            'save_sow_metadata must accept [TO BE DEFINED] on required '
+            'fields — the marker is non-blank, and the soft gate relies '
+            'on this.'
+        )
+        envelope = mock_tool_context.state[SOW_METADATA_STATE_KEY]
+        # The placeholder is stored verbatim so the header renders it and
+        # the gap surfaces for the user to resolve at review.
+        assert envelope['partner_name'] == marker
+        assert envelope['funding_type'] == marker
+        assert envelope['customer_name'] == 'Acme Corp'

@@ -146,6 +146,72 @@ def test_prompt_still_extracts_metadata_from_documents(prompt_text: str) -> None
     assert 'save_sow_metadata' in prompt_text
 
 
+# ---------------------------------------------------------------------------
+# Path B — document readiness (Step 0b)
+# ---------------------------------------------------------------------------
+
+
+def test_prompt_loads_document_readiness_via_load_skill(prompt_text: str) -> None:
+    """Path B must run the readiness pass through ``load_skill`` so the
+    AutoScopedSkillToolset can prune it afterwards — a free-form gap
+    check in the root's own turn would skip the toolset entirely."""
+    assert re.search(
+        r"load_skill\(\s*['\"]sow-document-readiness['\"]\s*\)", prompt_text
+    ), (
+        "root_prompt.md must instruct the model to call "
+        "load_skill('sow-document-readiness') for the Path B readiness "
+        "pass (Step 0b)."
+    )
+
+
+def test_prompt_runs_readiness_after_load_artifacts(prompt_text: str) -> None:
+    """The readiness skill must run AFTER documents are loaded but BEFORE
+    metadata is persisted, so it can see the documents and shape the
+    answers that feed save_sow_metadata.
+
+    Anchored on the unique Step 0b ``load_skill`` call and the unique
+    "Persist metadata" (Step 1) heading rather than bare token positions,
+    because the skill name and the tool name also appear in the prose of
+    earlier sections (capabilities / user-facing contract)."""
+    readiness_call_pos = prompt_text.find("load_skill('sow-document-readiness')")
+    assert readiness_call_pos != -1, (
+        "root_prompt.md must contain the Step 0b "
+        "load_skill('sow-document-readiness') call."
+    )
+    # load_artifacts (Step 0) precedes the readiness call.
+    assert 0 <= prompt_text.find('load_artifacts') < readiness_call_pos, (
+        'root_prompt.md must call load_artifacts before the '
+        'sow-document-readiness pass (Step 0 before Step 0b).'
+    )
+    # The readiness call precedes Step 1 metadata persistence.
+    assert readiness_call_pos < prompt_text.find('Persist metadata'), (
+        'root_prompt.md must run the sow-document-readiness pass (Step 0b) '
+        'before Step 1 — Persist metadata.'
+    )
+
+
+def test_prompt_declares_readiness_soft_gate(prompt_text: str) -> None:
+    """The readiness step must be a soft gate: it must not hard-block
+    generation when gaps remain unresolved."""
+    assert re.search(r'soft\s*gate', prompt_text, re.IGNORECASE), (
+        'root_prompt.md must declare Step 0b as a soft gate (does not '
+        'block generation on unresolved gaps).'
+    )
+
+
+def test_prompt_forbids_intake_summary_in_path_b(prompt_text: str) -> None:
+    """Path B must not borrow the Path A persistence tool — that would
+    blur the two paths. The Step 0b instruction fences it off."""
+    assert re.search(
+        r'do\s+NOT\s+call\s+`?save_sow_intake_summary`?\s+in\s+Path\s*B',
+        prompt_text,
+        re.IGNORECASE,
+    ), (
+        'root_prompt.md must explicitly forbid calling '
+        'save_sow_intake_summary in Path B (it is Path A only).'
+    )
+
+
 def test_prompt_does_not_force_documents_only(prompt_text: str) -> None:
     """The pre-change prompt said "if no documents, ask for them and do
     NOT run a guided interview". That sentence must be gone now — Path A

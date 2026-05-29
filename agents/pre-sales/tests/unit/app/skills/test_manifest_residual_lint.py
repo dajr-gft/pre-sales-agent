@@ -40,6 +40,10 @@ _IN_SCOPE_SCOPES = (
     'sow-architecture',
     'sow-scope-boundaries',
     'sow-narrative',
+    # Path B readiness skill: recovers gap diagnosis without the killed
+    # manifest/discovery machinery, so it must stay clean of the legacy
+    # vocabulary too.
+    'sow-document-readiness',
 )
 
 # Skills still allowed to mention Manifest. Empty in steady-state — the
