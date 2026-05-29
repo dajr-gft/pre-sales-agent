@@ -165,8 +165,11 @@ For each accepted finding, apply patches field by field:
 2. Write the per-finding revision entries to
    `state['app:sow:revision_log']` via
    `record_revision_log_entries(entries=[...])`. Append-only across
-   rounds. The root orchestrator reads this state key after the loop
-   terminates to compose the user-facing Revision Note in Phase 3.
+   rounds. The log is telemetry: it records what each round changed so
+   runs are auditable. It is not surfaced to the user — the review
+   loops run before each review gate, so the user approves the
+   already-revised content directly at the Content and Architecture
+   Reviews.
 
 **Do NOT call `stage_sow`.** The tool is not available to this
 agent; stage transitions (`content` → `full`) belong to the root

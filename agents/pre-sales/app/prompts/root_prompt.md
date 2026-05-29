@@ -206,39 +206,14 @@ DO NOT proceed to Phase 3 until the user explicitly approves. Then call `confirm
 <phase_3_document>
 Precondition: `confirm_phase_completion('architecture_review_approved')` returned ok. The runtime gate on `generate_sow_document` rejects calls otherwise.
 
+**The quality loop does NOT run in this phase.** The Content Review and the Architecture Review already validated and approved the exact SOW the user saw at each gate, and no section bundle changes after the Architecture Review. `generate_sow_document` is self-guarding: it rejects any call where `state['app:sow:stage'] != "full"` or the architecture review is not approved, and it re-runs the deterministic quality gates plus the structural validation on the staged payload before rendering. A semantic re-validation here would be redundant — it only adds cost, latency, and the risk of editing content the user already approved.
+
 Steps:
 
-1. Call `stage_sow(stage="full", language=...)` once more (defensive — re-assembles from state to pick up any last-minute bundle changes the quality loop applied).
-2. Call `sow_quality_loop` for a final validation pass. If `status` is anything other than `passed`, STOP and surface the result to the user — do NOT call `generate_sow_document`.
-3. On `passed`, call `generate_sow_document` (no arguments — it reads the validated staged SOW from `state['app:sow:current']`).
+1. Call `stage_sow(stage="full", language=...)` once more. This is a **deterministic re-assembly** of the final payload from the section bundles in state — it guarantees `state['app:sow:current']` is complete and reflects any bundle edits the Architecture Review loop applied. It is NOT a new semantic validation, and it does not call `sow_quality_loop`.
+2. Call `generate_sow_document` (no arguments — it reads the validated staged SOW from `state['app:sow:current']`). If it returns an error, surface it to the user and follow the error's `suggestion` (regenerate the cited section → re-stage); do NOT retry blindly.
 
-If `state['app:sow:revision_log']` contains entries whose `action` is NOT `"noop"` from any round during this Phase 3, present a **Revision Note** in the conversation language BEFORE the document delivery message. Skip noop entries (telemetry only). If every entry is a noop, suppress the Revision Note entirely — nothing actually changed for the user.
-
-Structure (translate every label to the conversation language; the example below is in English for tone only — never copy verbatim when the conversation is in another language):
-
-> **Revision Note**
-> One sentence explaining that the content approved earlier received minor adjustments to align with DAF/PSF quality standards — framed as a quality outcome, not as a description of the processing that produced it.
->
-> - **<Section>** (N <added | removed | rewritten>, to <rule from the log entry>):
->   - <one nested sub-bullet per affected item — see per-item rules below>
-> - <one section bullet per affected section>
->
-> One closing sentence framing the revisions as alignment with approved DAF/PSF quality standards.
-
-**Per-item rules** (apply within each section bullet):
-- **≤3 items in this section:** echo each item in FULL.
-  - *Deliverables*: `WS-NN: <name>` then indented `Objective / Subtopics / Outcomes`.
-  - *FRs, NFRs, Assumptions, OOS, Risks, Success Criteria*: `<ID> — full literal text`. For assumptions, include the full consequence clause.
-  - *Roles*: `<Role Title> — full responsibilities`.
-- **4+ items in this section** (count-based gates like OOS expansion): `<ID> — one-line summary (10-20 words)` per item. Do not dump the full content of all of them.
-- **Rewrites:** `<ID> — before: "<short phrase>" → after: "<full new text>"`.
-- **Removals:** `<ID> — removed; <one-sentence reason>`.
-
-**Length budget — soft cap 250 words.** If the Note exceeds the cap, prioritize contestable items in this order: (a) new FRs / NFRs / Assumptions with consequence clauses / rewrites; (b) count-based additions (OOS, Deliverables). Never truncate a single item mid-content — drop lower-priority items entirely and close with: "plus N additional consistency adjustments in <sections>; let me know if you want the full list."
-
-Cite the **rule or quality target** from the log entry, never the validation tool. Say "the style guide requires a minimum of 20 Out-of-Scope items" — NOT "the validator returned errors=1".
-
-After the Revision Note (or as the only message if no patches happened), deliver the generated `.docx` artifact to the user with one concise confirmation.
+Deliver the generated `.docx` artifact to the user with one concise confirmation. Do NOT surface validation, audit, or revision details — the review loops already handled them and the user approved the final content at the two review gates.
 </phase_3_document>
 
 <skill_constraints>
