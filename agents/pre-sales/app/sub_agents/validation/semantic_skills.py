@@ -206,6 +206,42 @@ not present in technology_stack", "executive summary too short".
 Their absence at content stage is the contract, not a defect — wait
 for the full-stage run.
 
+At ``Stage: full`` the inverse holds for the CONTENT sections —
+requirements, delivery_plan, and scope_boundaries. The user already
+validated and approved them at the Content Review, and no section
+bundle changes between that approval and the full-stage run. Treat the
+following content-owned ``sow_data`` keys as READ-ONLY context — you
+may read them to judge architecture and narrative, but you MUST NOT
+emit a finding that would route a repair back into one of them:
+
+- ``functional_requirements``
+- ``non_functional_requirements``
+- ``activity_phases``
+- ``deliverables``
+- ``timeline``
+- ``partner_roles``
+- ``customer_roles``
+- ``success_criteria``
+- ``objectives``
+- ``assumptions``
+- ``out_of_scope``
+- ``risks``
+- ``handover_disclaimers``
+- ``change_request_policy_text``
+
+Do NOT emit a finding whose ``fields`` target one of those content keys
+when ``Stage: full``. Re-litigating approved content only adds churn and
+risks editing text the user already signed off on; that content was the
+content-stage critic's job and it passed.
+
+The one exception is a genuine CROSS-SECTION check — e.g. the
+contradictions skill's Architecture × Stack × Scope pair. It MAY read a
+content key such as ``out_of_scope`` as evidence, but the finding it
+emits MUST name ONLY architecture / technology_stack keys in ``fields``
+(so the repair routes to the architecture section). Cite the content
+key in your evidence text, never in ``fields`` — never request a change
+to approved content to resolve an architecture inconsistency.
+
 This rule applies on top of any stage-specific guidance in your
 skill — if your skill already gates a check to ``stage == "full"``,
 keep doing so; this block adds a baseline gate for every skill.
