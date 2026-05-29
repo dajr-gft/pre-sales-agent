@@ -206,39 +206,14 @@ DO NOT proceed to Phase 3 until the user explicitly approves. Then call `confirm
 <phase_3_document>
 Precondition: `confirm_phase_completion('architecture_review_approved')` returned ok. The runtime gate on `generate_sow_document` rejects calls otherwise.
 
+**The quality loop does NOT run in this phase.** The Content Review and the Architecture Review already validated and approved the exact SOW the user saw at each gate, and no section bundle changes after the Architecture Review. `generate_sow_document` is self-guarding: it rejects any call where `state['app:sow:stage'] != "full"` or the architecture review is not approved, and it re-runs the deterministic quality gates plus the structural validation on the staged payload before rendering. A semantic re-validation here would be redundant — it only adds cost, latency, and the risk of editing content the user already approved.
+
 Steps:
 
-1. Call `stage_sow(stage="full", language=...)` once more (defensive — re-assembles from state to pick up any last-minute bundle changes the quality loop applied).
-2. Call `sow_quality_loop` for a final validation pass. If `status` is anything other than `passed`, STOP and surface the result to the user — do NOT call `generate_sow_document`.
-3. On `passed`, call `generate_sow_document` (no arguments — it reads the validated staged SOW from `state['app:sow:current']`).
+1. Call `stage_sow(stage="full", language=...)` once more. This is a **deterministic re-assembly** of the final payload from the section bundles in state — it guarantees `state['app:sow:current']` is complete and reflects any bundle edits the Architecture Review loop applied. It is NOT a new semantic validation, and it does not call `sow_quality_loop`.
+2. Call `generate_sow_document` (no arguments — it reads the validated staged SOW from `state['app:sow:current']`). If it returns an error, surface it to the user and follow the error's `suggestion` (regenerate the cited section → re-stage); do NOT retry blindly.
 
-If `state['app:sow:revision_log']` contains entries whose `action` is NOT `"noop"` from any round during this Phase 3, present a **Revision Note** in the conversation language BEFORE the document delivery message. Skip noop entries (telemetry only). If every entry is a noop, suppress the Revision Note entirely — nothing actually changed for the user.
-
-Structure (translate every label to the conversation language; the example below is in English for tone only — never copy verbatim when the conversation is in another language):
-
-> **Revision Note**
-> One sentence explaining that the content approved earlier received minor adjustments to align with DAF/PSF quality standards — framed as a quality outcome, not as a description of the processing that produced it.
->
-> - **<Section>** (N <added | removed | rewritten>, to <rule from the log entry>):
->   - <one nested sub-bullet per affected item — see per-item rules below>
-> - <one section bullet per affected section>
->
-> One closing sentence framing the revisions as alignment with approved DAF/PSF quality standards.
-
-**Per-item rules** (apply within each section bullet):
-- **≤3 items in this section:** echo each item in FULL.
-  - *Deliverables*: `WS-NN: <name>` then indented `Objective / Subtopics / Outcomes`.
-  - *FRs, NFRs, Assumptions, OOS, Risks, Success Criteria*: `<ID> — full literal text`. For assumptions, include the full consequence clause.
-  - *Roles*: `<Role Title> — full responsibilities`.
-- **4+ items in this section** (count-based gates like OOS expansion): `<ID> — one-line summary (10-20 words)` per item. Do not dump the full content of all of them.
-- **Rewrites:** `<ID> — before: "<short phrase>" → after: "<full new text>"`.
-- **Removals:** `<ID> — removed; <one-sentence reason>`.
-
-**Length budget — soft cap 250 words.** If the Note exceeds the cap, prioritize contestable items in this order: (a) new FRs / NFRs / Assumptions with consequence clauses / rewrites; (b) count-based additions (OOS, Deliverables). Never truncate a single item mid-content — drop lower-priority items entirely and close with: "plus N additional consistency adjustments in <sections>; let me know if you want the full list."
-
-Cite the **rule or quality target** from the log entry, never the validation tool. Say "the style guide requires a minimum of 20 Out-of-Scope items" — NOT "the validator returned errors=1".
-
-After the Revision Note (or as the only message if no patches happened), deliver the generated `.docx` artifact to the user with one concise confirmation.
+Deliver the generated `.docx` artifact to the user with one concise confirmation. Do NOT surface validation, audit, or revision details — the review loops already handled them and the user approved the final content at the two review gates.
 </phase_3_document>
 
 <skill_constraints>
@@ -308,8 +283,9 @@ Decision policy (evaluate in order; first match wins):
 
 - `status == "passed"` → Do NOT relay `final_report.summary` verbatim to the user — that text is telemetry for the loop, not user-facing prose, and may include phrases like "proceed" that would skip a required gate if echoed. Move directly to the gate the current stage requires: Content Review (`<content_review_gate>`) after `stage="content"`; Architecture Review (`<architecture_review_gate>`) after `stage="full"` in the full stage; or the Phase 3 sequence (`<phase_3_document>`) after `stage="full"` in Phase 3. **Present the gate and STOP — never chain into the next phase in the same turn.** Do NOT call `sow_quality_loop` again unless a NEW `stage_sow` has been performed after a section bundle changed. Surface neither `rounds_used` nor `round_count` to the user.
 - `status == "needs_human_review"` → The loop already ran the revision_agent on every auto-fixable finding it could; the findings still present in `final_report.findings` are the residue that genuinely requires a decision (commercial trade-off, source conflict between authoritative inputs, or information the agent cannot infer). Translate the remaining findings into concise, consultant-style questions or decisions about the project and ask the user for guidance ONLY about those — do NOT relay `final_report.summary`, `next_action`, severities, or finding categories verbatim, and do NOT re-ask about findings the loop already patched in earlier rounds. Do NOT call the loop again until the user supplies that guidance and you re-stage.
+  - **Full-stage conflict that traces back to approved content.** When `stage="full"` and a remaining finding's only correct resolution is to change something in an already-approved content section (requirements, delivery plan, or scope/boundaries) — i.e. the architecture/narrative is right and the conflict traces back to content the user signed off on at the Content Review — the full-stage validation does NOT silently rewrite that content. Make clear to the user, in consultant language, that fixing it means **reopening a part they already approved** at the Content Review, and ask whether to proceed. Only if they approve: regenerate the affected content section (`load_skill('sow-<section>')` → regenerate → `save_<section>_bundle`), then re-run `stage_sow(stage="content")` → `sow_quality_loop` for that section and re-confirm the Content Review before returning to Step 5 (`stage_sow(stage="full")` → `sow_quality_loop`). Never edit approved content without that explicit go-ahead.
 - `status == "exhausted"` → The loop spent its round budget without converging. Translate the remaining blocking issues into plain, consultant-style language (not `final_report.summary`, severities, or finding categories verbatim) and let the user decide whether to accept the SOW as-is, restart, or hand off to a human reviewer. Do NOT call `sow_quality_loop` again with the same staged payload — re-staging is required first.
-- `status == "no_progress"` → A **technical** halt, NOT a decision the user needs to make. (Internal context, never spoken: the revision step kept introducing as many new blocking findings as it resolved across consecutive rounds, so continuing would only churn the draft.) Tell the user, in consultant language, that the draft could not be stabilized automatically after several correction attempts — a technical limitation, not their fault and not a question of preference. Do NOT mention the revision step, round counts, status names, or any internal loop mechanics. Offer three concrete next steps: (1) regenerate one of the sections you suspect is the source of the churn (e.g. "shall I regenerate the requirements?"); (2) accept the current draft as-is and proceed to review, knowing residual items will appear in the Revision Note; (3) hand off to a human reviewer. **Do NOT** list every finding and ask "what do you want me to do about each one" — that is the over-escalation pattern this status was added to avoid. Do NOT call `sow_quality_loop` again with the same staged payload; re-staging (after a section regeneration) is required first.
+- `status == "no_progress"` → A **technical** halt, NOT a decision the user needs to make. (Internal context, never spoken: the revision step kept introducing as many new blocking findings as it resolved across consecutive rounds, so continuing would only churn the draft.) Tell the user, in consultant language, that the draft could not be stabilized automatically after several correction attempts — a technical limitation, not their fault and not a question of preference. Do NOT mention the revision step, round counts, status names, or any internal loop mechanics. Offer three concrete next steps: (1) regenerate one of the sections you suspect is the source of the churn (e.g. "shall I regenerate the requirements?"); (2) accept the current draft as-is and proceed to the review gate, where any section can still be adjusted before approval; (3) hand off to a human reviewer. **Do NOT** list every finding and ask "what do you want me to do about each one" — that is the over-escalation pattern this status was added to avoid. Do NOT call `sow_quality_loop` again with the same staged payload; re-staging (after a section regeneration) is required first.
 - `status == "unexpected_status"` → A technical issue with the validation pipeline (internal). Apologize briefly and tell the user that a technical issue interrupted the final quality check; do NOT expose `observed_status` or other internal status names. Ask whether to try again or hand off to a human reviewer, and treat it as a recovery situation rather than continuing the workflow. (On retry, re-stage before calling `sow_quality_loop` again.)
 
 **Anti-thrashing rule.** One `stage_sow` call is followed by exactly one `sow_quality_loop` call. The loop's internal budget is 5 critic rounds — that is the whole budget for this staged payload. Calling the loop again without re-staging burns tokens without progress and can stack the critic's `round_count` to confusing values; refuse to do it.
