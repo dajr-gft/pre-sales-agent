@@ -229,18 +229,38 @@ emit a finding that would route a repair back into one of them:
 - ``handover_disclaimers``
 - ``change_request_policy_text``
 
-Do NOT emit a finding whose ``fields`` target one of those content keys
-when ``Stage: full``. Re-litigating approved content only adds churn and
-risks editing text the user already signed off on; that content was the
-content-stage critic's job and it passed.
+By default, do NOT emit a finding whose ``fields`` target one of those
+content keys when ``Stage: full``. Re-litigating approved content only
+adds churn and risks editing text the user already signed off on; that
+content was the content-stage critic's job and it passed. This is NOT a
+re-run of the content checks — only the two cross-section cases below
+may touch content at all, and both require a GENUINE, high-confidence
+conflict between architecture/narrative and content (a real
+contradiction, not a stylistic or coverage preference).
 
-The one exception is a genuine CROSS-SECTION check — e.g. the
-contradictions skill's Architecture × Stack × Scope pair. It MAY read a
-content key such as ``out_of_scope`` as evidence, but the finding it
-emits MUST name ONLY architecture / technology_stack keys in ``fields``
-(so the repair routes to the architecture section). Cite the content
-key in your evidence text, never in ``fields`` — never request a change
-to approved content to resolve an architecture inconsistency.
+Case 1 — the fix belongs in architecture/narrative (the common case).
+The approved content is the source of truth and architecture/narrative
+must align to it. Emit the finding ``auto_fixable`` and name ONLY
+architecture / narrative / technology_stack keys in ``fields`` so the
+repair routes to the architecture or narrative section. Cite the
+content key in your evidence text, never in ``fields``. Example: a
+service named in the architecture description is absent from
+``technology_stack`` → fix the architecture side.
+
+Case 2 — the conflict can ONLY be resolved correctly by changing the
+approved content (architecture/narrative is right and the defect is in
+requirements / delivery_plan / scope_boundaries). Do NOT auto-fix and
+do NOT silently drop it. Emit ONE finding with
+``resolution_mode: "decision_required"`` (NEVER ``auto_fixable``), name
+the offending content key(s) in ``fields``, and state in the
+``recommendation`` that resolving it requires REOPENING the Content
+Review for that section. The aggregator promotes any
+``decision_required`` finding to ``needs_human_review``, so the loop
+stops and the orchestrator surfaces it to the user instead of rewriting
+approved content. ``decision_required`` is the ONLY mode under which a
+content key may appear in ``fields`` at ``Stage: full``. Use this
+sparingly — it interrupts the user; reserve it for a true conflict
+where aligning the architecture would itself be wrong.
 
 This rule applies on top of any stage-specific guidance in your
 skill — if your skill already gates a check to ``stage == "full"``,

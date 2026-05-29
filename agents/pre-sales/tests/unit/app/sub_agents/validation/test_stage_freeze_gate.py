@@ -74,14 +74,34 @@ def test_full_pass_declares_a_content_freeze() -> None:
     )
 
 
-def test_cross_section_exception_anchors_on_architecture() -> None:
-    """The one allowed cross-section finding (Architecture × Stack × Scope)
-    may read content as evidence but must anchor ``fields`` on architecture /
-    technology_stack so the repair never routes into approved content."""
+def test_cross_section_fix_routes_to_architecture_by_default() -> None:
+    """Case 1: when the fix belongs in architecture/narrative, the finding
+    is auto_fixable and anchors ``fields`` on architecture / technology_stack
+    so the repair never routes into approved content."""
     guide = _RESOLUTION_MODE_GUIDE
     assert 'technology_stack' in guide
-    # The exception must be explicit about keeping content out of `fields`.
+    # The default case must keep content out of `fields`, citing it as
+    # evidence instead.
     assert 'evidence' in guide.lower() and 'fields' in guide, (
-        'The cross-section exception must instruct citing content in '
+        'The cross-section default must instruct citing content in '
         'evidence, not in `fields`.'
+    )
+
+
+def test_content_conflict_escalates_to_human_review() -> None:
+    """Case 2: when the only correct fix is to change approved content, the
+    finding must escalate (decision_required → needs_human_review) and tell
+    the user it requires reopening the Content Review — never auto-fix."""
+    guide = _RESOLUTION_MODE_GUIDE
+    assert 'decision_required' in guide, (
+        'The full-stage gate must allow escalating a genuine content '
+        'conflict as decision_required.'
+    )
+    assert 'needs_human_review' in guide, (
+        'The gate must state that decision_required escalates to '
+        'needs_human_review so the loop stops instead of rewriting content.'
+    )
+    assert 'Content Review' in guide, (
+        'The escalation must explain that resolving the conflict requires '
+        'reopening the Content Review.'
     )
