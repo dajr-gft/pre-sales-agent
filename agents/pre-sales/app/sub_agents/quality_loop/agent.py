@@ -90,7 +90,15 @@ from ..scope_boundaries.agent import scope_boundaries_repair_agent
 from .._section_agent import STATE_REPAIR_FINDINGS
 from ..validation import validation_critic
 from ..validation.field_vocabulary import BUNDLE_OWNED_FIELDS_BY_SECTION
-from ..validation.schema import STATE_SOW, STATE_STAGE, STATE_VALIDATION_RESULT
+from ..validation.schema import (
+    ROUND_MODE_DISCOVERY,
+    ROUND_MODE_VERIFICATION,
+    STATE_CHANGED_SECTIONS,
+    STATE_ROUND_MODE,
+    STATE_SOW,
+    STATE_STAGE,
+    STATE_VALIDATION_RESULT,
+)
 
 logger = structlog.get_logger()
 
@@ -637,8 +645,42 @@ class QualityLoopAgent(BaseAgent):
         # Compared against ``NO_PROGRESS_WINDOW`` after each blocked round.
         consecutive_no_progress_rounds = 0
 
+        # Section names whose bundle the PREVIOUS round's repair actually
+        # changed. Round 1 starts empty (nothing repaired yet); each round
+        # updates it from that round's per-section bundle diff so the next
+        # round can publish it via ``STATE_CHANGED_SECTIONS``.
+        changed_sections_prev_round: list[str] = []
+
         for round_idx in range(self.max_rounds):
             round_number = round_idx + 1
+
+            # ----- round mode + changed-sections plumbing (PR-2) --------
+            # Publish the critic mode for THIS round and the sections the
+            # previous round's repair touched BEFORE the critic runs.
+            # Round 1 is 'discovery' (broad audit of a freshly staged
+            # document); rounds 2+ are 'verification' (confirm the repair
+            # landed without re-auditing the whole document). Nobody
+            # consumes these yet — PR-3 binds them into the critic skills;
+            # this PR only plumbs + logs them, so loop behavior is
+            # unchanged. The loop rewrites them every round, so a fresh
+            # entry always starts at 'discovery'; stage_sow resets them on
+            # a content->full transition for the cache-short-circuit path.
+            round_mode = (
+                ROUND_MODE_DISCOVERY if round_number == 1
+                else ROUND_MODE_VERIFICATION
+            )
+            ctx.session.state[STATE_ROUND_MODE] = round_mode
+            ctx.session.state[STATE_CHANGED_SECTIONS] = list(
+                changed_sections_prev_round
+            )
+            logger.info(
+                'quality_loop_round_mode',
+                round=round_number,
+                mode=round_mode,
+                changed_sections=list(changed_sections_prev_round),
+            )
+            # ------------------------------------------------------------
+
             logger.info(
                 'quality_loop_round_start',
                 round=round_number,
@@ -844,6 +886,12 @@ class QualityLoopAgent(BaseAgent):
             # signal is greppable without scanning every per-section
             # bundle-diff line.
             section_changed_flags: dict[str, bool] = {}
+            # Sections whose bundle actually changed this round (post hash
+            # != pre hash). Carried into ``changed_sections_prev_round``
+            # after the dispatch loop so the NEXT round publishes it via
+            # ``STATE_CHANGED_SECTIONS`` — the population a verification
+            # critic scrutinizes for repair regressions (PR-3).
+            changed_this_round: list[str] = []
             # Phase 5 telemetry — per-round mechanism counters. After
             # Phase 3 every wired ``repair_section_agents`` entry is a
             # tool-based ``Agent`` (the section's ``*_repair_agent``); a
@@ -950,6 +998,8 @@ class QualityLoopAgent(BaseAgent):
                 )
                 section_changed = pre_bundle_hash != post_bundle_hash
                 section_changed_flags[section_name] = section_changed
+                if section_changed:
+                    changed_this_round.append(section_name)
                 logger.info(
                     'quality_loop_section_bundle_diff',
                     round=round_number,
@@ -1050,6 +1100,13 @@ class QualityLoopAgent(BaseAgent):
                         if not changed
                     ),
                 )
+            # Carry this round's actually-changed sections forward so the
+            # NEXT round publishes them via ``STATE_CHANGED_SECTIONS``
+            # before the critic runs. Only the section repair agents
+            # contribute (the reviser patches non-structural fields on the
+            # flat SOW, which do not map to a section bundle and are not
+            # the regression surface verification mode tracks).
+            changed_sections_prev_round = changed_this_round
 
             # ----- SOW snapshot post-repair (verbose only) -------------
             # SOW after section repairs + re-assembly. Diff vs. the pre-

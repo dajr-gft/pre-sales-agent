@@ -47,6 +47,8 @@ from app.sub_agents.quality_loop.agent import (
     _unresolved_items,
 )
 from app.sub_agents.validation.schema import (
+    STATE_CHANGED_SECTIONS,
+    STATE_ROUND_MODE,
     STATE_SOW,
     STATE_STAGE,
     STATE_VALIDATION_RESULT,
@@ -3421,3 +3423,151 @@ class TestDispatchProseVerboseGating:
         assert findings, 'section dispatch event must fire'
         assert 'evidence' not in findings[0]
         assert 'recommendation' not in findings[0]
+
+
+# ---------------------------------------------------------------------------
+# PR-2 — round-mode plumbing. The loop publishes STATE_ROUND_MODE +
+# STATE_CHANGED_SECTIONS before each critic run. Nobody consumes them yet
+# (PR-3 binds them into the critic skills), so loop behavior is unchanged.
+# ---------------------------------------------------------------------------
+
+
+class TestRoundModePlumbing:
+    """The loop writes the round mode and the previous round's changed
+    sections to state *before* invoking the critic, so the critic skills
+    can read them (PR-3). Here we only check the plumbing + that the
+    terminal behavior is unchanged."""
+
+    _BLOCKING_FINDING = {
+        'id': 'c-1',
+        'skill': 'contradictions',
+        'category': 'activities_vs_deliverables',
+        'severity': 'MAJOR',
+        'fields': ['activity_phases'],
+        'evidence': 'WS-03 has no owning activity',
+        'recommendation': 'Add the activity.',
+    }
+
+    def _recording_critic(self, statuses, finding):
+        """A critic stub that records the (round_mode, changed_sections)
+        it observed in state at invocation time, and emits ``finding`` on
+        blocked rounds. Returns ``(critic, observed)`` where ``observed``
+        is appended to once per round."""
+        observed: list[tuple[Any, list]] = []
+
+        class _RecordingCritic(BaseAgent):
+            config_type: ClassVar[type[BaseAgentConfig]] = BaseAgentConfig
+            calls: int = 0
+
+            async def run_async(self, ctx) -> AsyncGenerator[Event, None]:  # type: ignore[override]
+                idx = min(self.calls, len(statuses) - 1)
+                current = statuses[idx]
+                observed.append((
+                    ctx.session.state.get(STATE_ROUND_MODE),
+                    list(ctx.session.state.get(STATE_CHANGED_SECTIONS) or []),
+                ))
+                self.calls += 1
+                ctx.session.state[STATE_VALIDATION_RESULT] = {
+                    'overall_status': current,
+                    'summary': f'round {self.calls} ({current})',
+                    'next_action': '...',
+                    'findings': [finding] if current == 'blocked' else [],
+                    'blocker_count': 0,
+                    'major_count': 1 if current == 'blocked' else 0,
+                    'new_blocking_finding_count': 0,
+                    'resolved_blocking_finding_count': 0,
+                }
+                if False:  # pragma: no cover
+                    yield  # type: ignore[unreachable]
+
+        return _RecordingCritic(name='critic'), observed
+
+    def _build(self, *, critic, sections, max_rounds=2):
+        return QualityLoopAgent(
+            name='sow_quality_loop',
+            description='test',
+            sub_agents=[critic, FakeReviser(name='fake_reviser')],
+            max_rounds=max_rounds,
+            repair_section_agents=sections,
+        )
+
+    async def test_round_one_is_discovery_with_no_changed_sections(self):
+        critic, observed = self._recording_critic(
+            ['blocked'], self._BLOCKING_FINDING,
+        )
+        delivery = FakeSectionAgent(
+            name='delivery_plan_agent',
+            output_key='app:sow:delivery_plan',
+            repair_payload_per_call=[],
+        )
+        loop = self._build(
+            critic=critic, sections={'delivery_plan': delivery}, max_rounds=1,
+        )
+        ctx = _fake_ctx()
+        _seed_assembly_state(ctx.session.state)
+        await _run_loop(loop, ctx)
+
+        assert observed[0] == ('discovery', [])
+
+    async def test_round_two_is_verification_with_prior_changed_sections(self):
+        # Round 1 blocked -> delivery_plan repaired (FakeSectionAgent
+        # always rewrites its bundle, so it counts as changed) -> round 2
+        # must see verification mode + ['delivery_plan'].
+        critic, observed = self._recording_critic(
+            ['blocked', 'blocked'], self._BLOCKING_FINDING,
+        )
+        delivery = FakeSectionAgent(
+            name='delivery_plan_agent',
+            output_key='app:sow:delivery_plan',
+            repair_payload_per_call=[],
+        )
+        loop = self._build(
+            critic=critic, sections={'delivery_plan': delivery}, max_rounds=2,
+        )
+        ctx = _fake_ctx()
+        _seed_assembly_state(ctx.session.state)
+        await _run_loop(loop, ctx)
+
+        assert observed[0] == ('discovery', [])
+        assert observed[1] == ('verification', ['delivery_plan'])
+
+    async def test_state_holds_last_round_values_after_loop(self):
+        critic, _ = self._recording_critic(
+            ['blocked', 'blocked'], self._BLOCKING_FINDING,
+        )
+        delivery = FakeSectionAgent(
+            name='delivery_plan_agent',
+            output_key='app:sow:delivery_plan',
+            repair_payload_per_call=[],
+        )
+        loop = self._build(
+            critic=critic, sections={'delivery_plan': delivery}, max_rounds=2,
+        )
+        ctx = _fake_ctx()
+        _seed_assembly_state(ctx.session.state)
+        await _run_loop(loop, ctx)
+
+        assert ctx.session.state[STATE_ROUND_MODE] == 'verification'
+        assert ctx.session.state[STATE_CHANGED_SECTIONS] == ['delivery_plan']
+
+    async def test_terminal_status_unchanged_by_plumbing(self):
+        # Two blocked rounds with max_rounds=2 still terminates as
+        # 'exhausted' — the plumbing must not alter loop control flow.
+        critic, _ = self._recording_critic(
+            ['blocked', 'blocked'], self._BLOCKING_FINDING,
+        )
+        delivery = FakeSectionAgent(
+            name='delivery_plan_agent',
+            output_key='app:sow:delivery_plan',
+            repair_payload_per_call=[],
+        )
+        loop = self._build(
+            critic=critic, sections={'delivery_plan': delivery}, max_rounds=2,
+        )
+        ctx = _fake_ctx()
+        _seed_assembly_state(ctx.session.state)
+        events = await _run_loop(loop, ctx)
+
+        import json as _json
+        body = _json.loads(_terminal_event(events).content.parts[0].text)
+        assert body['status'] == 'exhausted'
