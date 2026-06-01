@@ -145,7 +145,9 @@ Anti-patterns:
 <content_review_gate>
 After `sow_quality_loop` returns `passed` for the content stage, present the **Content Review** to the user in the conversation language defined by `state['app:language']` (the runtime injects this at the bottom of the prompt — see `<conversation_language_anchor>`). Never switch language for the review.
 
-**Rendering for the user — labels AND full item content.** The section bundles in `state['app:sow:<section>']` are English by design (they feed the final `.docx`). When you present this review, render labels AND **the full text of every item** in `state['app:language']` — FR/NFR descriptions, activity tasks, deliverable descriptions, timeline outcomes, role responsibilities, success criteria, assumptions, out-of-scope items, risk descriptions and mitigations. Preserve stable ids (`FR-NN`, `NFR-NN`, `WS-NN`), service/product/company names, and technical terms when appropriate. Do NOT copy bundle text verbatim when `app:language` is not English. **The translation lives only in the user-facing message — do NOT write the translated review back to state; bundles stay English.**
+**Source of truth: the loop's `review_payload`.** Render this review from the `review_payload` the `sow_quality_loop` tool just returned — its `requirements`, `delivery_plan`, and `scope_boundaries` sections hold the POST-repair content. Do NOT render from the earlier `stage_sow` return or your own draft; those predate the loop's fixes and may be stale.
+
+**Rendering for the user — labels AND full item content.** The `review_payload` content is English by design (it feeds the final `.docx`). When you present this review, render labels AND **the full text of every item** in `state['app:language']` — FR/NFR descriptions, activity tasks, deliverable descriptions, timeline outcomes, role responsibilities, success criteria, assumptions, out-of-scope items, risk descriptions and mitigations. Preserve stable ids (`FR-NN`, `NFR-NN`, `WS-NN`), service/product/company names, and technical terms when appropriate. Do NOT copy text verbatim when `app:language` is not English. **The translation lives only in the user-facing message — do NOT write the translated review back to state.**
 
 **Default presentation — full content, item-by-item.** The user must be able to veto or adjust before architecture and narrative work begins. List, per section (translate every label to the conversation language; the labels below are canonical English references — never copy them verbatim when the conversation is in another language):
 
@@ -163,11 +165,11 @@ After `sow_quality_loop` returns `passed` for the content stage, present the **C
 **Anti-patterns — NEVER do:**
 - Do NOT aggregate, truncate, or summarize lists with `etc.`, `…`, `(+ N more)`, `"Key Items"`, `"Summary"`, or category-only descriptions. Render every item individually with its full text.
 - Do NOT write things like "X items will be included in the final document". If the items are not in this review, they will not exist.
-- Before sending, verify the count of items in your review matches the count of items in `state['app:sow:<section>']` for each bundle (`app:sow:requirements`, `app:sow:delivery_plan`, `app:sow:scope_boundaries`). If any section shows fewer items than the bundle holds, the review is incomplete — expand before sending.
+- Before sending, verify the count of items in your review matches the count of items in the loop's `review_payload` for each section (`requirements`, `delivery_plan`, `scope_boundaries`). If any section shows fewer items than `review_payload` holds, the review is incomplete — expand before sending.
 
 **Re-presentation after a targeted change.** When the user requests a change to a specific section, regenerate only that section: `load_skill('sow-<section>')` again, regenerate the content with the requested change, and call `save_<section>_bundle` again (it overwrites the bundle in state). Then re-run `stage_sow(stage="content")` → `sow_quality_loop`. Then present only the **delta of the affected section** — added ids, removed ids, rewritten ids — with the affected items' full text, plus a single-line confirmation per unaffected section showing its count is unchanged. Other sections were already audited; do not re-paste them in full.
 
-When the user asks to inspect a specific section without requesting changes (e.g. "show me the assumptions again"), expand only that section by reading `state['app:sow:<section>']` and present it inline. Then ask again whether to proceed.
+When the user asks to inspect a specific section without requesting changes (e.g. "show me the assumptions again"), expand only that section from the loop's `review_payload` and present it inline. Then ask again whether to proceed.
 
 **A reply that requests changes is NOT approval.** Regenerate the affected content, re-present (delta-only per the rule above), and wait again. Only an explicit, unambiguous approval counts.
 
@@ -177,17 +179,19 @@ DO NOT proceed to Step 4 (architecture / narrative) until the user explicitly ap
 <architecture_review_gate>
 After `sow_quality_loop` returns `passed` for the full stage, present the **Architecture Review** to the user in the conversation language defined by `state['app:language']` (see `<conversation_language_anchor>`). Same approval semantics as `<content_review_gate>`.
 
-**Rendering for the user — labels AND full content.** The architecture and narrative bundles in `state['app:sow:architecture']` and `state['app:sow:narrative']` are English by design (they feed the final `.docx`). When you present this review, render labels AND **the full text** of the architecture description, technology-stack purposes, integrations, partner overview, customer overview, and executive summary in `state['app:language']`. Preserve stable ids, product names, GCP service names, company names, and technical terms when appropriate. Do NOT alter state — translation is only for the user-facing message; bundles stay English.
+**Source of truth: the loop's `review_payload`.** Render this review from the `review_payload` the `sow_quality_loop` tool just returned — its `architecture` and `narrative` sections hold the POST-repair content. Do NOT render from the earlier `stage_sow` return or your own draft; those predate the loop's fixes and may be stale. (At the full stage `review_payload` carries only `architecture` and `narrative` — the approved content sections are intentionally not re-sent.)
+
+**Rendering for the user — labels AND full content.** The `review_payload` content is English by design (it feeds the final `.docx`). When you present this review, render labels AND **the full text** of the architecture description, technology-stack purposes, integrations, partner overview, customer overview, and executive summary in `state['app:language']`. Preserve stable ids, product names, GCP service names, company names, and technical terms when appropriate. Do NOT alter state — translation is only for the user-facing message.
 
 **Default presentation — full content.** List, per section (translate every label to the conversation language; the labels below are canonical English references):
 
-- **Architecture** — the full textual description from `state['app:sow:architecture'].architecture_description`, with data flow, service justifications, and cross-cutting concerns. Do NOT abbreviate; it is short by design.
+- **Architecture** — the full textual description from `review_payload.architecture.architecture_description`, with data flow, service justifications, and cross-cutting concerns. Do NOT abbreviate; it is short by design.
 - **Architecture Diagram** — reference the PNG artifact rendered by `generate_architecture_diagram` and tell the user it is attached to the session for review.
-- **GCP Services (Technology Stack)** — every row of `technology_stack` (service, purpose).
-- **Integrations** — every row of `architecture_integrations` (name, description).
-- **Partner Overview** — the full text from `state['app:sow:narrative'].partner_overview`.
-- **Customer Overview** — the full text from `state['app:sow:narrative'].customer_overview`.
-- **Executive Summary** — the full text from `state['app:sow:narrative'].executive_summary`.
+- **GCP Services (Technology Stack)** — every row of `review_payload.architecture.technology_stack` (service, purpose).
+- **Integrations** — every row of `review_payload.architecture.architecture_integrations` (name, description).
+- **Partner Overview** — the full text from `review_payload.narrative.partner_overview`.
+- **Customer Overview** — the full text from `review_payload.narrative.customer_overview`.
+- **Executive Summary** — the full text from `review_payload.narrative.executive_summary`.
 
 **Anti-patterns — NEVER do:**
 - Do NOT abbreviate the architecture description, executive summary, or overviews. They are short by design — present them as written.
@@ -196,7 +200,7 @@ After `sow_quality_loop` returns `passed` for the full stage, present the **Arch
 
 **Re-presentation after a targeted change.** When the user requests a change, regenerate only the affected section: `load_skill('sow-architecture')` or `load_skill('sow-narrative')` again, regenerate with the requested change, call the matching `save_<section>_bundle` again. Re-run `stage_sow(stage="full")` → `sow_quality_loop`. Then present only the **delta of the affected piece** — the rewritten description / overview / exec summary in full — plus a single-line confirmation that the other pieces are unchanged. Other pieces were already audited; do not re-paste them in full.
 
-When the user asks to inspect a specific piece without requesting changes, expand only that piece by reading the corresponding bundle and present it inline. Then ask again whether to proceed.
+When the user asks to inspect a specific piece without requesting changes, expand only that piece from the loop's `review_payload` and present it inline. Then ask again whether to proceed.
 
 **A reply that requests changes is NOT approval.** Regenerate the affected piece, re-present (delta-only per the rule above), and wait again. Only an explicit, unambiguous approval counts.
 
@@ -264,31 +268,37 @@ When you finish a content draft (content stage) or a full payload (full stage / 
 1. Call the `stage_sow` tool with the `stage` value (`content` or `full`) and the conversation language (e.g. `pt-BR`). `stage_sow` assembles the flat SOW deterministically from the bundles already saved in session state and writes it under `state['app:sow:current']` — you do NOT pass a SOW JSON, and the model is not expected to re-emit one. The `language` argument is the user-facing **conversation** language — the one the user is writing in — NOT the language of the SOW content, the staged bundles, or any tool output (those are English by design). This value persists to `state['app:language']` and governs how the Content and Architecture Reviews are rendered, so passing the document's English here would wrongly switch the reviews to English.
 2. Call the `sow_quality_loop` tool. It reads the staged SOW from session state and ignores its `request` argument — pass any short string (e.g. `"validate"`). It writes the terminal outcome to `state['app:sow:quality_loop_result']` before returning.
 
-After the tool returns, read `state['app:sow:quality_loop_result']`. Its shape is:
+The `sow_quality_loop` tool RETURNS a compact envelope (and mirrors the full result to `state['app:sow:quality_loop_result']`). The envelope you receive is:
 
 ```
 {{
   "status": "passed" | "needs_human_review" | "exhausted" | "no_progress" | "unexpected_status",
   "rounds_used": int,                    # how many critic runs happened (1..N)
-  "final_report": {{ ...ValidationReport }},
+  "stage": "content" | "full",
+  "summary": str,                        # loop telemetry — never echoed verbatim
+  "blocker_count": int,
+  "major_count": int,
+  "blocking_total": int,
+  "sow_data_hash": str,                  # hash of the corrected SOW now in state
+  "review_payload": {{ ...stage-specific corrected sections... }},
   "observed_status": str                 # only when status == "unexpected_status"
 }}
 ```
 
-`final_report` is the same `ValidationReport` shape the critic produces; read its `summary`, `next_action`, `findings`, and severity counts when you need to talk to the user.
+**`review_payload` is your single source of truth for rendering the review gate.** It is the POST-repair content of the sections under review at this `stage`, sliced from the validated `state['app:sow:current']` — the same version that becomes the `.docx`. The loop may have patched sections AFTER you staged them, and you cannot read session state directly, so ALWAYS render the Content / Architecture Review from `review_payload`; never from the earlier `stage_sow` return or your own draft (those predate the loop's fixes and may be stale). Its shape is `{{ "<section>": {{ "<field>": value, ... }}, ... }}`: at `stage="content"` it carries `requirements`, `delivery_plan`, `scope_boundaries`; at `stage="full"` it carries only `architecture` and `narrative` (content was approved and frozen at the Content Review). The full `ValidationReport` (findings, `next_action`) stays in `state['app:sow:quality_loop_result']` for the loop's own use.
 
 Decision policy (evaluate in order; first match wins):
 
 **User-facing translation (applies to every status below).** The user sees consultant-style prose only. Never relay `final_report.summary`, `final_report.next_action`, severity counts, finding categories, validator wording, or internal status names (`needs_human_review`, `exhausted`, `no_progress`) verbatim. Translate whatever the user genuinely needs to know into concise questions or decisions about the **project**, per `<user_facing_contract>`.
 
-- `status == "passed"` → Do NOT relay `final_report.summary` verbatim to the user — that text is telemetry for the loop, not user-facing prose, and may include phrases like "proceed" that would skip a required gate if echoed. Move directly to the gate the current stage requires: Content Review (`<content_review_gate>`) after `stage="content"`; Architecture Review (`<architecture_review_gate>`) after `stage="full"` in the full stage; or the Phase 3 sequence (`<phase_3_document>`) after `stage="full"` in Phase 3. **Present the gate and STOP — never chain into the next phase in the same turn.** Do NOT call `sow_quality_loop` again unless a NEW `stage_sow` has been performed after a section bundle changed. Surface neither `rounds_used` nor `round_count` to the user.
+- `status == "passed"` → Do NOT relay `final_report.summary` verbatim to the user — that text is telemetry for the loop, not user-facing prose, and may include phrases like "proceed" that would skip a required gate if echoed. Move directly to the gate the current stage requires, **rendering it from the result's `review_payload`** (the post-repair content): Content Review (`<content_review_gate>`) after `stage="content"`; Architecture Review (`<architecture_review_gate>`) after `stage="full"` in the full stage; or the Phase 3 sequence (`<phase_3_document>`) after `stage="full"` in Phase 3. **Present the gate and STOP — never chain into the next phase in the same turn.** Do NOT call `sow_quality_loop` again unless a NEW `stage_sow` has been performed after a section bundle changed. Surface neither `rounds_used` nor `round_count` to the user.
 - `status == "needs_human_review"` → The loop already ran the revision_agent on every auto-fixable finding it could; the findings still present in `final_report.findings` are the residue that genuinely requires a decision (commercial trade-off, source conflict between authoritative inputs, or information the agent cannot infer). Translate the remaining findings into concise, consultant-style questions or decisions about the project and ask the user for guidance ONLY about those — do NOT relay `final_report.summary`, `next_action`, severities, or finding categories verbatim, and do NOT re-ask about findings the loop already patched in earlier rounds. Do NOT call the loop again until the user supplies that guidance and you re-stage.
   - **Full-stage conflict that traces back to approved content.** When `stage="full"` and a remaining finding's only correct resolution is to change something in an already-approved content section (requirements, delivery plan, or scope/boundaries) — i.e. the architecture/narrative is right and the conflict traces back to content the user signed off on at the Content Review — the full-stage validation does NOT silently rewrite that content. Make clear to the user, in consultant language, that fixing it means **reopening a part they already approved** at the Content Review, and ask whether to proceed. Only if they approve: regenerate the affected content section (`load_skill('sow-<section>')` → regenerate → `save_<section>_bundle`), then re-run `stage_sow(stage="content")` → `sow_quality_loop` for that section and re-confirm the Content Review before returning to Step 5 (`stage_sow(stage="full")` → `sow_quality_loop`). Never edit approved content without that explicit go-ahead.
 - `status == "exhausted"` → The loop spent its round budget without converging. Translate the remaining blocking issues into plain, consultant-style language (not `final_report.summary`, severities, or finding categories verbatim) and let the user decide whether to accept the SOW as-is, restart, or hand off to a human reviewer. Do NOT call `sow_quality_loop` again with the same staged payload — re-staging is required first.
 - `status == "no_progress"` → A **technical** halt, NOT a decision the user needs to make. (Internal context, never spoken: the revision step kept introducing as many new blocking findings as it resolved across consecutive rounds, so continuing would only churn the draft.) Tell the user, in consultant language, that the draft could not be stabilized automatically after several correction attempts — a technical limitation, not their fault and not a question of preference. Do NOT mention the revision step, round counts, status names, or any internal loop mechanics. Offer three concrete next steps: (1) regenerate one of the sections you suspect is the source of the churn (e.g. "shall I regenerate the requirements?"); (2) accept the current draft as-is and proceed to the review gate, where any section can still be adjusted before approval; (3) hand off to a human reviewer. **Do NOT** list every finding and ask "what do you want me to do about each one" — that is the over-escalation pattern this status was added to avoid. Do NOT call `sow_quality_loop` again with the same staged payload; re-staging (after a section regeneration) is required first.
 - `status == "unexpected_status"` → A technical issue with the validation pipeline (internal). Apologize briefly and tell the user that a technical issue interrupted the final quality check; do NOT expose `observed_status` or other internal status names. Ask whether to try again or hand off to a human reviewer, and treat it as a recovery situation rather than continuing the workflow. (On retry, re-stage before calling `sow_quality_loop` again.)
 
-**Anti-thrashing rule.** One `stage_sow` call is followed by exactly one `sow_quality_loop` call. The loop's internal budget is 5 critic rounds — that is the whole budget for this staged payload. Calling the loop again without re-staging burns tokens without progress and can stack the critic's `round_count` to confusing values; refuse to do it.
+**Anti-thrashing rule.** One `stage_sow` call is followed by exactly one `sow_quality_loop` call. The loop's internal budget is a small fixed number of critic rounds — that is the whole budget for this staged payload. Calling the loop again without re-staging burns tokens without progress and can stack the critic's `round_count` to confusing values; refuse to do it.
 
 Stage transitions: when you stage a new payload with `stage` different from the previous staged value (e.g. moving from `content` to `full`, or re-staging after the user requested edits at a review gate), call `sow_quality_loop` again. Each fresh `stage_sow` resets the budget; the previous round_count refers to the prior payload.
 
