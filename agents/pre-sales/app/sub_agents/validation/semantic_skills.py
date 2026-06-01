@@ -23,7 +23,10 @@ from google.genai import types
 
 from ...config import config
 from .schema import (
+    ROUND_MODE_VERIFICATION,
     SKILL_NAMES,
+    STATE_CHANGED_SECTIONS,
+    STATE_ROUND_MODE,
     STATE_SOW,
     STATE_STAGE,
     SkillFindings,
@@ -382,6 +385,72 @@ resolution).
 """
 
 
+# Injected into a skill's instruction ONLY in verification mode (rounds
+# 2+), in addition to ``_RESOLUTION_MODE_GUIDE``. Mirrors that block's
+# pattern: one centralized rubric, not duplicated per ``SKILL.md``.
+#
+# Discovery (round 1) audits a freshly staged document broadly. Rounds
+# 2+ run AFTER a repair, and the failure mode the loop kept hitting is an
+# "infinite audit": the critic re-audits the whole document every round
+# and opens new lateral fronts, so the residue never reaches zero even
+# while net progress is real. This block narrows a verification round to
+# "confirm the repair + catch regressions" WITHOUT re-mining the whole
+# document, while explicitly refusing to let a genuine critical BLOCKER
+# disappear. The rule is prompt-level (soft); a deterministic backstop in
+# the aggregator can mirror it later (PR-5) if measurement shows leakage.
+#
+# ``{changed_sections}`` is filled per round by the instruction provider
+# from ``STATE_CHANGED_SECTIONS``.
+_VERIFICATION_MODE_GUIDE = """\
+
+---
+
+# Verification mode (this round is a repair check, NOT a fresh audit)
+
+This is a VERIFICATION round, not a discovery round. A previous round
+already audited this document and an automatic repair was applied. Your
+job now is to confirm that repair landed and to catch regressions it may
+have introduced — NOT to open new, unrelated audit fronts. Re-auditing
+the whole document every round is what prevents the loop from
+converging.
+
+Sections changed by the previous repair: {changed_sections}.
+
+Finding-admission rule for verification mode:
+
+1. UNRESOLVED / RECURRING issue — if a defect you would have flagged
+   before is STILL present in the SOW, flag it again. Confirming whether
+   prior issues were actually fixed is the whole point of this round;
+   never suppress one just because it is not new.
+
+2. REGRESSION RELATED TO THE REPAIR — a NEW issue is in scope when it is
+   directly connected to the repair: a BLOCKER or MAJOR defect in one of
+   the changed sections listed above, OR a new instance of the same
+   problem family (same ``skill`` + ``category``) as an issue from a
+   prior round. These are exactly the failure modes a repair introduces;
+   report them normally.
+
+3. NEW, FULLY-LATERAL issue of MAJOR or MINOR severity — an issue
+   unrelated to the repair (not in a changed section, not the same
+   family) that is not a critical defect: do NOT raise it this round. It
+   belongs to a later discovery pass, not this verification loop.
+   Omitting it here is deliberate and it is not lost — a future
+   discovery round will surface it.
+
+4. NEW, FULLY-LATERAL issue of BLOCKER severity — do NOT go looking for
+   these; verification mode is not an audit. But if you nonetheless
+   identify an unambiguous, critical, brand-new lateral BLOCKER, you MUST
+   still report it — never silently drop it. Label it clearly as a
+   critical lateral exception in the ``recommendation`` and keep your
+   ``confidence`` honest. A genuine BLOCKER is never suppressed just
+   because it is lateral.
+
+In short: confirm the repair, catch regressions and unresolved issues,
+do NOT mine for new lateral MAJOR/MINOR problems, and never hide a
+genuine critical BLOCKER.
+"""
+
+
 def _make_instruction_provider(skill_name: str, skill_body: str):
     """Closure that resolves SKILL.md body + runtime payload from state."""
 
@@ -389,6 +458,24 @@ def _make_instruction_provider(skill_name: str, skill_body: str):
         state = ctx.state
         sow = state.get(STATE_SOW) or {}
         stage = state.get(STATE_STAGE) or 'full'
+
+        # Verification-mode binding (PR-3). Round 1 (discovery) gets the
+        # base rubric; rounds 2+ also get the verification block so the
+        # critic confirms the repair instead of re-auditing the whole
+        # document. ``STATE_ROUND_MODE`` / ``STATE_CHANGED_SECTIONS`` are
+        # written by the QualityLoopAgent before each critic run (PR-2);
+        # absent or 'discovery' -> no block, identical to prior behavior.
+        verification_block = ''
+        if state.get(STATE_ROUND_MODE) == ROUND_MODE_VERIFICATION:
+            changed_sections = state.get(STATE_CHANGED_SECTIONS) or []
+            changed_label = (
+                ', '.join(str(s) for s in changed_sections)
+                if changed_sections
+                else '(none recorded for the previous repair)'
+            )
+            verification_block = _VERIFICATION_MODE_GUIDE.format(
+                changed_sections=changed_label,
+            )
 
         payload = (
             '\n\n---\n\n'
@@ -403,7 +490,9 @@ def _make_instruction_provider(skill_name: str, skill_body: str):
             '`resolution_mode` field (defaulting to `auto_fixable`). '
             'Return `{"findings": []}` if nothing applies.'
         )
-        return skill_body + _RESOLUTION_MODE_GUIDE + payload
+        return (
+            skill_body + _RESOLUTION_MODE_GUIDE + verification_block + payload
+        )
 
     return _provider
 
