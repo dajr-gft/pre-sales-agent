@@ -7,8 +7,8 @@ The revision_agent's tool surface (``load_sow_reference``) is allowlisted
 from finding-map.md at import time. When a validation skill emits a
 finding whose ``(skill, category)`` pair is not mapped, the agent has to
 fall back to the generic style-guide reference and patches uninformed —
-which usually reproduces the finding next round. After the budget of
-5 rounds, the quality loop returns ``exhausted`` and the root agent
+which usually reproduces the finding next round. After the round
+budget is spent, the quality loop returns ``exhausted`` and the root agent
 asks the user to decide. Mudança 4 of the over-escalation audit closes
 this hole by guaranteeing every category the LLM is allowed to emit has
 a target reference.

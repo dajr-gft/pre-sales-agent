@@ -58,6 +58,7 @@ The state keys this agent reads / writes:
 from __future__ import annotations
 
 import json
+import os
 from typing import Any, AsyncGenerator, ClassVar, Mapping, Optional
 
 import structlog
@@ -102,10 +103,41 @@ QUALITY_LOOP_RESULT_KEY = 'app:sow:quality_loop_result'
 # (the next loop entry recomputes the hash and finds a mismatch).
 STATE_LAST_LOOP_HASH = 'app:sow:last_loop_hash'
 
-# Cap mirrors the 4-round budget the legacy root prompt used (rounds 1-4
-# allowed to patch, round 5 caps with a downgrade). Tunable per project
-# via the constructor when needed.
-DEFAULT_MAX_ROUNDS = 5
+# Default round budget for the quality loop (rounds 1-2 may patch, round
+# 3 caps). Overridable per instance via the constructor and per
+# deployment via the ``SOW_QUALITY_LOOP_MAX_ROUNDS`` env var.
+DEFAULT_MAX_ROUNDS = 3
+
+# Deploy-time override for the round budget. Read via
+# :func:`_resolve_max_rounds`, which falls back to ``DEFAULT_MAX_ROUNDS``
+# (and warns) on a missing, non-integer, or non-positive value — it never
+# raises, so a bad env value degrades to the default instead of crashing
+# startup.
+_MAX_ROUNDS_ENV = 'SOW_QUALITY_LOOP_MAX_ROUNDS'
+
+
+def _resolve_max_rounds() -> int:
+    """Return the round budget from the env var, or the default."""
+    raw = os.environ.get(_MAX_ROUNDS_ENV)
+    if raw is None or not raw.strip():
+        return DEFAULT_MAX_ROUNDS
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        logger.warning(
+            'quality_loop_max_rounds_invalid',
+            value=raw,
+            fallback=DEFAULT_MAX_ROUNDS,
+        )
+        return DEFAULT_MAX_ROUNDS
+    if value <= 0:
+        logger.warning(
+            'quality_loop_max_rounds_non_positive',
+            value=value,
+            fallback=DEFAULT_MAX_ROUNDS,
+        )
+        return DEFAULT_MAX_ROUNDS
+    return value
 
 # Number of consecutive rounds whose blocking-finding churn must satisfy
 # ``new >= resolved`` before the loop declares ``no_progress``. A single
@@ -367,7 +399,10 @@ class QualityLoopAgent(BaseAgent):
 
     config_type: ClassVar[type[BaseAgentConfig]] = BaseAgentConfig
 
-    max_rounds: int = DEFAULT_MAX_ROUNDS
+    # Resolved from the env var per instance (default_factory) so the
+    # singleton picks up ``SOW_QUALITY_LOOP_MAX_ROUNDS`` at construction;
+    # an explicit ``max_rounds=`` passed to the constructor still wins.
+    max_rounds: int = Field(default_factory=_resolve_max_rounds)
 
     # Section-name -> section agent. The loop uses these to repair
     # cross-section findings in their owning section instead of forcing
