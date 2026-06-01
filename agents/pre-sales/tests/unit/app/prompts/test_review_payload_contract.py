@@ -96,3 +96,23 @@ def test_needs_human_review_uses_items_not_state_findings(
     )
     # The reopen-approved-content flow is keyed on the decision_type.
     assert 'reopen_approved_content' in block
+
+
+def test_sow_validation_documents_unresolved_items(root_prompt: str) -> None:
+    block = _between(root_prompt, '<sow_validation>', '</sow_validation>')
+    assert 'unresolved_items' in block, (
+        'The <sow_validation> envelope contract must document '
+        'unresolved_items for the exhausted path.'
+    )
+
+
+def test_exhausted_uses_items_not_state_findings(root_prompt: str) -> None:
+    """The exhausted path must base its explanation on the unresolved_items
+    envelope field, not on findings read from state."""
+    block = _between(root_prompt, '<sow_validation>', '</sow_validation>')
+    exhausted = block[block.find('status == "exhausted"'):]
+    assert 'unresolved_items' in exhausted
+    assert 'final_report.findings' not in exhausted, (
+        'exhausted must not claim the root can read final_report.findings '
+        'from state.'
+    )
