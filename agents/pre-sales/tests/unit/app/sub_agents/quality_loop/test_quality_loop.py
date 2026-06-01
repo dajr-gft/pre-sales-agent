@@ -36,9 +36,15 @@ from app.sub_agents.quality_loop.agent import (
     STATE_LAST_LOOP_HASH,
     QualityLoopAgent,
     _MAX_ROUNDS_ENV,
+    _REVIEW_SECTIONS_BY_STAGE,
     _resolve_max_rounds,
+    _review_payload,
 )
-from app.sub_agents.validation.schema import STATE_SOW, STATE_VALIDATION_RESULT
+from app.sub_agents.validation.schema import (
+    STATE_SOW,
+    STATE_STAGE,
+    STATE_VALIDATION_RESULT,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -2450,6 +2456,214 @@ class TestExtractAnchorIds:
         tuples in some fields. The walker must descend through them."""
         value = ('FR-01', {'nested': ('NFR-02',)})
         assert _extract_anchor_ids(value) == {'FR-01', 'NFR-02'}
+
+
+# ---------------------------------------------------------------------------
+# review_payload — the corrected, stage-specific SOW view the loop returns
+# so the root can render the review gate without reading session state.
+# ---------------------------------------------------------------------------
+
+
+def _sample_full_sow() -> dict:
+    """A flat sow_data with every bundle-owned field populated, plus a few
+    project-metadata keys (which must NOT leak into review_payload)."""
+    return {
+        # project metadata — never part of a review payload
+        'partner_name': 'GFT',
+        'customer_name': 'ACME',
+        'project_title': 'Project P',
+        # requirements
+        'functional_requirements': [{'number': 'FR-01', 'description': 'x'}],
+        'non_functional_requirements': [{'number': 'NFR-01', 'description': 'y'}],
+        # delivery_plan
+        'activity_phases': [{'name': 'Phase 1'}],
+        'deliverables': [{'number': 'WS-01', 'name': 'd'}],
+        'timeline': [{'activity': 'Phase 1'}],
+        'partner_roles': [{'title': 'PM'}],
+        'customer_roles': [{'title': 'Sponsor'}],
+        'success_criteria': ['sc-1'],
+        'objectives': ['obj-1'],
+        # scope_boundaries
+        'assumptions': [{'text': 'a'}],
+        'out_of_scope': [{'text': 'o'}],
+        'risks': [{'number': 'R-01'}],
+        'handover_disclaimers': ['hd'],
+        'change_request_policy_text': 'crp',
+        # architecture
+        'architecture_description': 'desc',
+        'architecture_components': [{'name': 'c'}],
+        'architecture_integrations': [{'name': 'i'}],
+        'technology_stack': [{'service': 's', 'purpose': 'p'}],
+        # narrative
+        'executive_summary': 'es',
+        'partner_overview': 'po',
+        'customer_overview': 'co',
+        'customer_primary_domain': 'cpd',
+    }
+
+
+class _ReviserMutatesOutOfScope(BaseAgent):
+    """Reviser stub that appends a real scope_boundaries item to STATE_SOW,
+    so review_payload must reflect the post-repair content."""
+
+    config_type: ClassVar[type[BaseAgentConfig]] = BaseAgentConfig
+
+    async def run_async(self, ctx) -> AsyncGenerator[Event, None]:  # type: ignore[override]
+        sow = dict(ctx.session.state.get(STATE_SOW) or {})
+        oos = list(sow.get('out_of_scope') or [])
+        oos.append({'text': 'added-by-repair'})
+        sow['out_of_scope'] = oos
+        ctx.session.state[STATE_SOW] = sow
+        if False:  # pragma: no cover
+            yield  # type: ignore[unreachable]
+
+
+class TestReviewPayloadHelper:
+    def test_content_stage_returns_only_content_sections(self):
+        rp = _review_payload(_sample_full_sow(), 'content')
+        assert set(rp.keys()) == {
+            'requirements', 'delivery_plan', 'scope_boundaries',
+        }
+
+    def test_full_stage_returns_only_architecture_and_narrative(self):
+        rp = _review_payload(_sample_full_sow(), 'full')
+        assert set(rp.keys()) == {'architecture', 'narrative'}
+
+    def test_metadata_fields_never_leak_into_payload(self):
+        for stage in ('content', 'full'):
+            rp = _review_payload(_sample_full_sow(), stage)
+            flat = {field for section in rp.values() for field in section}
+            assert 'partner_name' not in flat
+            assert 'project_title' not in flat
+
+    def test_full_stage_covers_every_arch_narrative_field(self):
+        """Derived from the vocabulary so the slice cannot drift from the
+        schema — every architecture/narrative field is present."""
+        from app.sub_agents.validation.field_vocabulary import (
+            BUNDLE_OWNED_FIELDS_BY_SECTION,
+        )
+        rp = _review_payload(_sample_full_sow(), 'full')
+        expected = {
+            field
+            for field, section in BUNDLE_OWNED_FIELDS_BY_SECTION.items()
+            if section in ('architecture', 'narrative')
+        }
+        got = {field for section in rp.values() for field in section}
+        assert got == expected
+
+    def test_every_value_equals_the_source_sow(self):
+        sow = _sample_full_sow()
+        for stage in ('content', 'full'):
+            rp = _review_payload(sow, stage)
+            for section in rp.values():
+                for field, value in section.items():
+                    assert value == sow[field]
+
+    def test_stage_section_sets_are_disjoint(self):
+        """Content and full never share a section — the full pass does not
+        re-send approved content."""
+        content = set(_REVIEW_SECTIONS_BY_STAGE['content'])
+        full = set(_REVIEW_SECTIONS_BY_STAGE['full'])
+        assert content.isdisjoint(full)
+
+
+class TestReviewPayloadEnvelope:
+    @staticmethod
+    def _body(events: list[Event]) -> dict:
+        import json as _json
+        return _json.loads(_terminal_event(events).content.parts[0].text)
+
+    async def test_envelope_carries_stage_specific_payload_and_hash(self):
+        from app.tools.sow._sow_helpers import sow_data_hash
+        loop, _, _ = _build_loop(critic_statuses=['passed'])
+        ctx = _ctx_with_sow(_sample_full_sow())
+        ctx.session.state[STATE_STAGE] = 'content'
+
+        body = self._body(await _run_loop(loop, ctx))
+
+        assert body['stage'] == 'content'
+        assert body['review_payload'] == _review_payload(
+            ctx.session.state[STATE_SOW], 'content'
+        )
+        assert body['sow_data_hash'] == sow_data_hash(
+            ctx.session.state[STATE_SOW]
+        )
+
+    async def test_full_stage_envelope_excludes_content_sections(self):
+        loop, _, _ = _build_loop(critic_statuses=['passed'])
+        ctx = _ctx_with_sow(_sample_full_sow())
+        ctx.session.state[STATE_STAGE] = 'full'
+
+        body = self._body(await _run_loop(loop, ctx))
+
+        assert set(body['review_payload'].keys()) == {
+            'architecture', 'narrative',
+        }
+
+    async def test_review_payload_reflects_post_repair_sow(self):
+        """The reviser appends an out_of_scope item between rounds — the
+        envelope must carry the PATCHED content, not the entry version."""
+        loop = QualityLoopAgent(
+            name='loop',
+            description='test',
+            sub_agents=[
+                _CriticThatTouchesSow(
+                    name='critic', statuses=['blocked', 'passed'],
+                ),
+                _ReviserMutatesOutOfScope(name='reviser'),
+            ],
+            max_rounds=3,
+        )
+        ctx = _ctx_with_sow(_sample_full_sow())
+        ctx.session.state[STATE_STAGE] = 'content'
+
+        body = self._body(await _run_loop(loop, ctx))
+
+        oos = body['review_payload']['scope_boundaries']['out_of_scope']
+        assert len(oos) == 2, 'review_payload must reflect the repair'
+        assert oos[-1] == {'text': 'added-by-repair'}
+        # And it is exactly the current corrected state, by construction.
+        assert body['review_payload'] == _review_payload(
+            ctx.session.state[STATE_SOW], 'content'
+        )
+
+    async def test_consistency_with_state_current(self):
+        from app.tools.sow._sow_helpers import sow_data_hash
+        loop, _, _ = _build_loop(critic_statuses=['passed'])
+        ctx = _ctx_with_sow(_sample_full_sow())
+        ctx.session.state[STATE_STAGE] = 'full'
+
+        body = self._body(await _run_loop(loop, ctx))
+
+        current = ctx.session.state[STATE_SOW]
+        # Every value surfaced equals state['app:sow:current'].
+        for section in body['review_payload'].values():
+            for field, value in section.items():
+                assert value == current[field]
+        assert body['sow_data_hash'] == sow_data_hash(current)
+
+    async def test_cache_replay_preserves_review_payload(self):
+        """F-05 cache hit must re-emit an envelope with the same
+        review_payload (marked cached), not drop it."""
+        loop, _, _ = _build_loop(
+            # 2nd status would change the result if the critic re-ran —
+            # proves the replay came from the cache, not a fresh run.
+            critic_statuses=['passed', 'blocked'],
+            max_rounds=3,
+        )
+        ctx = _ctx_with_sow(_sample_full_sow())
+        ctx.session.state[STATE_STAGE] = 'full'
+
+        first = self._body(await _run_loop(loop, ctx))
+        second = self._body(await _run_loop(loop, ctx))
+
+        assert second.get('cached') is True
+        assert second['stage'] == 'full'
+        assert second['review_payload'] == first['review_payload']
+        assert second['review_payload'] == _review_payload(
+            ctx.session.state[STATE_SOW], 'full'
+        )
+        assert second['sow_data_hash'] == first['sow_data_hash']
 
     def test_dedupes_repeated_anchors(self):
         """The same id quoted multiple times in different fields counts

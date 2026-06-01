@@ -228,6 +228,31 @@ _SECTION_ORDER: tuple[str, ...] = (
 _FIELD_TO_SECTION: dict[str, str] = dict(BUNDLE_OWNED_FIELDS_BY_SECTION)
 
 
+# Sections each review gate presents. The full pass shows only
+# architecture + narrative — content was approved and frozen at the
+# Content Review, so it is not re-sent.
+_REVIEW_SECTIONS_BY_STAGE: dict[str, tuple[str, ...]] = {
+    'content': ('requirements', 'delivery_plan', 'scope_boundaries'),
+    'full': ('architecture', 'narrative'),
+}
+
+
+def _review_payload(
+    sow: dict[str, Any], stage: str,
+) -> dict[str, dict[str, Any]]:
+    """Corrected, stage-specific sections the root must render for the review.
+
+    Slices the post-repair ``sow`` (``state['app:sow:current']``) into
+    ``{section: {field: value}}`` for the sections ``stage`` reviews.
+    """
+    sections = _REVIEW_SECTIONS_BY_STAGE.get(stage, ())
+    payload: dict[str, dict[str, Any]] = {section: {} for section in sections}
+    for field, section in BUNDLE_OWNED_FIELDS_BY_SECTION.items():
+        if section in payload:
+            payload[section][field] = sow.get(field)
+    return payload
+
+
 def _sections_for_finding(
     finding: dict, available_sections: set[str],
 ) -> list[str]:
@@ -1082,15 +1107,25 @@ class QualityLoopAgent(BaseAgent):
         #   _is_blocking_finding(f, det)])`` in the aggregator.
         final_blocker_count = (final_report or {}).get('blocker_count', 0)
         final_major_count = (final_report or {}).get('major_count', 0)
+        current_stage = ctx.session.state.get(STATE_STAGE) or 'content'
         content_payload = {
             'status': status,
             'rounds_used': rounds_used,
+            'stage': current_stage,
             'summary': (final_report or {}).get('summary', ''),
             'blocker_count': final_blocker_count,
             'major_count': final_major_count,
             'blocking_total': final_blocker_count + final_major_count,
             'state_key': QUALITY_LOOP_RESULT_KEY,
         }
+        # Stage-specific view of the corrected SOW (terminal_sow) so the
+        # root can render the review from post-repair content — it cannot
+        # read session state.
+        if isinstance(terminal_sow, dict) and terminal_sow:
+            content_payload['sow_data_hash'] = terminal_hash
+            content_payload['review_payload'] = _review_payload(
+                terminal_sow, current_stage,
+            )
         if observed_status is not None:
             content_payload['observed_status'] = observed_status
         if message:
@@ -1136,9 +1171,11 @@ class QualityLoopAgent(BaseAgent):
         cached_report = cached_payload.get('final_report') or {}
         cached_blocker_count = cached_report.get('blocker_count', 0)
         cached_major_count = cached_report.get('major_count', 0)
+        current_stage = ctx.session.state.get(STATE_STAGE) or 'content'
         text_envelope = {
             'status': cached_payload.get('status'),
             'rounds_used': cached_payload.get('rounds_used'),
+            'stage': current_stage,
             'summary': cached_report.get('summary', ''),
             'blocker_count': cached_blocker_count,
             'major_count': cached_major_count,
@@ -1146,6 +1183,15 @@ class QualityLoopAgent(BaseAgent):
             'state_key': QUALITY_LOOP_RESULT_KEY,
             'cached': True,
         }
+        # Same review_payload as the fresh-run envelope; the cache only
+        # fires when state['app:sow:current'] is unchanged, so it stays
+        # consistent on replay.
+        cached_sow = ctx.session.state.get(STATE_SOW)
+        if isinstance(cached_sow, dict) and cached_sow:
+            text_envelope['sow_data_hash'] = sow_data_hash(cached_sow)
+            text_envelope['review_payload'] = _review_payload(
+                cached_sow, current_stage,
+            )
         if cached_payload.get('observed_status') is not None:
             text_envelope['observed_status'] = cached_payload['observed_status']
 
