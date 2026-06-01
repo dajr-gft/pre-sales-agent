@@ -37,6 +37,8 @@ from app.sub_agents.quality_loop.agent import (
     QualityLoopAgent,
     _MAX_ROUNDS_ENV,
     _REVIEW_SECTIONS_BY_STAGE,
+    _decision_type,
+    _human_review_items,
     _resolve_max_rounds,
     _review_payload,
 )
@@ -2706,3 +2708,247 @@ class TestReviewPayloadEnvelope:
         added = post - pre
         assert dropped == {'FR-02'}
         assert added == {'FR-04'}
+
+
+# ---------------------------------------------------------------------------
+# human_review_items — compact, state-free decision items the loop returns
+# on needs_human_review so the root can ask without reading the report.
+# ---------------------------------------------------------------------------
+
+
+def _finding(
+    mode: str,
+    fields: list[str],
+    *,
+    recommendation: str = 'Pick side A or side B; the source of truth is unclear.',
+) -> dict:
+    """A finding dict shaped like the aggregator's ValidationReport output."""
+    return {
+        'id': 'contradictions-001',
+        'skill': 'contradictions',
+        'category': 'fr_vs_nfr',
+        'severity': 'BLOCKER',
+        'confidence': 0.9,
+        'evidence': 'FR-01 vs NFR-02',
+        'recommendation': recommendation,
+        'fields': fields,
+        'persistent': False,
+        'resolution_mode': mode,
+        'requires_human_review': mode != 'auto_fixable',
+    }
+
+
+def _report(status: str, findings: list[dict]) -> dict:
+    return {
+        'overall_status': status,
+        'summary': 'summary text',
+        'next_action': '...',
+        'findings': findings,
+        'blocker_count': 0,
+        'major_count': 0,
+        'new_blocking_finding_count': 0,
+        'resolved_blocking_finding_count': 0,
+    }
+
+
+class _CriticEmittingFindings(BaseAgent):
+    """Critic stub that writes a scripted report (status + findings)."""
+
+    config_type: ClassVar[type[BaseAgentConfig]] = BaseAgentConfig
+    statuses: List[str] = []
+    findings: List[dict] = []
+    calls: int = 0
+
+    async def run_async(self, ctx) -> AsyncGenerator[Event, None]:  # type: ignore[override]
+        idx = min(self.calls, len(self.statuses) - 1)
+        status = self.statuses[idx]
+        self.calls += 1
+        ctx.session.state[STATE_VALIDATION_RESULT] = _report(status, self.findings)
+        if False:  # pragma: no cover
+            yield  # type: ignore[unreachable]
+
+
+class TestDecisionType:
+    def test_source_conflict_maps_through(self):
+        assert _decision_type('source_conflict', 'full', ['architecture']) == (
+            'source_conflict'
+        )
+
+    def test_not_fixable_is_missing_input(self):
+        assert _decision_type(
+            'not_fixable_by_agent', 'content', ['requirements']
+        ) == 'missing_input'
+
+    def test_full_stage_content_field_is_reopen_approved_content(self):
+        assert _decision_type(
+            'decision_required', 'full', ['requirements']
+        ) == 'reopen_approved_content'
+
+    def test_full_stage_architecture_field_is_plain_decision(self):
+        assert _decision_type(
+            'decision_required', 'full', ['architecture']
+        ) == 'decision_required'
+
+    def test_content_stage_is_never_reopen(self):
+        # A content-stage decision is not "reopening" anything yet.
+        assert _decision_type(
+            'decision_required', 'content', ['requirements']
+        ) == 'decision_required'
+
+    def test_mixed_content_and_second_stage_is_not_reopen(self):
+        # A full-stage conflict touching BOTH content and architecture is
+        # ambiguous — do not assume the approved content must change.
+        assert _decision_type(
+            'decision_required', 'full', ['requirements', 'architecture']
+        ) == 'decision_required'
+
+
+class TestHumanReviewItems:
+    def test_only_human_review_findings_become_items(self):
+        report = _report('needs_human_review', [
+            _finding('auto_fixable', ['out_of_scope']),
+            _finding('decision_required', ['technology_stack']),
+        ])
+        items = _human_review_items(report, 'full')
+        assert len(items) == 1
+        assert items[0]['decision_type'] == 'decision_required'
+
+    def test_item_shape_is_compact(self):
+        items = _human_review_items(
+            _report('needs_human_review', [
+                _finding('source_conflict', ['functional_requirements']),
+            ]),
+            'content',
+        )
+        assert set(items[0].keys()) == {
+            'decision_type', 'affected_sections', 'affected_fields',
+            'short_reason',
+        }
+        # No raw-report leakage: no severities/categories/ids/evidence.
+        for leaked in ('severity', 'category', 'id', 'evidence', 'confidence'):
+            assert leaked not in items[0]
+
+    def test_affected_sections_derived_from_fields(self):
+        items = _human_review_items(
+            _report('needs_human_review', [
+                _finding(
+                    'decision_required',
+                    ['technology_stack', 'functional_requirements'],
+                ),
+            ]),
+            'full',
+        )
+        assert items[0]['affected_sections'] == ['architecture', 'requirements']
+        assert items[0]['affected_fields'] == [
+            'technology_stack', 'functional_requirements',
+        ]
+
+    def test_reopen_approved_content_classification(self):
+        items = _human_review_items(
+            _report('needs_human_review', [
+                _finding('decision_required', ['out_of_scope']),
+            ]),
+            'full',
+        )
+        assert items[0]['decision_type'] == 'reopen_approved_content'
+
+    def test_empty_when_no_human_review_findings(self):
+        report = _report('passed', [_finding('auto_fixable', ['deliverables'])])
+        assert _human_review_items(report, 'content') == []
+
+    def test_caps_item_count(self):
+        many = [_finding('decision_required', ['technology_stack'])] * 20
+        items = _human_review_items(_report('needs_human_review', many), 'full')
+        assert len(items) == 8
+
+    def test_short_reason_is_truncated(self):
+        long = 'x' * 500
+        items = _human_review_items(
+            _report('needs_human_review', [
+                _finding('source_conflict', ['risks'], recommendation=long),
+            ]),
+            'content',
+        )
+        reason = items[0]['short_reason']
+        assert reason.endswith('…')
+        assert len(reason) <= 241
+
+
+class TestHumanReviewItemsEnvelope:
+    @staticmethod
+    def _body(events: list[Event]) -> dict:
+        import json as _json
+        return _json.loads(_terminal_event(events).content.parts[0].text)
+
+    async def test_needs_human_review_returns_items(self):
+        critic = _CriticEmittingFindings(
+            name='critic',
+            statuses=['needs_human_review'],
+            findings=[_finding('decision_required', ['out_of_scope'])],
+        )
+        loop = QualityLoopAgent(
+            name='loop', description='t',
+            sub_agents=[critic, FakeReviser(name='reviser')],
+        )
+        ctx = _ctx_with_sow({'project_title': 'P', 'out_of_scope': []})
+        ctx.session.state[STATE_STAGE] = 'full'
+
+        body = self._body(await _run_loop(loop, ctx))
+
+        assert body['status'] == 'needs_human_review'
+        assert body['human_review_items']
+        assert body['human_review_items'][0]['decision_type'] == (
+            'reopen_approved_content'
+        )
+        # The full ValidationReport never rides in the envelope.
+        assert 'findings' not in body
+        assert 'final_report' not in body
+
+    async def test_passed_has_no_human_review_items(self):
+        loop, _, _ = _build_loop(critic_statuses=['passed'])
+        ctx = _ctx_with_sow({'project_title': 'P'})
+        ctx.session.state[STATE_STAGE] = 'content'
+
+        body = self._body(await _run_loop(loop, ctx))
+
+        assert 'human_review_items' not in body
+
+    async def test_exhausted_omits_human_review_items(self):
+        """human_review_items is only for needs_human_review — a technical
+        `exhausted` halt must not carry it, even if findings linger."""
+        critic = _CriticEmittingFindings(
+            name='critic',
+            statuses=['blocked', 'blocked', 'blocked'],
+            findings=[_finding('decision_required', ['out_of_scope'])],
+        )
+        loop = QualityLoopAgent(
+            name='loop', description='t',
+            sub_agents=[critic, FakeReviser(name='reviser')],
+            max_rounds=3,
+        )
+        ctx = _ctx_with_sow({'project_title': 'P', 'out_of_scope': []})
+        ctx.session.state[STATE_STAGE] = 'full'
+
+        body = self._body(await _run_loop(loop, ctx))
+
+        assert body['status'] == 'exhausted'
+        assert 'human_review_items' not in body
+
+    async def test_cache_replay_preserves_human_review_items(self):
+        critic = _CriticEmittingFindings(
+            name='critic',
+            statuses=['needs_human_review'],
+            findings=[_finding('source_conflict', ['technology_stack'])],
+        )
+        loop = QualityLoopAgent(
+            name='loop', description='t',
+            sub_agents=[critic, FakeReviser(name='reviser')],
+        )
+        ctx = _ctx_with_sow({'project_title': 'P', 'technology_stack': []})
+        ctx.session.state[STATE_STAGE] = 'full'
+
+        first = self._body(await _run_loop(loop, ctx))
+        second = self._body(await _run_loop(loop, ctx))
+
+        assert second.get('cached') is True
+        assert second['human_review_items'] == first['human_review_items']
