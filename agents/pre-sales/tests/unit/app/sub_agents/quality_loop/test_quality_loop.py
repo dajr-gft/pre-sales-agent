@@ -29,10 +29,14 @@ from google.adk.agents import BaseAgent
 from google.adk.agents.base_agent_config import BaseAgentConfig
 from google.adk.events import Event, EventActions
 
+from app.sub_agents.quality_loop import agent as quality_loop_agent
 from app.sub_agents.quality_loop.agent import (
+    DEFAULT_MAX_ROUNDS,
     QUALITY_LOOP_RESULT_KEY,
     STATE_LAST_LOOP_HASH,
     QualityLoopAgent,
+    _MAX_ROUNDS_ENV,
+    _resolve_max_rounds,
 )
 from app.sub_agents.validation.schema import STATE_SOW, STATE_VALIDATION_RESULT
 
@@ -133,7 +137,7 @@ def _fake_ctx() -> MagicMock:
 def _build_loop(
     *,
     critic_statuses: List[str],
-    max_rounds: int = 5,
+    max_rounds: int = 3,
     blocker_counts: List[int] | None = None,
     major_counts: List[int] | None = None,
     new_blocking_counts: List[int] | None = None,
@@ -174,6 +178,99 @@ def _terminal_event(events: list[Event]) -> Event:
         f'Expected exactly one terminal event; got {len(finals)}.'
     )
     return finals[0]
+
+
+def _build_loop_default_rounds(
+    critic_statuses: List[str],
+) -> tuple[QualityLoopAgent, FakeCritic, FakeReviser]:
+    """Build a loop WITHOUT passing ``max_rounds`` so the agent's own
+    default (resolved from env / ``DEFAULT_MAX_ROUNDS``) is exercised."""
+    critic = FakeCritic(name='fake_critic', statuses=critic_statuses)
+    reviser = FakeReviser(name='fake_reviser')
+    loop = QualityLoopAgent(
+        name='sow_quality_loop',
+        description='test',
+        sub_agents=[critic, reviser],
+    )
+    return loop, critic, reviser
+
+
+# ---------------------------------------------------------------------------
+# Round budget — default is 3, overridable via env, constructor wins
+# ---------------------------------------------------------------------------
+
+
+class TestMaxRoundsDefault:
+    def test_default_constant_is_three(self):
+        assert DEFAULT_MAX_ROUNDS == 3
+
+    def test_agent_default_max_rounds_is_three(self, monkeypatch):
+        """A loop built with no max_rounds and no env override uses 3."""
+        monkeypatch.delenv(_MAX_ROUNDS_ENV, raising=False)
+        loop, _, _ = _build_loop_default_rounds(critic_statuses=['passed'])
+        assert loop.max_rounds == 3
+
+    async def test_exhausted_uses_default_three_rounds(self, monkeypatch):
+        """With no override, an all-blocked critic exhausts at round 3."""
+        monkeypatch.delenv(_MAX_ROUNDS_ENV, raising=False)
+        loop, critic, _ = _build_loop_default_rounds(
+            critic_statuses=['blocked'] * 3,
+        )
+        ctx = _fake_ctx()
+
+        await _run_loop(loop, ctx)
+
+        result = ctx.session.state[QUALITY_LOOP_RESULT_KEY]
+        assert loop.max_rounds == 3
+        assert critic.calls == 3, 'critic runs exactly the default 3 rounds'
+        assert result['status'] == 'exhausted'
+        assert result['rounds_used'] == 3
+
+    @pytest.mark.parametrize('override', [1, 2])
+    def test_explicit_constructor_override_still_wins(self, override):
+        loop, _, _ = _build_loop(
+            critic_statuses=['blocked'] * override, max_rounds=override
+        )
+        assert loop.max_rounds == override
+
+
+class TestMaxRoundsEnvVar:
+    def test_no_env_uses_default(self, monkeypatch):
+        monkeypatch.delenv(_MAX_ROUNDS_ENV, raising=False)
+        assert _resolve_max_rounds() == 3
+
+    def test_blank_env_uses_default(self, monkeypatch):
+        monkeypatch.setenv(_MAX_ROUNDS_ENV, '   ')
+        assert _resolve_max_rounds() == 3
+
+    def test_valid_positive_env_is_used(self, monkeypatch):
+        monkeypatch.setenv(_MAX_ROUNDS_ENV, '4')
+        assert _resolve_max_rounds() == 4
+
+    def test_invalid_env_falls_back_and_warns(self, monkeypatch):
+        monkeypatch.setenv(_MAX_ROUNDS_ENV, 'abc')
+        warn = MagicMock()
+        monkeypatch.setattr(quality_loop_agent.logger, 'warning', warn)
+        assert _resolve_max_rounds() == 3
+        assert warn.called, 'an invalid env value must log a warning'
+
+    @pytest.mark.parametrize('bad', ['0', '-2'])
+    def test_non_positive_env_falls_back_and_warns(self, monkeypatch, bad):
+        monkeypatch.setenv(_MAX_ROUNDS_ENV, bad)
+        warn = MagicMock()
+        monkeypatch.setattr(quality_loop_agent.logger, 'warning', warn)
+        assert _resolve_max_rounds() == 3
+        assert warn.called, 'a non-positive env value must log a warning'
+
+    def test_env_applies_to_a_newly_built_agent(self, monkeypatch):
+        monkeypatch.setenv(_MAX_ROUNDS_ENV, '4')
+        loop, _, _ = _build_loop_default_rounds(critic_statuses=['passed'])
+        assert loop.max_rounds == 4
+
+    def test_constructor_override_beats_env(self, monkeypatch):
+        monkeypatch.setenv(_MAX_ROUNDS_ENV, '4')
+        loop, _, _ = _build_loop(critic_statuses=['passed'], max_rounds=2)
+        assert loop.max_rounds == 2
 
 
 # ---------------------------------------------------------------------------
@@ -642,7 +739,7 @@ class StateDeltaOnlyCritic(BaseAgent):
 def _build_state_delta_only_loop(
     *,
     statuses: List[str],
-    max_rounds: int = 5,
+    max_rounds: int = 3,
 ) -> tuple[QualityLoopAgent, StateDeltaOnlyCritic, FakeReviser]:
     critic = StateDeltaOnlyCritic(
         name='state_delta_only_critic', statuses=statuses
