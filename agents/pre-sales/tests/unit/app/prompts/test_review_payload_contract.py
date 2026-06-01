@@ -110,9 +110,52 @@ def test_exhausted_uses_items_not_state_findings(root_prompt: str) -> None:
     """The exhausted path must base its explanation on the unresolved_items
     envelope field, not on findings read from state."""
     block = _between(root_prompt, '<sow_validation>', '</sow_validation>')
-    exhausted = block[block.find('status == "exhausted"'):]
+    exhausted = _between(
+        root_prompt, 'status == "exhausted"', 'status == "no_progress"'
+    )
     assert 'unresolved_items' in exhausted
-    assert 'final_report.findings' not in exhausted, (
+    assert 'final_report.findings' not in block[block.find('status == "exhausted"'):], (
         'exhausted must not claim the root can read final_report.findings '
         'from state.'
     )
+
+
+def test_exhausted_path_instructs_stop_before_acting(root_prompt: str) -> None:
+    """exhausted must present options and halt — never autonomously
+    regenerate, re-stage, and re-run the loop (the over-correction bug)."""
+    exhausted = _between(
+        root_prompt, 'status == "exhausted"', 'status == "no_progress"'
+    )
+    assert 'STOP' in exhausted, (
+        'The exhausted path must tell the root to present options and STOP, '
+        'not silently regenerate/re-stage/re-run the loop.'
+    )
+    # The act-only-on-user-choice guard must be present.
+    assert 'on your own this turn' in exhausted
+    # Re-staging is gated on a section being regenerated AND saved first —
+    # never re-running on an unchanged payload.
+    assert 'save that chosen section' in exhausted
+    assert 'unchanged payload' in exhausted
+
+
+def test_needs_human_review_instructs_stop_before_acting(
+    root_prompt: str,
+) -> None:
+    """needs_human_review must also ask and halt this turn."""
+    nhr = _between(
+        root_prompt, 'status == "needs_human_review"', 'status == "exhausted"'
+    )
+    assert 'STOP' in nhr
+
+
+def test_no_progress_instructs_stop_before_acting(root_prompt: str) -> None:
+    """no_progress must present options and halt this turn — re-staging only
+    after the chosen section is regenerated and saved."""
+    block = _between(root_prompt, '<sow_validation>', '</sow_validation>')
+    start = block.find('status == "no_progress"')
+    end = block.find('status == "unexpected_status"', start)
+    assert 0 <= start < end, 'no_progress bullet not found before unexpected.'
+    no_progress = block[start:end]
+    assert 'STOP' in no_progress
+    assert 'on your own this turn' in no_progress
+    assert 'save that chosen section' in no_progress
