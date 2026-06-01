@@ -70,3 +70,29 @@ def test_architecture_gate_renders_from_review_payload(
     # No direct reads of the architecture/narrative state bundles.
     assert "state['app:sow:architecture']" not in block
     assert "state['app:sow:narrative']" not in block
+
+
+def test_sow_validation_documents_human_review_items(root_prompt: str) -> None:
+    block = _between(root_prompt, '<sow_validation>', '</sow_validation>')
+    assert 'human_review_items' in block, (
+        'The <sow_validation> envelope contract must document '
+        'human_review_items for the needs_human_review path.'
+    )
+
+
+def test_needs_human_review_uses_items_not_state_findings(
+    root_prompt: str,
+) -> None:
+    """The needs_human_review path must base its questions on the
+    human_review_items envelope field, not on findings read from state."""
+    block = _between(root_prompt, '<sow_validation>', '</sow_validation>')
+    # The needs_human_review bullet must point at human_review_items.
+    nhr = block[block.find('needs_human_review'):]
+    assert 'human_review_items' in nhr
+    # It must not instruct translating findings pulled from state.
+    assert 'final_report.findings' not in nhr, (
+        'needs_human_review must not claim the root can read '
+        'final_report.findings from state.'
+    )
+    # The reopen-approved-content flow is keyed on the decision_type.
+    assert 'reopen_approved_content' in block

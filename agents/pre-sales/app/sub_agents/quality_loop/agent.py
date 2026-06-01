@@ -253,6 +253,82 @@ def _review_payload(
     return payload
 
 
+# Resolution modes that escalate a finding to human review (everything but
+# ``auto_fixable``).
+_HUMAN_REVIEW_MODES = frozenset(
+    {'decision_required', 'source_conflict', 'not_fixable_by_agent'}
+)
+# Content sections were approved at the Content Review. In the full stage,
+# only content-only decisions are treated as reopening that approval; mixed
+# content+architecture decisions remain decision_required.
+_CONTENT_SECTIONS = frozenset(
+    {'requirements', 'delivery_plan', 'scope_boundaries'}
+)
+_SECOND_STAGE_SECTIONS = frozenset({'architecture', 'narrative'})
+_MAX_HUMAN_REVIEW_ITEMS = 8
+_MAX_REASON_CHARS = 240
+
+
+def _decision_type(
+    mode: str, stage: str, affected_sections: list[str],
+) -> str:
+    """Compact decision_type derived from a finding's resolution_mode."""
+    if mode == 'source_conflict':
+        return 'source_conflict'
+    if mode == 'not_fixable_by_agent':
+        return 'missing_input'
+    # decision_required: only call it "reopen approved content" when a
+    # full-stage fix is content-ONLY. A mixed content+architecture conflict
+    # is ambiguous — keep it a plain decision and let the user pick the
+    # side, never assume the approved content must change.
+    content_only = (
+        any(s in _CONTENT_SECTIONS for s in affected_sections)
+        and not any(s in _SECOND_STAGE_SECTIONS for s in affected_sections)
+    )
+    if stage == 'full' and content_only:
+        return 'reopen_approved_content'
+    return 'decision_required'
+
+
+def _human_review_items(
+    final_report: dict[str, Any], stage: str,
+) -> list[dict[str, Any]]:
+    """Compact, state-free decision items for the needs_human_review path.
+
+    One entry per human-review finding — just enough for the root to form a
+    consultative question, never the raw report, severities, or a ready
+    question.
+    """
+    items: list[dict[str, Any]] = []
+    for finding in (final_report or {}).get('findings') or []:
+        if not isinstance(finding, dict):
+            continue
+        mode = finding.get('resolution_mode')
+        if mode not in _HUMAN_REVIEW_MODES:
+            if not (mode is None and finding.get('requires_human_review')):
+                continue
+        fields = [f for f in (finding.get('fields') or []) if isinstance(f, str)]
+        affected_sections = sorted({
+            BUNDLE_OWNED_FIELDS_BY_SECTION[f]
+            for f in fields
+            if f in BUNDLE_OWNED_FIELDS_BY_SECTION
+        })
+        reason = (
+            finding.get('recommendation') or finding.get('evidence') or ''
+        ).strip()
+        if len(reason) > _MAX_REASON_CHARS:
+            reason = reason[:_MAX_REASON_CHARS].rstrip() + '…'
+        items.append({
+            'decision_type': _decision_type(mode or '', stage, affected_sections),
+            'affected_sections': affected_sections or ['global'],
+            'affected_fields': fields,
+            'short_reason': reason,
+        })
+        if len(items) >= _MAX_HUMAN_REVIEW_ITEMS:
+            break
+    return items
+
+
 def _sections_for_finding(
     finding: dict, available_sections: set[str],
 ) -> list[str]:
@@ -1126,6 +1202,14 @@ class QualityLoopAgent(BaseAgent):
             content_payload['review_payload'] = _review_payload(
                 terminal_sow, current_stage,
             )
+        # Compact, state-free decision items so the root can form a
+        # consultative question without reading the ValidationReport. Only
+        # on needs_human_review — exhausted / no_progress are technical
+        # halts, not user decisions.
+        if status == 'needs_human_review':
+            human_items = _human_review_items(final_report, current_stage)
+            if human_items:
+                content_payload['human_review_items'] = human_items
         if observed_status is not None:
             content_payload['observed_status'] = observed_status
         if message:
@@ -1192,6 +1276,10 @@ class QualityLoopAgent(BaseAgent):
             text_envelope['review_payload'] = _review_payload(
                 cached_sow, current_stage,
             )
+        if cached_payload.get('status') == 'needs_human_review':
+            human_items = _human_review_items(cached_report, current_stage)
+            if human_items:
+                text_envelope['human_review_items'] = human_items
         if cached_payload.get('observed_status') is not None:
             text_envelope['observed_status'] = cached_payload['observed_status']
 
