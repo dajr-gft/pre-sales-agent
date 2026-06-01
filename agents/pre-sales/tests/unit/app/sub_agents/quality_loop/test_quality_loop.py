@@ -2466,9 +2466,9 @@ class TestExtractAnchorIds:
 
 def _sample_full_sow() -> dict:
     """A flat sow_data with every bundle-owned field populated, plus a few
-    manifest-derived keys (which must NOT leak into review_payload)."""
+    project-metadata keys (which must NOT leak into review_payload)."""
     return {
-        # manifest-derived — never part of a review payload
+        # project metadata — never part of a review payload
         'partner_name': 'GFT',
         'customer_name': 'ACME',
         'project_title': 'Project P',
@@ -2529,7 +2529,7 @@ class TestReviewPayloadHelper:
         rp = _review_payload(_sample_full_sow(), 'full')
         assert set(rp.keys()) == {'architecture', 'narrative'}
 
-    def test_manifest_fields_never_leak_into_payload(self):
+    def test_metadata_fields_never_leak_into_payload(self):
         for stage in ('content', 'full'):
             rp = _review_payload(_sample_full_sow(), stage)
             flat = {field for section in rp.values() for field in section}

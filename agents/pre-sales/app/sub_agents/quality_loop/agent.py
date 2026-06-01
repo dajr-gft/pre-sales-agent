@@ -228,10 +228,9 @@ _SECTION_ORDER: tuple[str, ...] = (
 _FIELD_TO_SECTION: dict[str, str] = dict(BUNDLE_OWNED_FIELDS_BY_SECTION)
 
 
-# Sections each review gate presents, per stage. The full-stage review
-# covers only architecture + narrative — the content sections were
-# approved at the Content Review and are frozen on the full pass (see the
-# full-stage freeze gate), so they are not re-sent in the review payload.
+# Sections each review gate presents. The full pass shows only
+# architecture + narrative — content was approved and frozen at the
+# Content Review, so it is not re-sent.
 _REVIEW_SECTIONS_BY_STAGE: dict[str, tuple[str, ...]] = {
     'content': ('requirements', 'delivery_plan', 'scope_boundaries'),
     'full': ('architecture', 'narrative'),
@@ -241,17 +240,10 @@ _REVIEW_SECTIONS_BY_STAGE: dict[str, tuple[str, ...]] = {
 def _review_payload(
     sow: dict[str, Any], stage: str,
 ) -> dict[str, dict[str, Any]]:
-    """Stage-specific slice of the corrected SOW for the root's review.
+    """Corrected, stage-specific sections the root must render for the review.
 
-    Groups the fields owned by the sections under review at ``stage`` into
-    ``{section: {field: value}}``, copied from the post-repair ``sow``
-    (``state['app:sow:current']`` at loop termination). The root renders
-    the review gate from this — it cannot read session state directly, so
-    without it the root would present the pre-loop content. Field→section
-    membership comes from ``BUNDLE_OWNED_FIELDS_BY_SECTION`` so it cannot
-    drift from the schema vocabulary; the per-stage section set is the
-    review contract (content stage shows the three content sections; full
-    stage shows only architecture + narrative).
+    Slices the post-repair ``sow`` (``state['app:sow:current']``) into
+    ``{section: {field: value}}`` for the sections ``stage`` reviews.
     """
     sections = _REVIEW_SECTIONS_BY_STAGE.get(stage, ())
     payload: dict[str, dict[str, Any]] = {section: {} for section in sections}
@@ -1126,12 +1118,9 @@ class QualityLoopAgent(BaseAgent):
             'blocking_total': final_blocker_count + final_major_count,
             'state_key': QUALITY_LOOP_RESULT_KEY,
         }
-        # Stage-specific view of the CORRECTED SOW so the root can render
-        # the review gate from the post-repair content. The root cannot
-        # read session state; without this it would present the pre-loop
-        # payload. Sourced from ``terminal_sow`` (state['app:sow:current']
-        # at termination), so it is the same version the hash and the
-        # document generator see.
+        # Stage-specific view of the corrected SOW (terminal_sow) so the
+        # root can render the review from post-repair content — it cannot
+        # read session state.
         if isinstance(terminal_sow, dict) and terminal_sow:
             content_payload['sow_data_hash'] = terminal_hash
             content_payload['review_payload'] = _review_payload(
@@ -1194,10 +1183,9 @@ class QualityLoopAgent(BaseAgent):
             'state_key': QUALITY_LOOP_RESULT_KEY,
             'cached': True,
         }
-        # Same stage-specific corrected-SOW view as the fresh-run envelope.
-        # The cache only fires when the staged SOW hash is unchanged, so
-        # state['app:sow:current'] is exactly the payload this result was
-        # produced from — the review_payload stays consistent on replay.
+        # Same review_payload as the fresh-run envelope; the cache only
+        # fires when state['app:sow:current'] is unchanged, so it stays
+        # consistent on replay.
         cached_sow = ctx.session.state.get(STATE_SOW)
         if isinstance(cached_sow, dict) and cached_sow:
             text_envelope['sow_data_hash'] = sow_data_hash(cached_sow)
