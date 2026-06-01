@@ -41,6 +41,7 @@ from app.sub_agents.quality_loop.agent import (
     _human_review_items,
     _resolve_max_rounds,
     _review_payload,
+    _unresolved_items,
 )
 from app.sub_agents.validation.schema import (
     STATE_SOW,
@@ -2721,13 +2722,14 @@ def _finding(
     fields: list[str],
     *,
     recommendation: str = 'Pick side A or side B; the source of truth is unclear.',
+    severity: str = 'BLOCKER',
 ) -> dict:
     """A finding dict shaped like the aggregator's ValidationReport output."""
     return {
         'id': 'contradictions-001',
         'skill': 'contradictions',
         'category': 'fr_vs_nfr',
-        'severity': 'BLOCKER',
+        'severity': severity,
         'confidence': 0.9,
         'evidence': 'FR-01 vs NFR-02',
         'recommendation': recommendation,
@@ -2952,3 +2954,159 @@ class TestHumanReviewItemsEnvelope:
 
         assert second.get('cached') is True
         assert second['human_review_items'] == first['human_review_items']
+
+
+class TestUnresolvedItems:
+    def test_only_blocking_findings_become_items(self):
+        report = _report('blocked', [
+            _finding('auto_fixable', ['out_of_scope'], severity='MINOR'),
+            _finding('auto_fixable', ['functional_requirements']),
+        ])
+        items = _unresolved_items(report)
+        assert len(items) == 1
+        assert items[0]['affected_sections'] == ['requirements']
+
+    def test_major_findings_are_included(self):
+        report = _report('blocked', [
+            _finding('auto_fixable', ['technology_stack'], severity='MAJOR'),
+        ])
+        assert len(_unresolved_items(report)) == 1
+
+    def test_blocker_prioritised_over_major_within_cap(self):
+        # Report lists MAJORs first; the BLOCKER must not be dropped by the
+        # cap. Sort is stable, so BLOCKER floats to the front.
+        majors = [
+            _finding('auto_fixable', ['out_of_scope'], severity='MAJOR')
+            for _ in range(10)
+        ]
+        blocker = _finding(
+            'auto_fixable', ['functional_requirements'], severity='BLOCKER',
+        )
+        items = _unresolved_items(_report('blocked', majors + [blocker]))
+        assert len(items) == 8
+        assert items[0]['affected_sections'] == ['requirements']
+
+    def test_item_shape_is_compact(self):
+        items = _unresolved_items(_report('blocked', [
+            _finding('auto_fixable', ['functional_requirements']),
+        ]))
+        # No decision_type — exhausted is non-convergence, not a decision.
+        assert set(items[0].keys()) == {
+            'affected_sections', 'affected_fields', 'short_reason',
+        }
+        for leaked in ('severity', 'category', 'id', 'evidence', 'confidence'):
+            assert leaked not in items[0]
+
+    def test_affected_sections_derived_from_fields(self):
+        items = _unresolved_items(_report('blocked', [
+            _finding(
+                'auto_fixable',
+                ['technology_stack', 'functional_requirements'],
+            ),
+        ]))
+        assert items[0]['affected_sections'] == ['architecture', 'requirements']
+        assert items[0]['affected_fields'] == [
+            'technology_stack', 'functional_requirements',
+        ]
+
+    def test_empty_when_no_blocking_findings(self):
+        report = _report('passed', [
+            _finding('auto_fixable', ['deliverables'], severity='MINOR'),
+        ])
+        assert _unresolved_items(report) == []
+
+    def test_caps_item_count(self):
+        many = [_finding('auto_fixable', ['technology_stack'])] * 20
+        assert len(_unresolved_items(_report('blocked', many))) == 8
+
+    def test_short_reason_is_truncated(self):
+        long = 'x' * 500
+        items = _unresolved_items(_report('blocked', [
+            _finding('auto_fixable', ['risks'], recommendation=long),
+        ]))
+        reason = items[0]['short_reason']
+        assert reason.endswith('…')
+        assert len(reason) <= 241
+
+
+class TestUnresolvedItemsEnvelope:
+    @staticmethod
+    def _body(events: list[Event]) -> dict:
+        import json as _json
+        return _json.loads(_terminal_event(events).content.parts[0].text)
+
+    async def test_exhausted_returns_unresolved_items(self):
+        critic = _CriticEmittingFindings(
+            name='critic',
+            statuses=['blocked', 'blocked', 'blocked'],
+            findings=[_finding('auto_fixable', ['out_of_scope'])],
+        )
+        loop = QualityLoopAgent(
+            name='loop', description='t',
+            sub_agents=[critic, FakeReviser(name='reviser')],
+            max_rounds=3,
+        )
+        ctx = _ctx_with_sow({'project_title': 'P', 'out_of_scope': []})
+        ctx.session.state[STATE_STAGE] = 'content'
+
+        body = self._body(await _run_loop(loop, ctx))
+
+        assert body['status'] == 'exhausted'
+        assert body['unresolved_items']
+        assert body['unresolved_items'][0]['affected_sections'] == (
+            ['scope_boundaries']
+        )
+        # No decision_type, and the full report never rides in the envelope.
+        assert 'decision_type' not in body['unresolved_items'][0]
+        assert 'findings' not in body
+        assert 'final_report' not in body
+
+    async def test_passed_has_no_unresolved_items(self):
+        loop, _, _ = _build_loop(critic_statuses=['passed'])
+        ctx = _ctx_with_sow({'project_title': 'P'})
+        ctx.session.state[STATE_STAGE] = 'content'
+
+        body = self._body(await _run_loop(loop, ctx))
+
+        assert 'unresolved_items' not in body
+
+    async def test_needs_human_review_omits_unresolved_items(self):
+        """unresolved_items is only for exhausted — a needs_human_review
+        escalation carries human_review_items, never unresolved_items."""
+        critic = _CriticEmittingFindings(
+            name='critic',
+            statuses=['needs_human_review'],
+            findings=[_finding('decision_required', ['out_of_scope'])],
+        )
+        loop = QualityLoopAgent(
+            name='loop', description='t',
+            sub_agents=[critic, FakeReviser(name='reviser')],
+        )
+        ctx = _ctx_with_sow({'project_title': 'P', 'out_of_scope': []})
+        ctx.session.state[STATE_STAGE] = 'full'
+
+        body = self._body(await _run_loop(loop, ctx))
+
+        assert body['status'] == 'needs_human_review'
+        assert 'unresolved_items' not in body
+
+    async def test_cache_replay_preserves_unresolved_items(self):
+        critic = _CriticEmittingFindings(
+            name='critic',
+            statuses=['blocked', 'blocked', 'blocked'],
+            findings=[_finding('auto_fixable', ['technology_stack'])],
+        )
+        loop = QualityLoopAgent(
+            name='loop', description='t',
+            sub_agents=[critic, FakeReviser(name='reviser')],
+            max_rounds=3,
+        )
+        ctx = _ctx_with_sow({'project_title': 'P', 'technology_stack': []})
+        ctx.session.state[STATE_STAGE] = 'full'
+
+        first = self._body(await _run_loop(loop, ctx))
+        second = self._body(await _run_loop(loop, ctx))
+
+        assert first['status'] == 'exhausted'
+        assert second.get('cached') is True
+        assert second['unresolved_items'] == first['unresolved_items']

@@ -329,6 +329,55 @@ def _human_review_items(
     return items
 
 
+# Findings the gate counts as blocking — mirrors the severity set in
+# ``aggregator._is_blocking_finding``. On the exhausted path these are the
+# items the loop tried to repair but could not stabilise within the budget.
+_UNRESOLVED_SEVERITIES = frozenset({'BLOCKER', 'MAJOR'})
+_MAX_UNRESOLVED_ITEMS = 8
+
+
+def _unresolved_items(final_report: dict[str, Any]) -> list[dict[str, Any]]:
+    """Compact, state-free view of what did not converge — the exhausted path.
+
+    Unlike :func:`_human_review_items` there is no ``decision_type``:
+    ``exhausted`` is a non-convergence halt, not a pending human decision.
+    The field just lets the root explain the top blocking problems it could
+    not stabilise, without reading the ValidationReport from state.
+    """
+    blocking = [
+        f
+        for f in (final_report or {}).get('findings') or []
+        if isinstance(f, dict) and f.get('severity') in _UNRESOLVED_SEVERITIES
+    ]
+    # BLOCKER before MAJOR, preserving the report's relative order within
+    # each severity (``sort`` is stable). The aggregator already emits
+    # findings BLOCKER-first, so this is a cheap defensive guarantee that
+    # the cap never drops a BLOCKER in favour of a MAJOR if that upstream
+    # ordering ever changes.
+    blocking.sort(key=lambda f: 0 if f.get('severity') == 'BLOCKER' else 1)
+    items: list[dict[str, Any]] = []
+    for finding in blocking:
+        fields = [f for f in (finding.get('fields') or []) if isinstance(f, str)]
+        affected_sections = sorted({
+            BUNDLE_OWNED_FIELDS_BY_SECTION[f]
+            for f in fields
+            if f in BUNDLE_OWNED_FIELDS_BY_SECTION
+        })
+        reason = (
+            finding.get('recommendation') or finding.get('evidence') or ''
+        ).strip()
+        if len(reason) > _MAX_REASON_CHARS:
+            reason = reason[:_MAX_REASON_CHARS].rstrip() + '…'
+        items.append({
+            'affected_sections': affected_sections or ['global'],
+            'affected_fields': fields,
+            'short_reason': reason,
+        })
+        if len(items) >= _MAX_UNRESOLVED_ITEMS:
+            break
+    return items
+
+
 def _sections_for_finding(
     finding: dict, available_sections: set[str],
 ) -> list[str]:
@@ -1210,6 +1259,14 @@ class QualityLoopAgent(BaseAgent):
             human_items = _human_review_items(final_report, current_stage)
             if human_items:
                 content_payload['human_review_items'] = human_items
+        # The exhausted path is also user-facing: the loop spent its round
+        # budget without converging, so the root must explain what stuck.
+        # Same compact, state-free shape, minus decision_type (this is
+        # non-convergence, not a pending decision).
+        elif status == 'exhausted':
+            unresolved = _unresolved_items(final_report)
+            if unresolved:
+                content_payload['unresolved_items'] = unresolved
         if observed_status is not None:
             content_payload['observed_status'] = observed_status
         if message:
@@ -1280,6 +1337,10 @@ class QualityLoopAgent(BaseAgent):
             human_items = _human_review_items(cached_report, current_stage)
             if human_items:
                 text_envelope['human_review_items'] = human_items
+        elif cached_payload.get('status') == 'exhausted':
+            unresolved = _unresolved_items(cached_report)
+            if unresolved:
+                text_envelope['unresolved_items'] = unresolved
         if cached_payload.get('observed_status') is not None:
             text_envelope['observed_status'] = cached_payload['observed_status']
 
