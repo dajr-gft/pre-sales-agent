@@ -88,6 +88,7 @@ class TestValidationResult:
                     'field': 'a',
                     'message': 'm',
                     'suggestion': 's',
+                    'category': '',
                 }
             ],
         }
@@ -277,6 +278,84 @@ class TestTimelineConsistency:
         sow_data['timeline'] = []
         result = ContentValidator().validate(sow_data)
         assert not any(w.field == 'timeline' for w in result.warnings)
+
+
+class TestTimelineOutcomeReferences:
+    """Deterministic cross-reference: deliverable tags in
+    ``timeline[].outcomes`` must use the canonical deliverable id verbatim
+    (``WS-01``). Orphan (no such deliverable) and noncanonical (``WS01``
+    while ``WS-01`` exists) are both flagged; the latter is NEVER silently
+    normalised — that ambiguity is the bug this check exists to catch."""
+
+    @staticmethod
+    def _sow(outcome: str, numbers=('WS-01', 'WS-02', 'WS-03')) -> dict:
+        return {
+            'deliverables': [
+                {'number': n, 'activity': 'Phase 1', 'name': f'D-{n}',
+                 'description': 'd', 'format': 'Document'}
+                for n in numbers
+            ],
+            'timeline': [
+                {'activity': 'Phase 1', 'timeframe': 'W1', 'outcomes': outcome},
+            ],
+        }
+
+    def _ref_issues(self, outcome: str, **kw):
+        result = ContentValidator().validate(self._sow(outcome, **kw))
+        return [
+            i for i in result.issues
+            if i.category in (
+                'orphan_timeline_reference', 'noncanonical_timeline_reference',
+            )
+        ]
+
+    def test_canonical_exact_reference_is_clean(self):
+        assert self._ref_issues('Approved spec (WS-01).') == []
+
+    def test_no_tags_is_clean(self):
+        assert self._ref_issues('Approved architecture and rollout.') == []
+
+    def test_noncanonical_flagged_even_though_deliverable_exists(self):
+        issues = self._ref_issues('Approved spec (WS01).')
+        assert len(issues) == 1
+        assert issues[0].category == 'noncanonical_timeline_reference'
+        # Diagnostic suggestion names the canonical id; the raw tag is NOT
+        # silently accepted.
+        assert 'WS-01' in issues[0].suggestion
+        assert 'WS01' in issues[0].message
+
+    def test_orphan_reference_flagged(self):
+        issues = self._ref_issues('Approved spec (WS99).')
+        assert len(issues) == 1
+        assert issues[0].category == 'orphan_timeline_reference'
+
+    def test_one_issue_per_tag_mixed(self):
+        issues = self._ref_issues('Spec (WS-01); pipe (WS02); ghost (WS88).')
+        cats = sorted(i.category for i in issues)
+        # WS-01 canonical (clean); WS02 noncanonical; WS88 orphan.
+        assert cats == [
+            'noncanonical_timeline_reference', 'orphan_timeline_reference',
+        ]
+
+    def test_inert_when_no_deliverable_numbers(self):
+        # Deliverables without a ``number`` (e.g. the default builder) ->
+        # no canonical set -> check is a no-op, never a false positive.
+        sow = self._sow('Spec (WS01).')
+        for d in sow['deliverables']:
+            d.pop('number')
+        result = ContentValidator().validate(sow)
+        assert not [
+            i for i in result.issues
+            if i.category in (
+                'orphan_timeline_reference', 'noncanonical_timeline_reference',
+            )
+        ]
+
+    def test_issue_category_survives_to_dict(self):
+        result = ContentValidator().validate(self._sow('Spec (WS99).'))
+        dumped = result.to_dict()
+        cats = {i['category'] for i in dumped['issues']}
+        assert 'orphan_timeline_reference' in cats
 
 
 class TestTechStackConsistency:

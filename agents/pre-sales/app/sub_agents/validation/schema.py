@@ -23,6 +23,12 @@ SkillName = Literal[
     'contractual_exposure',
     'disclosures',
     'semantic_quality',
+    # Not an LLM skill: the origin tag for findings the aggregator
+    # synthesises from deterministic ContentValidator issues (e.g. the
+    # timeline cross-reference check) so they route to section repair like
+    # any other finding. Deliberately NOT in ``SKILL_NAMES`` and has no
+    # ``skill_findings_state_key`` / parallel agent — it never runs an LLM.
+    'deterministic',
 ]
 Stage = Literal['content', 'full']
 # Per-round critic mode written by the QualityLoopAgent (PR-2) and
@@ -205,6 +211,11 @@ class DeterministicIssue(BaseModel):
     field: str
     message: str
     suggestion: str = ''
+    # Machine-readable subtype mirrored from ValidationIssue. Blank for
+    # most checks; set by checks whose issues the aggregator routes (the
+    # timeline cross-reference check uses 'orphan_timeline_reference' /
+    # 'noncanonical_timeline_reference').
+    category: str = ''
 
 
 class DeterministicResult(BaseModel):
