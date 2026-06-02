@@ -21,9 +21,11 @@ from app.callbacks import (
     _MAX_SOW_DATA_CHARS,
     _RECOVERY_TOOL_NAME,
     _STATE_EMPTY_RESPONSE_ATTEMPTS,
+    _STATE_RUN_STARTED,
     after_tool_callback,
     before_tool_callback,
     empty_response_guard,
+    run_start_banner,
 )
 
 
@@ -669,3 +671,56 @@ class TestLocalizedApologyGenerator:
         sent = captured['contents']
         assert len(sent) < len(huge)
         assert sent.endswith('…')
+
+
+class TestRunStartBanner:
+    """``run_start_banner`` stamps exactly one greppable boundary per run so
+    an appended ``agent.log`` can be split without clearing it."""
+
+    @staticmethod
+    def _ctx(state: dict | None = None) -> MagicMock:
+        ctx = MagicMock(name='CallbackContext')
+        ctx.state = {} if state is None else state
+        ctx.invocation_id = 'inv-test'
+        return ctx
+
+    @staticmethod
+    def _banner_count(log: MagicMock) -> int:
+        return sum(
+            1
+            for c in log.info.call_args_list
+            if c.args and c.args[0] == 'agent_run_started'
+        )
+
+    def test_emits_once_and_sets_sentinel(self, monkeypatch):
+        log = MagicMock()
+        monkeypatch.setattr(_callbacks_module, 'logger', log)
+        ctx = self._ctx()
+
+        out = run_start_banner(ctx)
+
+        assert out is None
+        # Sentinel holds the run_id (truthy), not just a bool.
+        assert ctx.state.get(_STATE_RUN_STARTED)
+        assert self._banner_count(log) == 1
+
+    def test_idempotent_within_same_session(self, monkeypatch):
+        log = MagicMock()
+        monkeypatch.setattr(_callbacks_module, 'logger', log)
+        state: dict = {}
+
+        run_start_banner(self._ctx(state))
+        first_run_id = state[_STATE_RUN_STARTED]
+        run_start_banner(self._ctx(state))  # later turn, same session state
+
+        assert state[_STATE_RUN_STARTED] == first_run_id  # unchanged
+        assert self._banner_count(log) == 1  # no second banner
+
+    def test_new_session_emits_again(self, monkeypatch):
+        log = MagicMock()
+        monkeypatch.setattr(_callbacks_module, 'logger', log)
+
+        run_start_banner(self._ctx({}))  # session A (fresh state)
+        run_start_banner(self._ctx({}))  # session B (fresh state)
+
+        assert self._banner_count(log) == 2
