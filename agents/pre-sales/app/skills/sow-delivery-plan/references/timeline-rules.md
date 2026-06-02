@@ -19,7 +19,7 @@ Stored in `sow_data['timeline']` as a list of rows. Three columns:
 {
   "activity": "Phase 1: Discovery",
   "timeframe": "Weeks 1-2",
-  "outcomes": "Approved architecture design (WS01); validated FR/NFR set; signed-off integration inventory."
+  "outcomes": "Approved architecture design (WS-01); validated FR/NFR set; signed-off integration inventory."
 }
 ```
 
@@ -54,8 +54,12 @@ Stored in `sow_data['timeline']` as a list of rows. Three columns:
 
 Each `outcomes` value is a single line (no multi-paragraph), naming:
 
-- Specific workstreams that close in this phase
-  (`WS01`, `WS02`, ...) — by label and short descriptor.
+- Specific workstreams/deliverables that close in this phase, referenced
+  by the **exact** `deliverables[].number` (the canonical id) in
+  parentheses — `(WS-01)`, `(WS-02)`, … in the current template. Use the
+  stored id verbatim: never the separator-less form `WS01`, and never the
+  free-text `activity` label. If a deliverable's `number` is dotted
+  (`WS01.1`), reference it dotted, exactly as stored.
 - Specific deliverables that are signed off in this phase
   ("Approved architecture design", "Validated data quality report").
 - One business-level marker when relevant ("Go-live with production

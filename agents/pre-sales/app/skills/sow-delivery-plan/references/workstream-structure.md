@@ -7,7 +7,7 @@ contradictions that the validation critic catches.
 
 ## Section layout (deliverables-first, workstream-organized)
 
-Deliverables are organized as numbered **Workstreams** (`WS01`, `WS02`,
+Deliverables are organized as numbered **Workstreams** (`WS-01`, `WS-02`,
 ...), each containing:
 
 - **Objective** — what this workstream delivers (1-2 sentences).
@@ -25,7 +25,7 @@ Each deliverable row in `sow_data['deliverables']` is structured as:
 
 ```
 {
-  "activity": "<workstream label, e.g. 'WS01: Architecture Foundation'>",
+  "activity": "<workstream label, e.g. 'Workstream 1: Architecture Foundation'>",
   "name": "<deliverable name>",
   "description": "<what it contains; 1-2 sentences>",
   "format": "<Document | Presentation | Spreadsheet | Code | Demonstration | Video>"
@@ -34,7 +34,11 @@ Each deliverable row in `sow_data['deliverables']` is structured as:
 
 The `activity` column carries the workstream label so the rendered table
 groups deliverables by workstream. Multiple rows share the same
-`activity` when the workstream produces several deliverables.
+`activity` when the workstream produces several deliverables. It is a
+**free-text grouping label, not a cross-reference id** — the stable id is
+`number` (`WS-NN`). Never put a separator-less code like `WS01` in
+`activity`; that is the form that leaks into `timeline.outcomes` as a
+non-canonical reference. Cross-references always use `number` verbatim.
 
 ## Activities — the operations behind workstreams
 

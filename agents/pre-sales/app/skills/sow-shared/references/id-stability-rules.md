@@ -1,7 +1,7 @@
 # ID stability rules (cross-cutting, binding)
 
 IDs assigned to items in a SOW (FR-NN, NFR-NN, OOS-NN, A-NN, deliverable
-codes such as WS01-D2, etc.) are a contractual surface — users approve
+codes such as WS-01, etc.) are a contractual surface — users approve
 content **by ID** in reviews and refer back to them in negotiation. Once
 an ID has been shown to the user, it is frozen for the rest of the
 session. Every workflow skill must obey the following rules without
