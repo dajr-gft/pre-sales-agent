@@ -3571,3 +3571,58 @@ class TestRoundModePlumbing:
         import json as _json
         body = _json.loads(_terminal_event(events).content.parts[0].text)
         assert body['status'] == 'exhausted'
+
+
+# ---------------------------------------------------------------------------
+# Throughput fix — the loop imposes NO finding cap of its own. Once the
+# critic stops sampling (SKILL.md change) and the repair tool cap is
+# raised, a large single-class R1 batch must be dispatched WHOLE to the
+# owning section and converge when the repair drains it. The cap fix
+# lives in prompts + the patch tool; this guards that the loop does not
+# re-throttle.
+# ---------------------------------------------------------------------------
+
+
+class TestThroughputNoLoopLevelCap:
+    async def test_large_single_class_batch_dispatched_whole_then_converges(self):
+        # 8 same-class findings, all routed to delivery_plan in R1.
+        findings = [
+            {
+                'id': f'contradictions-{i:03d}',
+                'skill': 'contradictions',
+                'category': 'activities_vs_deliverables',
+                'severity': 'MAJOR',
+                'fields': ['activity_phases'],
+                'evidence': f'Deliverable WS-{i:02d} references a missing activity.',
+                'recommendation': 'Align the activity reference.',
+            }
+            for i in range(1, 9)
+        ]
+        # _critic_emitting -> blocked on round 1 (emits findings), passed
+        # on round 2 (the draining repair fixed them).
+        critic = _critic_emitting(findings)
+        delivery = FakeSectionAgent(
+            name='delivery_plan_agent',
+            output_key='app:sow:delivery_plan',
+            repair_payload_per_call=[],
+        )
+        loop = QualityLoopAgent(
+            name='sow_quality_loop',
+            description='test',
+            sub_agents=[critic, FakeReviser(name='fake_reviser')],
+            max_rounds=3,
+            repair_section_agents={'delivery_plan': delivery},
+        )
+        ctx = _fake_ctx()
+        _seed_assembly_state(ctx.session.state)
+        events = await _run_loop(loop, ctx)
+
+        # The loop dispatched ALL 8 findings to the section in R1 — no
+        # loop-level cap silently dropped the tail.
+        assert delivery.repair_payload_per_call, 'section repair never ran'
+        assert len(delivery.repair_payload_per_call[0]) == 8
+
+        import json as _json
+        body = _json.loads(_terminal_event(events).content.parts[0].text)
+        assert body['status'] == 'passed'
+        assert body['rounds_used'] == 2

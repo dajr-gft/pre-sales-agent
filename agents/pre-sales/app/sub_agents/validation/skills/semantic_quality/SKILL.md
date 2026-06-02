@@ -152,6 +152,20 @@ ContentValidator covers format only; pattern compliance is semantic.
 - 0.60–0.84 — defect is real but a defensible interpretation exists.
 - < 0.60 — stylistic preference rather than defect; do not emit.
 
+## Completeness — do not sample (binding)
+
+Enumerate every valid finding within the current validation scope and stage.
+Do not duplicate the same issue with different wording.
+Do not lower confidence/severity bars.
+
+Report all N distinct qualifying defects — do not stop at an arbitrary count.
+This is not a license to hunt for more, invent issues, relax the bars, or
+reopen content frozen by the Stage-awareness gate at the current stage.
+
+Safety ceiling: at most 25 findings for THIS skill (not per category); above
+that, report the 25 highest by severity then confidence and note in the last
+`recommendation` that more occurrences of the same families remain.
+
 ## Output
 
 ```json
@@ -172,7 +186,8 @@ ContentValidator covers format only; pattern compliance is semantic.
 }
 ```
 
-`id` uses `semantic_quality-NNN`. Cap at 5 findings.
+`id` uses `semantic_quality-NNN`; report findings per the **Completeness**
+rule above (no sampling).
 Allowed `category` values: `vague_phrasing_outside_nfr`,
 `self_sufficiency_break`, `redundant_or_overlapping_items`,
 `naming_drift`, `generic_architecture_labels`, `language_hygiene`,
