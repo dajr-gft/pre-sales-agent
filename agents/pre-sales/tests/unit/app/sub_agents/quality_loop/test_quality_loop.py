@@ -35,12 +35,15 @@ from app.sub_agents.quality_loop.agent import (
     QUALITY_LOOP_RESULT_KEY,
     STATE_LAST_LOOP_HASH,
     QualityLoopAgent,
+    _DIGEST_PROSE_MAX_CHARS,
     _MAX_ROUNDS_ENV,
     _REVIEW_SECTIONS_BY_STAGE,
     _decision_type,
+    _finding_digest,
     _human_review_items,
     _resolve_max_rounds,
     _review_payload,
+    _truncate_prose,
     _unresolved_items,
 )
 from app.sub_agents.validation.schema import (
@@ -3110,3 +3113,311 @@ class TestUnresolvedItemsEnvelope:
         assert first['status'] == 'exhausted'
         assert second.get('cached') is True
         assert second['unresolved_items'] == first['unresolved_items']
+
+
+# ---------------------------------------------------------------------------
+# PR-1 — observability: verbose-gated finding prose + per-round
+# ``changed_sections`` event. No functional change to the loop.
+# ---------------------------------------------------------------------------
+
+
+class TestTruncateProse:
+    """``_truncate_prose`` coerces to a string and caps length so a
+    churning finding's evidence cannot bloat a verbose trace."""
+
+    def test_none_becomes_empty_string(self):
+        assert _truncate_prose(None) == ''
+
+    def test_short_value_is_unchanged_and_no_ellipsis(self):
+        assert _truncate_prose('short evidence') == 'short evidence'
+
+    def test_non_string_is_coerced(self):
+        assert _truncate_prose(42) == '42'
+
+    def test_long_value_is_truncated_with_ellipsis(self):
+        long = 'x' * (_DIGEST_PROSE_MAX_CHARS + 50)
+        out = _truncate_prose(long)
+        assert out == 'x' * _DIGEST_PROSE_MAX_CHARS + '…'
+        # The body keeps exactly the limit; the ellipsis is the only extra.
+        assert len(out) == _DIGEST_PROSE_MAX_CHARS + 1
+
+    def test_value_at_limit_is_not_truncated(self):
+        exact = 'y' * _DIGEST_PROSE_MAX_CHARS
+        assert _truncate_prose(exact) == exact
+
+
+class TestFindingDigestProse:
+    """``_finding_digest`` omits the long evidence/recommendation prose
+    by default and includes it (truncated) only when ``include_prose``
+    is set — the flag the dispatch call sites gate behind verbose mode."""
+
+    _FINDING = {
+        'id': 'c-1',
+        'skill': 'contradictions',
+        'category': 'scope_vs_oos',
+        'severity': 'BLOCKER',
+        'resolution_mode': 'auto_fixable',
+        'fields': ['out_of_scope', 'functional_requirements', 'risks', 'extra'],
+        'persistent': True,
+        'evidence': 'The out-of-scope list excludes mobile, but FR-07 '
+                    'requires a mobile client.',
+        'recommendation': 'Reconcile FR-07 with the out-of-scope boundary.',
+    }
+
+    def test_default_digest_omits_prose(self):
+        digest = _finding_digest(self._FINDING)
+        assert 'evidence' not in digest
+        assert 'recommendation' not in digest
+
+    def test_default_digest_keeps_identity_and_caps_fields(self):
+        digest = _finding_digest(self._FINDING)
+        assert digest['id'] == 'c-1'
+        assert digest['skill'] == 'contradictions'
+        assert digest['category'] == 'scope_vs_oos'
+        assert digest['severity'] == 'BLOCKER'
+        assert digest['resolution_mode'] == 'auto_fixable'
+        assert digest['persistent'] is True
+        # Only the first three ``fields`` are kept.
+        assert digest['fields'] == [
+            'out_of_scope', 'functional_requirements', 'risks',
+        ]
+
+    def test_verbose_digest_includes_prose(self):
+        digest = _finding_digest(self._FINDING, include_prose=True)
+        assert digest['evidence'].startswith('The out-of-scope list')
+        assert digest['recommendation'].startswith('Reconcile FR-07')
+
+    def test_verbose_digest_truncates_long_prose(self):
+        finding = dict(self._FINDING)
+        finding['evidence'] = 'z' * (_DIGEST_PROSE_MAX_CHARS + 100)
+        digest = _finding_digest(finding, include_prose=True)
+        assert digest['evidence'].endswith('…')
+        assert len(digest['evidence']) == _DIGEST_PROSE_MAX_CHARS + 1
+
+    def test_verbose_digest_tolerates_missing_prose_keys(self):
+        finding = {'id': 'x', 'fields': []}
+        digest = _finding_digest(finding, include_prose=True)
+        assert digest['evidence'] == ''
+        assert digest['recommendation'] == ''
+
+
+def _capture_logger_info(monkeypatch):
+    """Patch the quality-loop module logger.info, returning the capture
+    list of ``(event_name, kwargs)`` tuples (the pattern the existing
+    telemetry tests use)."""
+    from app.sub_agents.quality_loop import agent as quality_loop_module
+
+    captured: list[tuple[str, dict]] = []
+    original_info = quality_loop_module.logger.info
+
+    def _capturing_info(event_name, **kwargs):
+        captured.append((event_name, kwargs))
+        return original_info(event_name, **kwargs)
+
+    monkeypatch.setattr(
+        quality_loop_module.logger, 'info', _capturing_info
+    )
+    return captured
+
+
+class _FakeNoopSectionAgent(BaseAgent):
+    """Section stub that writes its bundle back UNCHANGED — simulates a
+    no-op repair so the loop's ``changed=False`` branch is exercised."""
+
+    config_type: ClassVar[type[BaseAgentConfig]] = BaseAgentConfig
+    output_key: str = ''
+
+    async def run_async(self, ctx) -> AsyncGenerator[Event, None]:  # type: ignore[override]
+        # Re-write the exact bundle already in state → pre hash == post
+        # hash → the loop records this section as unchanged.
+        ctx.session.state[self.output_key] = ctx.session.state.get(
+            self.output_key
+        )
+        if False:  # pragma: no cover
+            yield  # type: ignore[unreachable]
+
+
+class TestChangedSectionsLog:
+    """The loop emits one ``quality_loop_changed_sections`` event per
+    round summarising which dispatched sections actually changed their
+    bundle (changed) vs ran a no-op (unchanged)."""
+
+    def _build(self, *, critic, sections, max_rounds=2):
+        reviser = FakeReviser(name='fake_reviser')
+        loop = QualityLoopAgent(
+            name='sow_quality_loop',
+            description='test',
+            sub_agents=[critic, reviser],
+            max_rounds=max_rounds,
+            repair_section_agents=sections,
+        )
+        return loop, reviser
+
+    async def test_changed_section_listed_under_changed(self, monkeypatch):
+        delivery = FakeSectionAgent(
+            name='delivery_plan_agent',
+            output_key='app:sow:delivery_plan',
+            repair_payload_per_call=[],
+        )
+        critic = _critic_emitting([
+            {
+                'id': 'c-1',
+                'skill': 'contradictions',
+                'category': 'activities_vs_deliverables',
+                'severity': 'MAJOR',
+                'fields': ['activity_phases'],
+                'evidence': 'x',
+                'recommendation': 'y',
+            },
+        ])
+        loop, _ = self._build(critic=critic, sections={'delivery_plan': delivery})
+        captured = _capture_logger_info(monkeypatch)
+
+        ctx = _fake_ctx()
+        _seed_assembly_state(ctx.session.state)
+        await _run_loop(loop, ctx)
+
+        events = [kw for (n, kw) in captured if n == 'quality_loop_changed_sections']
+        assert events, 'changed_sections event must fire when a section runs'
+        first = events[0]
+        assert first['round'] == 1
+        assert first['changed_sections'] == ['delivery_plan']
+        assert first['unchanged_sections'] == []
+
+    async def test_noop_section_listed_under_unchanged(self, monkeypatch):
+        delivery = _FakeNoopSectionAgent(
+            name='delivery_plan_agent',
+            output_key='app:sow:delivery_plan',
+        )
+        critic = _critic_emitting([
+            {
+                'id': 'c-1',
+                'skill': 'contradictions',
+                'category': 'activities_vs_deliverables',
+                'severity': 'MAJOR',
+                'fields': ['activity_phases'],
+                'evidence': 'x',
+                'recommendation': 'y',
+            },
+        ])
+        loop, _ = self._build(critic=critic, sections={'delivery_plan': delivery})
+        captured = _capture_logger_info(monkeypatch)
+
+        ctx = _fake_ctx()
+        _seed_assembly_state(ctx.session.state)
+        await _run_loop(loop, ctx)
+
+        events = [kw for (n, kw) in captured if n == 'quality_loop_changed_sections']
+        assert events, 'changed_sections event must fire when a section runs'
+        first = events[0]
+        assert first['changed_sections'] == []
+        assert first['unchanged_sections'] == ['delivery_plan']
+
+    async def test_no_event_when_only_mechanical_residue(self, monkeypatch):
+        # MINOR finding with no structural fields → routes to the reviser
+        # only, so no section repair runs and the event must not fire.
+        critic = _critic_emitting([
+            {
+                'id': 'm-1',
+                'skill': 'semantic_quality',
+                'category': 'vague_phrasing',
+                'severity': 'MINOR',
+                'fields': [],
+                'evidence': 'x',
+                'recommendation': 'y',
+            },
+        ])
+        loop, _ = self._build(critic=critic, sections={})
+        captured = _capture_logger_info(monkeypatch)
+
+        ctx = _fake_ctx()
+        _seed_assembly_state(ctx.session.state)
+        await _run_loop(loop, ctx)
+
+        events = [n for (n, _kw) in captured if n == 'quality_loop_changed_sections']
+        assert not events, (
+            'changed_sections must only fire when ≥1 section repair runs.'
+        )
+
+
+class TestDispatchProseVerboseGating:
+    """The dispatch events carry the truncated evidence/recommendation
+    prose ONLY when SOW verbose logging is on — production traces stay
+    compact, verbose sessions can read the contradiction text."""
+
+    def _build(self, *, critic, sections, max_rounds=2):
+        reviser = FakeReviser(name='fake_reviser')
+        loop = QualityLoopAgent(
+            name='sow_quality_loop',
+            description='test',
+            sub_agents=[critic, reviser],
+            max_rounds=max_rounds,
+            repair_section_agents=sections,
+        )
+        return loop, reviser
+
+    def _section_dispatch_findings(self, captured):
+        for name, kwargs in captured:
+            if name == 'quality_loop_section_dispatch':
+                return kwargs['findings']
+        return None
+
+    async def test_prose_present_when_verbose(self, monkeypatch):
+        monkeypatch.setenv('SOW_VERBOSE_LOGGING', '1')
+        delivery = FakeSectionAgent(
+            name='delivery_plan_agent',
+            output_key='app:sow:delivery_plan',
+            repair_payload_per_call=[],
+        )
+        critic = _critic_emitting([
+            {
+                'id': 'c-1',
+                'skill': 'contradictions',
+                'category': 'activities_vs_deliverables',
+                'severity': 'MAJOR',
+                'fields': ['activity_phases'],
+                'evidence': 'WS-03 has no owning activity',
+                'recommendation': 'Add the activity.',
+            },
+        ])
+        loop, _ = self._build(critic=critic, sections={'delivery_plan': delivery})
+        captured = _capture_logger_info(monkeypatch)
+
+        ctx = _fake_ctx()
+        _seed_assembly_state(ctx.session.state)
+        await _run_loop(loop, ctx)
+
+        findings = self._section_dispatch_findings(captured)
+        assert findings, 'section dispatch event must fire'
+        assert findings[0]['evidence'] == 'WS-03 has no owning activity'
+        assert findings[0]['recommendation'] == 'Add the activity.'
+
+    async def test_prose_absent_when_not_verbose(self, monkeypatch):
+        monkeypatch.delenv('SOW_VERBOSE_LOGGING', raising=False)
+        delivery = FakeSectionAgent(
+            name='delivery_plan_agent',
+            output_key='app:sow:delivery_plan',
+            repair_payload_per_call=[],
+        )
+        critic = _critic_emitting([
+            {
+                'id': 'c-1',
+                'skill': 'contradictions',
+                'category': 'activities_vs_deliverables',
+                'severity': 'MAJOR',
+                'fields': ['activity_phases'],
+                'evidence': 'WS-03 has no owning activity',
+                'recommendation': 'Add the activity.',
+            },
+        ])
+        loop, _ = self._build(critic=critic, sections={'delivery_plan': delivery})
+        captured = _capture_logger_info(monkeypatch)
+
+        ctx = _fake_ctx()
+        _seed_assembly_state(ctx.session.state)
+        await _run_loop(loop, ctx)
+
+        findings = self._section_dispatch_findings(captured)
+        assert findings, 'section dispatch event must fire'
+        assert 'evidence' not in findings[0]
+        assert 'recommendation' not in findings[0]

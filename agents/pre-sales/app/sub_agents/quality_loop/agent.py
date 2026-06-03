@@ -475,17 +475,43 @@ _SECTION_BUNDLE_KEYS: dict[str, str] = {
 # function bodies below continue to work unchanged.
 
 
-def _finding_digest(finding: dict) -> dict:
+# Max characters of finding prose (``evidence`` / ``recommendation``)
+# kept in a verbose digest. Long enough to read the actual contradiction
+# text in a trace, short enough that a churning finding does not bloat
+# the log. A truncated value gets an ellipsis suffix so a reader knows
+# the log is not the full text.
+_DIGEST_PROSE_MAX_CHARS = 240
+
+
+def _truncate_prose(value: object, *, limit: int = _DIGEST_PROSE_MAX_CHARS) -> str:
+    """Return ``value`` coerced to a string and truncated to ``limit`` chars.
+
+    Non-string inputs are coerced via ``str`` (``None`` becomes ''). An
+    ellipsis ('…') marks a value that was cut so the reader knows the log
+    is not the full prose.
+    """
+    text = str(value or '')
+    if len(text) <= limit:
+        return text
+    return text[:limit] + '…'
+
+
+def _finding_digest(finding: dict, *, include_prose: bool = False) -> dict:
     """Compact digest of a finding for diagnostic logging.
 
-    Keeps only the fields a human reading the log needs to trace a
-    finding's lifecycle round-to-round: identity, classification, and
-    the first three ``fields`` (the bundle keys the patcher would
-    touch). Drops ``evidence`` and ``recommendation`` — those are long
-    prose, and the fingerprint is what we use to track identity across
-    rounds anyway.
+    Keeps the fields a human reading the log needs to trace a finding's
+    lifecycle round-to-round: identity, classification, and the first
+    three ``fields`` (the bundle keys the patcher would touch).
+
+    ``evidence`` and ``recommendation`` are long prose. They are omitted
+    by default — the fingerprint is what we use to track identity across
+    rounds — and included, truncated, only when ``include_prose`` is set.
+    The dispatch call sites gate that flag behind
+    :func:`is_verbose_sow_logging` so everyday production traces stay
+    compact while a verbose session can read the actual contradiction
+    text (the observability wall the round investigation hit).
     """
-    return {
+    digest = {
         'id': finding.get('id'),
         'skill': finding.get('skill'),
         'category': finding.get('category'),
@@ -494,6 +520,12 @@ def _finding_digest(finding: dict) -> dict:
         'fields': list(finding.get('fields') or [])[:3],
         'persistent': finding.get('persistent'),
     }
+    if include_prose:
+        digest['evidence'] = _truncate_prose(finding.get('evidence'))
+        digest['recommendation'] = _truncate_prose(
+            finding.get('recommendation')
+        )
+    return digest
 
 
 def _partition_findings(
@@ -803,6 +835,15 @@ class QualityLoopAgent(BaseAgent):
 
             current_stage = ctx.session.state.get(STATE_STAGE) or 'content'
             section_repaired_count = 0
+            # Per-round record of which dispatched sections actually
+            # changed their bundle (post hash != pre hash). A section
+            # that ran but did NOT change is a no-op repair — the smoking
+            # gun when the next critic round re-flags the same findings.
+            # Emitted as a single round-level ``changed_sections`` event
+            # after the dispatch loop so the "what moved this round"
+            # signal is greppable without scanning every per-section
+            # bundle-diff line.
+            section_changed_flags: dict[str, bool] = {}
             # Phase 5 telemetry — per-round mechanism counters. After
             # Phase 3 every wired ``repair_section_agents`` entry is a
             # tool-based ``Agent`` (the section's ``*_repair_agent``); a
@@ -856,13 +897,18 @@ class QualityLoopAgent(BaseAgent):
                 # section so we can later correlate "section X received
                 # finding Y in round N" with "finding Y reappeared (or
                 # didn't) in round N+1". Without this we only know the
-                # COUNT, not which findings.
+                # COUNT, not which findings. Under verbose SOW logging the
+                # digest also carries the truncated evidence/recommendation
+                # prose so the trace shows the *text* of the contradiction,
+                # not just its fingerprint.
+                verbose_prose = is_verbose_sow_logging()
                 logger.info(
                     'quality_loop_section_dispatch',
                     round=round_number,
                     section=section_name,
                     findings=[
-                        _finding_digest(f) for f in section_findings
+                        _finding_digest(f, include_prose=verbose_prose)
+                        for f in section_findings
                     ],
                 )
                 # Bundle hash BEFORE the section agent runs. Used by the
@@ -902,6 +948,8 @@ class QualityLoopAgent(BaseAgent):
                     if isinstance(post_bundle, dict) and post_bundle
                     else None
                 )
+                section_changed = pre_bundle_hash != post_bundle_hash
+                section_changed_flags[section_name] = section_changed
                 logger.info(
                     'quality_loop_section_bundle_diff',
                     round=round_number,
@@ -909,7 +957,7 @@ class QualityLoopAgent(BaseAgent):
                     bundle_key=bundle_key,
                     pre_hash=pre_bundle_hash,
                     post_hash=post_bundle_hash,
-                    changed=pre_bundle_hash != post_bundle_hash,
+                    changed=section_changed,
                     mechanism=mechanism,
                 )
 
@@ -983,6 +1031,26 @@ class QualityLoopAgent(BaseAgent):
                     by_section=mechanism_by_section,
                 )
 
+            # Round-level "what moved" summary. ``changed_sections`` is
+            # the set of dispatched sections whose bundle hash actually
+            # changed this round; ``unchanged_sections`` is the rest (the
+            # no-op repairs). Only fires when ≥1 section was dispatched —
+            # an empty summary every round would dilute the signal, same
+            # rule as ``quality_loop_repair_mechanism_used``.
+            if section_changed_flags:
+                logger.info(
+                    'quality_loop_changed_sections',
+                    round=round_number,
+                    changed_sections=sorted(
+                        name for name, changed in section_changed_flags.items()
+                        if changed
+                    ),
+                    unchanged_sections=sorted(
+                        name for name, changed in section_changed_flags.items()
+                        if not changed
+                    ),
+                )
+
             # ----- SOW snapshot post-repair (verbose only) -------------
             # SOW after section repairs + re-assembly. Diff vs. the pre-
             # round snapshot tells us what the worker actually changed
@@ -1033,12 +1101,15 @@ class QualityLoopAgent(BaseAgent):
                 # received. Same correlation goal as the section
                 # dispatch log above — round N reviser received finding
                 # X, round N+1 critic still flags it -> we know the
-                # reviser failed THAT specific patch.
+                # reviser failed THAT specific patch. Verbose mode adds
+                # the truncated evidence/recommendation prose here too.
+                verbose_prose = is_verbose_sow_logging()
                 logger.info(
                     'quality_loop_mechanical_dispatch',
                     round=round_number,
                     findings=[
-                        _finding_digest(f) for f in dispatched_to_reviser
+                        _finding_digest(f, include_prose=verbose_prose)
+                        for f in dispatched_to_reviser
                     ],
                 )
 
