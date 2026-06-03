@@ -50,7 +50,7 @@ engagements cover 10-15 of the 15.
    time zone.
 3. **Platform prerequisites** — GCP services industrialized and available
    by when. **Link each prerequisite to the specific phase or workstream
-   that depends on it** (e.g., "prior to the start of WS03" — not generic
+   that depends on it** (e.g., "prior to the start of Phase 3" — not generic
    "before kickoff"). Each GCP service should have its own deadline.
    Unavailability = extension + cost.
 4. **Access and credentials** — All credentials, service accounts, VPN

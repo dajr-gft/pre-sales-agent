@@ -110,12 +110,12 @@ Target: 15-25 items covering all categories from the style guide.
 
 ### Category: Platform prerequisites (with timing and consequence)
 > "Google Gemini Enterprise must be active, licensed, and available within
-> [Customer]'s Google Workspace tenant prior to the start of WS04. Any
+> [Customer]'s Google Workspace tenant prior to the start of Phase 4. Any
 > unavailability or non-industrialization will result in timeline extension
 > and additional cost."
 
 > "Agent Engine must be industrialized, approved, and available within
-> [Customer]'s Google Cloud tenant prior to the start of WS01. Any
+> [Customer]'s Google Cloud tenant prior to the start of Phase 1. Any
 > unavailability or non-industrialization will result in timeline extension
 > and additional cost."
 
