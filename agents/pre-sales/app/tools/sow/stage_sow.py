@@ -33,8 +33,11 @@ from google.adk.tools import ToolContext
 from ...shared.errors import safe_tool
 from ...shared.types import ToolError, ToolSuccess
 from ...sub_agents.validation.schema import (
+    ROUND_MODE_DISCOVERY,
+    STATE_CHANGED_SECTIONS,
     STATE_PRIOR_BLOCKING_FINGERPRINTS,
     STATE_ROUND_COUNT,
+    STATE_ROUND_MODE,
     STATE_SOW,
     STATE_STAGE,
 )
@@ -195,6 +198,14 @@ async def stage_sow(
     if stage_changed:
         tool_context.state[STATE_ROUND_COUNT] = 0
         tool_context.state[STATE_PRIOR_BLOCKING_FINGERPRINTS] = []
+        # Mirror the round-tracking reset for the round-mode plumbing
+        # (PR-2): a content->full transition must start the new stage in
+        # 'discovery' with no carried-over changed sections, so a stale
+        # 'verification' mode (and the previous stage's changed-section
+        # list) cannot leak into the new stage even when the loop's F-05
+        # cache short-circuits round 1.
+        tool_context.state[STATE_ROUND_MODE] = ROUND_MODE_DISCOVERY
+        tool_context.state[STATE_CHANGED_SECTIONS] = []
         logger.info(
             'stage_sow_reset_round_state',
             previous_stage=previous_stage,

@@ -27,8 +27,11 @@ from app.sub_agents.schemas import (
     SOW_METADATA_STATE_KEY,
 )
 from app.sub_agents.validation.schema import (
+    ROUND_MODE_DISCOVERY,
+    STATE_CHANGED_SECTIONS,
     STATE_PRIOR_BLOCKING_FINGERPRINTS,
     STATE_ROUND_COUNT,
+    STATE_ROUND_MODE,
     STATE_SOW,
     STATE_STAGE,
 )
@@ -552,4 +555,68 @@ class TestStageChangeResetsRoundState:
         assert mock_tool_context.state[STATE_PRIOR_BLOCKING_FINGERPRINTS] == [
             'fp'
         ]
+
+    # --- PR-2: the round-mode plumbing resets on the same boundary ------
+
+    async def test_content_to_full_resets_round_mode_and_changed_sections(
+        self, mock_tool_context
+    ):
+        """A stage transition must start the new stage in 'discovery'
+        with no carried-over changed sections, so a stale 'verification'
+        mode from the previous stage cannot leak across stages."""
+        _populate_full_state(mock_tool_context)
+        mock_tool_context.state[STATE_STAGE] = 'content'
+        mock_tool_context.state[STATE_ROUND_MODE] = 'verification'
+        mock_tool_context.state[STATE_CHANGED_SECTIONS] = [
+            'requirements', 'scope_boundaries',
+        ]
+
+        await stage_sow(stage='full', tool_context=mock_tool_context)
+
+        assert mock_tool_context.state[STATE_ROUND_MODE] == ROUND_MODE_DISCOVERY
+        assert mock_tool_context.state[STATE_CHANGED_SECTIONS] == []
+
+    async def test_same_stage_re_stage_preserves_round_mode(
+        self, mock_tool_context
+    ):
+        """Re-staging within the same stage must NOT reset the round-mode
+        plumbing — the loop owns it per round, and a defensive same-stage
+        re-stage mid-loop should be transparent."""
+        _populate_full_state(mock_tool_context)
+        mock_tool_context.state[STATE_STAGE] = 'full'
+        mock_tool_context.state[STATE_ROUND_MODE] = 'verification'
+        mock_tool_context.state[STATE_CHANGED_SECTIONS] = ['requirements']
+
+        await stage_sow(stage='full', tool_context=mock_tool_context)
+
+        assert mock_tool_context.state[STATE_ROUND_MODE] == 'verification'
+        assert mock_tool_context.state[STATE_CHANGED_SECTIONS] == ['requirements']
+
+    async def test_first_call_does_not_seed_round_mode(
+        self, mock_tool_context
+    ):
+        """The very first stage_sow has no previous stage — it must not
+        pre-create the round-mode keys (the loop seeds them on round 1)."""
+        _populate_content_state(mock_tool_context)
+
+        await stage_sow(stage='content', tool_context=mock_tool_context)
+
+        assert STATE_ROUND_MODE not in mock_tool_context.state
+        assert STATE_CHANGED_SECTIONS not in mock_tool_context.state
+
+    async def test_assembly_failure_does_not_reset_round_mode(
+        self, mock_tool_context
+    ):
+        """Atomicity: a failed stage call must not touch the round-mode
+        keys either."""
+        _populate_content_state(mock_tool_context)
+        mock_tool_context.state[STATE_STAGE] = 'content'
+        mock_tool_context.state[STATE_ROUND_MODE] = 'verification'
+        mock_tool_context.state[STATE_CHANGED_SECTIONS] = ['requirements']
+
+        result = await stage_sow(stage='full', tool_context=mock_tool_context)
+
+        assert result['status'] == 'error'
+        assert mock_tool_context.state[STATE_ROUND_MODE] == 'verification'
+        assert mock_tool_context.state[STATE_CHANGED_SECTIONS] == ['requirements']
         assert mock_tool_context.state[STATE_STAGE] == 'content'

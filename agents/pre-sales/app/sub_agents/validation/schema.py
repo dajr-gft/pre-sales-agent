@@ -25,6 +25,12 @@ SkillName = Literal[
     'semantic_quality',
 ]
 Stage = Literal['content', 'full']
+# Per-round critic mode written by the QualityLoopAgent (PR-2) and
+# consumed by the critic skills in verification mode (PR-3).
+# - 'discovery'    — round 1: broad audit of a freshly staged document.
+# - 'verification' — rounds 2+: confirm the previous round's repair
+#                    landed without re-auditing the whole document.
+RoundMode = Literal['discovery', 'verification']
 # How a finding can be resolved. Decoupled from severity on purpose: a
 # BLOCKER can still be ``auto_fixable`` (the revision_agent can rewrite
 # the SOW from the same evidence/recommendation the critic produced),
@@ -100,6 +106,28 @@ PRIOR_FINGERPRINTS_CAP = 30
 # returns the next" pattern while still bounding state size (3 * 30 =
 # 90 fingerprints max per session).
 PERSISTENCE_WINDOW_ROUNDS = 3
+
+# Round mode + changed-sections plumbing (PR-2). The QualityLoopAgent
+# writes both BEFORE each critic run; the critic skills consume them in
+# verification mode (PR-3). Defined here next to STATE_STAGE so the
+# staging boundary (stage_sow) and the loop share one source of truth.
+#
+# - STATE_ROUND_MODE: the :data:`RoundMode` for the round about to run —
+#   'discovery' on round 1, 'verification' on rounds 2+. Reset to
+#   'discovery' by stage_sow on a content->full transition so a stale
+#   'verification' from the previous stage cannot leak across stages
+#   (mirrors the STATE_ROUND_COUNT reset).
+# - STATE_CHANGED_SECTIONS: section names whose bundle the PREVIOUS
+#   round's repair actually modified (``list[str]``), so a
+#   verification-mode critic knows which sections to scrutinize for
+#   regressions. Empty on round 1 and reset to [] on a stage transition.
+STATE_ROUND_MODE = 'app:validation:round_mode'
+STATE_CHANGED_SECTIONS = 'app:validation:changed_sections'
+
+# Canonical RoundMode values, exported so the loop and the critic skills
+# never hard-code the literal strings.
+ROUND_MODE_DISCOVERY: RoundMode = 'discovery'
+ROUND_MODE_VERIFICATION: RoundMode = 'verification'
 
 
 def skill_findings_state_key(name: str) -> str:
