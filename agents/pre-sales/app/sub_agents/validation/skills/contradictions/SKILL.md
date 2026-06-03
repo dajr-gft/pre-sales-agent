@@ -141,6 +141,20 @@ where `confidence < 0.7`. Report confidence honestly.
   genuinely required to resolve the conflict. In that case set
   ``resolution_mode: "decision_required"``.
 
+## Completeness — do not sample (binding)
+
+Enumerate every valid finding within the current validation scope and stage.
+Do not duplicate the same issue with different wording.
+Do not lower confidence/severity bars.
+
+Report all N distinct qualifying defects — do not stop at an arbitrary count.
+This is not a license to hunt for more, invent issues, relax the bars, or
+reopen content frozen by the Stage-awareness gate at the current stage.
+
+Safety ceiling: at most 25 findings for THIS skill (not per category); above
+that, report the 25 highest by severity then confidence and note in the last
+`recommendation` that more occurrences of the same families remain.
+
 ## Output
 
 Return ONLY a JSON object matching `SkillFindings`:
@@ -163,7 +177,8 @@ Return ONLY a JSON object matching `SkillFindings`:
 }
 ```
 
-`id` uses `contradictions-NNN`. Cap at 5 findings. Use these `category`
+`id` uses `contradictions-NNN`; report findings per the **Completeness**
+rule above (no sampling). Use these `category`
 values exactly: `fr_vs_nfr`, `scope_vs_oos`, `architecture_vs_stack`,
 `activities_vs_deliverables`, `assumptions_vs_risks`,
 `timeline_vs_deliverables`. Return `{"findings": []}` when nothing

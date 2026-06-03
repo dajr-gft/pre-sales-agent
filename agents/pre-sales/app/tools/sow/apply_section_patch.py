@@ -622,7 +622,7 @@ def _build_apply_section_patch(
     section_name: str,
     bundle_key: str,
     bundle_model: type[BaseModel],
-    max_ops_per_call: int = 5,
+    max_ops_per_call: int = 15,
 ) -> Callable[..., Any]:
     """Build a section-specific patch tool.
 

@@ -135,6 +135,20 @@ a specific region or residency policy must be selected.
   external policy decision is required (then
   ``resolution_mode: "decision_required"``).
 
+## Completeness — do not sample (binding)
+
+Enumerate every valid finding within the current validation scope and stage.
+Do not duplicate the same issue with different wording.
+Do not lower confidence/severity bars.
+
+Report all N distinct qualifying defects — do not stop at an arbitrary count.
+This is not a license to hunt for more, invent issues, relax the bars, or
+reopen content frozen by the Stage-awareness gate at the current stage.
+
+Safety ceiling: at most 25 findings for THIS skill (not per category); above
+that, report the 25 highest by severity then confidence and note in the last
+`recommendation` that more occurrences of the same families remain.
+
 ## Output
 
 ```json
@@ -156,7 +170,8 @@ a specific region or residency policy must be selected.
 }
 ```
 
-`id` uses `disclosures-NNN`. Cap at 4 findings.
+`id` uses `disclosures-NNN`; report findings per the **Completeness**
+rule above (no sampling).
 Allowed `category` values: `missing_ai_nondeterminism_disclosure`,
 `missing_external_api_dependency_disclosure`,
 `missing_pii_responsibility_disclosure`,

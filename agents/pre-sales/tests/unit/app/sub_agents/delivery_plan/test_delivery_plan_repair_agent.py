@@ -230,7 +230,7 @@ class TestInstructionProviderHappyPath:
         for op_name in ('update_item', 'add_item', 'remove_item', 'update_field'):
             assert op_name in prompt, f'{op_name} missing from footer'
 
-    def test_footer_mentions_max_ops_cap(self):
+    def test_footer_mandates_draining_every_finding(self):
         ctx = _Ctx(_seeded_state(
             findings=[{'id': 'F-1'}],
             bundle={
@@ -243,8 +243,12 @@ class TestInstructionProviderHappyPath:
             },
         ))
         prompt = delivery_plan_repair_agent.instruction(ctx)
-        # Pilot cap is 5 (configurable per section).
-        assert 'Maximum 5 ops' in prompt
+        # Per-call batching ceiling raised 5 -> 15, and the footer now
+        # MANDATES addressing every finding via sequential calls instead
+        # of allowing tail findings to be left for "a follow-up".
+        assert 'at most 15 ops' in prompt
+        assert 'Address EVERY finding' in prompt
+        assert 'Maximum 5 ops' not in prompt
 
     def test_renders_upstream_packet(self):
         ctx = _Ctx(_seeded_state(

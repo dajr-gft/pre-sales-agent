@@ -140,6 +140,20 @@ clause" or "quantify with the manifest value".
 - < 0.60 — speculative; do not emit unless the missing decision is
   truly human-only; then set ``resolution_mode: "decision_required"``.
 
+## Completeness — do not sample (binding)
+
+Enumerate every valid finding within the current validation scope and stage.
+Do not duplicate the same issue with different wording.
+Do not lower confidence/severity bars.
+
+Report all N distinct qualifying defects — do not stop at an arbitrary count.
+This is not a license to hunt for more, invent issues, relax the bars, or
+reopen content frozen by the Stage-awareness gate at the current stage.
+
+Safety ceiling: at most 25 findings for THIS skill (not per category); above
+that, report the 25 highest by severity then confidence and note in the last
+`recommendation` that more occurrences of the same families remain.
+
 ## Output
 
 ```json
@@ -160,7 +174,8 @@ clause" or "quantify with the manifest value".
 }
 ```
 
-`id` uses `contractual_exposure-NNN`. Cap at 5 findings.
+`id` uses `contractual_exposure-NNN`; report findings per the
+**Completeness** rule above (no sampling).
 Allowed `category` values: `missing_consequence_clause`,
 `missing_timing_anchor`, `subjective_nfr_target`,
 `missing_change_request_gate`, `missing_handover_boundary`,

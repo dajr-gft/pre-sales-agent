@@ -576,6 +576,9 @@ class TestTransactional:
             SOW_BUNDLE_STATE_KEYS['delivery_plan']
         ] = _seed_delivery_plan_bundle()
 
+        # Per-call cap is 15 (raised from the MVP pilot value of 5), so
+        # 16 ops in one call must be rejected; the error names the count
+        # and the cap and tells the agent to split into multiple calls.
         ops = [
             {
                 'op': 'update_item',
@@ -584,13 +587,60 @@ class TestTransactional:
                 'item_id': 'WS-01',
                 'fields': {'description': f'Update {i}.'},
             }
-            for i in range(6)
+            for i in range(16)
         ]
         result = await apply_delivery_plan_patch(
             ops=ops, tool_context=mock_tool_context,
         )
         assert result['status'] == 'error'
-        assert '6' in result['error']
+        assert '16' in result['error']
+        assert '15' in result['error']
+
+    async def test_batch_above_old_cap_is_accepted(self, mock_tool_context):
+        """Regression for the throughput fix: a 6-op batch was rejected
+        under the old cap of 5; with the cap raised to 15 it must apply
+        so the repair can drain a larger same-class backlog in one round.
+        """
+        mock_tool_context.state[
+            SOW_BUNDLE_STATE_KEYS['delivery_plan']
+        ] = _seed_delivery_plan_bundle()
+
+        ops = [
+            {
+                'op': 'update_item', 'finding_id': 'f-1',
+                'collection': 'deliverables', 'item_id': 'WS-01',
+                'fields': {'description': 'Updated spec.'},
+            },
+            {
+                'op': 'update_item', 'finding_id': 'f-2',
+                'collection': 'deliverables', 'item_id': 'WS-02',
+                'fields': {'description': 'Updated test plan.'},
+            },
+            {
+                'op': 'update_item', 'finding_id': 'f-3',
+                'collection': 'activity_phases', 'item_id': 'Phase 1',
+                'fields': {'description': 'Updated discovery.'},
+            },
+            {
+                'op': 'update_item', 'finding_id': 'f-4',
+                'collection': 'activity_phases', 'item_id': 'Phase 2',
+                'fields': {'description': 'Updated build.'},
+            },
+            {
+                'op': 'update_field', 'finding_id': 'f-5',
+                'field': 'success_criteria',
+                'value': ['Plan accepted.', 'Rollout complete.'],
+            },
+            {
+                'op': 'update_field', 'finding_id': 'f-6',
+                'field': 'objectives', 'value': ['Modernize.', 'Scale.'],
+            },
+        ]
+        result = await apply_delivery_plan_patch(
+            ops=ops, tool_context=mock_tool_context,
+        )
+        assert result['status'] == 'success', result
+        assert 'Too many ops' not in (result.get('error') or '')
 
     async def test_empty_ops_rejected(self, mock_tool_context):
         mock_tool_context.state[

@@ -152,10 +152,14 @@ def _build_repair_tool_footer(
         '## Constraints\n\n'
         '1. **Every op MUST cite `finding_id`** from `<repair_findings>` '
         'that motivates it. No anonymous patches.\n'
-        f'2. **Maximum {max_ops_per_call} ops per tool call.** If you '
-        'have more, prioritise by severity (BLOCKER > MAJOR > MINOR) '
-        'then by `recommendation` specificity; tail findings can run '
-        'in a follow-up call within the same turn.\n'
+        f'2. **Address EVERY finding in `<repair_findings>` this turn.** '
+        f'A single `{tool_name}` call accepts at most {max_ops_per_call} '
+        'ops; if you have more findings than that, make MULTIPLE '
+        f'`{tool_name}` calls in sequence within this SAME turn until '
+        'every finding is addressed. Do NOT stop after the first call '
+        'and do NOT leave findings unaddressed. Order the calls by '
+        'severity (BLOCKER > MAJOR > MINOR) so the most important land '
+        'first.\n'
         '3. **NEVER emit a full bundle JSON in your reply.** The tool '
         'is the only writer.\n'
         '4. **If the tool returns a ToolError**, read the '
@@ -277,7 +281,7 @@ def build_section_repair_agent(
     extra_skills_for_resources: tuple[str, ...] = ('sow-shared',),
     state_inputs: tuple[tuple[str, str], ...] = (),
     extra_optional_state_inputs: tuple[tuple[str, str], ...] = (),
-    max_ops_per_call: int = 5,
+    max_ops_per_call: int = 15,
     model: str | None = None,
     temperature: float | None = None,
     thinking_budget: int | None = None,
@@ -321,9 +325,15 @@ def build_section_repair_agent(
             footer and the agent does not call the patch tool.
         extra_optional_state_inputs: Additional optional inputs beyond
             the auto-injected ``previous_bundle`` and ``repair_findings``.
-        max_ops_per_call: Pilot cap (default 5). Configurable per
-            section once the vertical slice (delivery_plan) confirms
-            the LLM converges within the cap on real SOWs.
+        max_ops_per_call: Max ops the patch tool accepts in ONE call
+            (default 15). It is a per-call batching ceiling, NOT a budget
+            on how many findings a round may fix: the repair footer
+            requires the agent to make multiple sequential calls within
+            the same turn until every finding in ``<repair_findings>`` is
+            addressed. Raised from the MVP pilot value of 5 — that low
+            cap throttled draining of a large same-class backlog (e.g.
+            scope_boundaries surfacing 6 findings in one round), so the
+            quality loop could not converge within max_rounds.
         model / temperature / thinking_budget: Standard overrides.
 
     Returns:
