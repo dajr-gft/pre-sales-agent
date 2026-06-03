@@ -16,6 +16,7 @@ from .callbacks import (
     after_tool_callback,
     before_tool_callback,
     empty_response_guard,
+    run_start_banner,
 )
 from .config import config
 from .guardrails import scope_guardrail
@@ -168,6 +169,7 @@ root_agent = Agent(
     ),
     instruction=build_instruction_provider(company_name=config.COMPANY_NAME),
     tools=_TOOLS,
+    before_agent_callback=run_start_banner,
     before_model_callback=scope_guardrail,
     after_model_callback=empty_response_guard,
     before_tool_callback=before_tool_callback,

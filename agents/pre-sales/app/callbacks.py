@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import uuid
 from typing import Any
 
 import structlog
@@ -28,6 +29,39 @@ from .config import config
 from .tools.sow.confirm_phase import is_architecture_review_approved
 
 logger = structlog.get_logger()
+
+# Session-state sentinel for the once-per-run start banner. Stored (not just
+# a bool) so the emitted ``run_id`` is recoverable from state if ever needed.
+_STATE_RUN_STARTED = '_agent_run_started'
+
+
+def run_start_banner(callback_context: CallbackContext) -> None:
+    """before_agent_callback — emit a one-time banner marking a fresh run.
+
+    The local file log (``LOG_FILE`` mirror) APPENDS across runs, so a single
+    ``agent.log`` accumulates several smoke runs. This stamps a distinctive,
+    greppable boundary (``agent_run_started`` / ``=== NEW AGENT RUN ===``) at
+    the start of each run so the file can be split without clearing it.
+
+    Fires on the FIRST root-agent turn of a session — keyed off a session
+    state sentinel — and is a no-op on every later turn of the same run. A
+    new ``adk web`` conversation (or a new Runner session) starts with fresh
+    state, so each run gets exactly one banner. Returns ``None`` so the agent
+    proceeds normally.
+    """
+    state = callback_context.state
+    if state.get(_STATE_RUN_STARTED):
+        return None
+    run_id = uuid.uuid4().hex[:12]
+    state[_STATE_RUN_STARTED] = run_id
+    logger.info(
+        'agent_run_started',
+        run_id=run_id,
+        invocation_id=getattr(callback_context, 'invocation_id', None),
+        marker='==================== NEW AGENT RUN ====================',
+    )
+    return None
+
 
 # Maximum JSON input size (chars) to prevent oversized payloads
 _MAX_SOW_DATA_CHARS = 500_000
