@@ -36,6 +36,13 @@ class ValidationIssue:
     field: str
     message: str
     suggestion: str = ''
+    # Optional machine-readable subtype. Most checks leave it blank (the
+    # ``field`` + ``message`` are enough for a human). Checks whose issues
+    # must be routed downstream (e.g. the timeline cross-reference check,
+    # whose issues the aggregator bridges into repairable findings) set a
+    # stable category so the consumer can filter by it instead of parsing
+    # prose. See ``DeterministicIssue.category`` and the aggregator bridge.
+    category: str = ''
 
     def __str__(self) -> str:
         prefix = 'ERROR' if self.severity == 'error' else 'WARN'
@@ -72,6 +79,7 @@ class ValidationResult:
                     'field': i.field,
                     'message': i.message,
                     'suggestion': i.suggestion,
+                    'category': i.category,
                 }
                 for i in self.issues
             ],
@@ -80,6 +88,31 @@ class ValidationResult:
 
 _FR_PATTERN = re.compile(r'^FR-\d{2,3}$')
 _NFR_PATTERN = re.compile(r'^NFR-\d{2,3}$')
+
+# Matches any WS-style deliverable reference token in free prose, in
+# EITHER form: canonical dashed ``WS-01``, separator-less ``WS01``, or
+# dotted ``WS01.1``. The global anchor pattern
+# (``_anchor_utils.ANCHOR_ID_PATTERN``) deliberately omits the
+# separator-less ``WS01`` (to keep it out of structural anchor diffs), so
+# the timeline cross-reference check needs its own scoped matcher to even
+# SEE a non-canonical tag and flag it. Word-boundary anchored so ``AWS``
+# and similar embeddings never match.
+_TIMELINE_DELIVERABLE_REF_PATTERN = re.compile(
+    r'\bWS-?\d{1,4}(?:\.\d{1,3})?\b', re.IGNORECASE,
+)
+
+
+def _deliverable_ref_number_key(token: str) -> tuple[int, ...]:
+    """Digit-sequence key for a WS token, ignoring separator and casing.
+
+    ``WS-01`` -> ``(1,)``; ``WS01`` -> ``(1,)``; ``WS01.1`` -> ``(1, 1)``.
+    Lets the timeline check tell "same deliverable, non-canonical
+    formatting" (key matches an existing id) from "no such deliverable"
+    (key matches nothing) — WITHOUT normalising the token into a silent
+    pass. The key only classifies / suggests a fix; the canonical match
+    is always the exact string.
+    """
+    return tuple(int(n) for n in re.findall(r'\d+', token))
 
 # Keywords that indicate a consequence clause in assumptions
 _CONSEQUENCE_KEYWORDS = [
@@ -139,6 +172,7 @@ class ContentValidator:
         self._validate_oos_count(data, result)
         self._validate_timeline_consistency(data, result)
         self._validate_deliverable_coverage(data, result)
+        self._validate_timeline_outcome_references(data, result)
 
         if stage == 'full':
             self._validate_architecture_description(data, result)
@@ -307,6 +341,91 @@ class ContentValidator:
                     suggestion='Every activity phase should appear in the timeline table.',
                 )
             )
+
+    def _validate_timeline_outcome_references(
+        self, data: dict, result: ValidationResult
+    ) -> None:
+        """Deterministic cross-reference: deliverable tags embedded in
+        ``timeline[].outcomes`` prose must use the **canonical** deliverable
+        id verbatim (e.g. ``WS-01``).
+
+        Two failure classes, both objective (no semantic / topic matching):
+
+        - ``orphan_timeline_reference`` — the tag resolves to no deliverable
+          at all (dangling reference).
+        - ``noncanonical_timeline_reference`` — the tag resolves to a real
+          deliverable by digit-sequence but is written in a non-canonical /
+          ambiguous form (``WS01`` while the id is ``WS-01``). We flag it
+          **even though the deliverable exists** and never silently
+          normalise ``WS01`` -> ``WS-01``: that ambiguity (the separator-
+          less form collides with the legacy workstream numbering) is
+          exactly the drift the LLM critic surfaces piecemeal across rounds.
+
+        Issues carry a ``category`` so the aggregator can bridge them into
+        repairable findings routed to the delivery_plan section. The
+        validator only DETECTS; the repair LLM corrects the prose.
+        """
+        deliverables = data.get('deliverables') or []
+        canonical = {
+            str(d.get('number', '')).strip()
+            for d in deliverables
+            if isinstance(d, dict) and str(d.get('number', '')).strip()
+        }
+        if not canonical:
+            return
+        # digit-key -> a canonical id, for non-canonical suggestions.
+        key_to_canonical: dict[tuple[int, ...], str] = {}
+        for cid in canonical:
+            key_to_canonical.setdefault(_deliverable_ref_number_key(cid), cid)
+
+        for row in data.get('timeline', []):
+            if not isinstance(row, dict):
+                continue
+            outcomes = row.get('outcomes')
+            if not isinstance(outcomes, str) or not outcomes:
+                continue
+            activity = str(row.get('activity', '')).strip()
+            for raw in _TIMELINE_DELIVERABLE_REF_PATTERN.findall(outcomes):
+                if raw in canonical:
+                    continue  # canonical, exact — OK
+                suggested = key_to_canonical.get(
+                    _deliverable_ref_number_key(raw)
+                )
+                if suggested is not None:
+                    result.issues.append(
+                        ValidationIssue(
+                            severity='warning',
+                            field='timeline',
+                            category='noncanonical_timeline_reference',
+                            message=(
+                                f"Timeline outcome for '{activity}' references "
+                                f"'{raw}', which is not the canonical "
+                                f"deliverable id '{suggested}'."
+                            ),
+                            suggestion=(
+                                f"Use the exact deliverable id '{suggested}' "
+                                f"in the timeline outcome, not '{raw}'."
+                            ),
+                        )
+                    )
+                else:
+                    result.issues.append(
+                        ValidationIssue(
+                            severity='warning',
+                            field='timeline',
+                            category='orphan_timeline_reference',
+                            message=(
+                                f"Timeline outcome for '{activity}' references "
+                                f"'{raw}', which is not a deliverable id in "
+                                'this SOW.'
+                            ),
+                            suggestion=(
+                                'Reference an existing deliverable id '
+                                f"({', '.join(sorted(canonical))}) or remove "
+                                'the tag.'
+                            ),
+                        )
+                    )
 
     def _validate_tech_stack_consistency(
         self, data: dict, result: ValidationResult

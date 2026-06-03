@@ -657,6 +657,18 @@ def _overall_score(det: DeterministicResult, findings: list[Finding]) -> float:
     return max(0.0, min(1.0, score))
 
 
+# Deterministic-issue categories that the aggregator bridges into
+# routable findings (see the bridge in ``_run_async_impl``). SCOPED on
+# purpose: only the timeline cross-reference check's issues are mechanical,
+# section-anchored, and auto-fixable. We deliberately do NOT bridge every
+# deterministic error — the broader "deterministic errors block but never
+# route to repair" gap is documented as a separate follow-up.
+_ROUTABLE_DETERMINISTIC_CATEGORIES: frozenset[str] = frozenset({
+    'orphan_timeline_reference',
+    'noncanonical_timeline_reference',
+})
+
+
 class ValidationAggregatorAgent(BaseAgent):
     """Python-only gate. Consumes deterministic + 5 skill outputs from state."""
 
@@ -729,6 +741,34 @@ class ValidationAggregatorAgent(BaseAgent):
                 skills_not_run.append(name)
                 if name in _CRITICAL_SKILLS:
                     skills_failed_critical = True
+
+        # --- Deterministic cross-reference bridge --------------------------
+        # Most deterministic issues only gate pass/fail via
+        # ``det.error_count`` and are NEVER repaired, because the loop routes
+        # ``findings`` to the section agents and deterministic issues are not
+        # findings. The timeline cross-reference check is the exception: its
+        # issues are mechanical, section-scoped, and auto-fixable, so we
+        # synthesise a routable Finding for each (``skill='deterministic'``,
+        # ``fields=['timeline']`` -> delivery_plan) and let the normal
+        # calibrate / gate / route path act on them. SCOPED to the two
+        # timeline categories only (see _ROUTABLE_DETERMINISTIC_CATEGORIES).
+        for idx, issue in enumerate(det.issues, start=1):
+            if issue.category not in _ROUTABLE_DETERMINISTIC_CATEGORIES:
+                continue
+            all_findings.append(
+                Finding(
+                    id=f'deterministic-{idx:03d}',
+                    skill='deterministic',
+                    category=issue.category,
+                    severity='MAJOR',
+                    confidence=1.0,
+                    evidence=issue.message,
+                    recommendation=issue.suggestion,
+                    fields=['timeline'],
+                    resolution_mode='auto_fixable',
+                    requires_human_review=False,
+                )
+            )
 
         # Order matters: ``_calibrate`` applies the policy-table override,
         # then ``_lint_field_vocabulary`` has the FINAL word — structural

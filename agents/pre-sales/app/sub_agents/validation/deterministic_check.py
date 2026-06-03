@@ -38,6 +38,7 @@ def _to_result(raw: dict, sow: dict) -> DeterministicResult:
             field=i.get('field', ''),
             message=i.get('message', ''),
             suggestion=i.get('suggestion', ''),
+            category=i.get('category', ''),
         )
         for i in raw.get('issues', [])
     ]
